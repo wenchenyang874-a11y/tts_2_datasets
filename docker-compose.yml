@@ -1,0 +1,52 @@
+version: "3.8"
+
+services:
+  tts-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PYTHON_IMAGE: "${TTS_PYTHON_IMAGE:-python:3.11-slim-bookworm}"
+        DEBIAN_MIRROR: "${TTS_DEBIAN_MIRROR:-}"
+        PIP_INDEX_URL: "${TTS_PIP_INDEX_URL:-}"
+        APP_UID: "${TTS_APP_UID:-1000}"
+        APP_GID: "${TTS_APP_GID:-1000}"
+    image: tts-2-datasets:local
+    restart: unless-stopped
+    user: "${TTS_APP_UID:-1000}:${TTS_APP_GID:-1000}"
+    command:
+      - uvicorn
+      - app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --workers
+      - "1"
+      - --log-level
+      - "${TTS_APP_LOG_LEVEL:-info}"
+    ports:
+      - "${TTS_APP_BIND_ADDRESS:-127.0.0.1}:${TTS_APP_PORT:-8080}:8080"
+    environment:
+      TTS_APP_DATA_DIR: /data
+      TTS_MANIFEST_DATA_ROOT: "${TTS_MANIFEST_DATA_ROOT:-/data}"
+      TTS_APP_WORKERS: "${TTS_APP_WORKERS:-2}"
+      TTS_APP_API_TOKEN: "${TTS_APP_API_TOKEN:-}"
+      TTS_MAX_UPLOAD_MB: "${TTS_MAX_UPLOAD_MB:-512}"
+      TTS_MAX_TASK_ITEMS: "${TTS_MAX_TASK_ITEMS:-5000}"
+      TTS_HTTP_TIMEOUT_SECONDS: "${TTS_HTTP_TIMEOUT_SECONDS:-60}"
+      TTS_RETRY_COUNT: "${TTS_RETRY_COUNT:-3}"
+      TTS_MAX_PROVIDER_AUDIO_MB: "${TTS_MAX_PROVIDER_AUDIO_MB:-32}"
+      TTS_ALLOW_INSECURE_PROVIDER_HTTP: "${TTS_ALLOW_INSECURE_PROVIDER_HTTP:-0}"
+    volumes:
+      - "${TTS_APP_HOST_DATA_DIR:-./var}:/data"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    stop_grace_period: 20s

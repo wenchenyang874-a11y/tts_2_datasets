@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f6f4ef" />
+    <meta
+      name="description"
+      content="面向中文唤醒词数据集的多厂商 TTS 生成、审核、增强与导出工具"
+    />
+    <title>海思语音数据集工坊</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <svg class="svg-sprite" aria-hidden="true">
+      <symbol id="i-grid" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" /></symbol>
+      <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 2 1.9 5.1L19 9l-5.1 1.9L12 16l-1.9-5.1L5 9l5.1-1.9zM19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z" /></symbol>
+      <symbol id="i-list" viewBox="0 0 24 24"><path d="M5 5h14v3H5zM5 10.5h14v3H5zM5 16h14v3H5z" /></symbol>
+      <symbol id="i-wave" viewBox="0 0 24 24"><path d="M2 12h3l2-7 3 14 3-11 2 7 2-3h5" /></symbol>
+      <symbol id="i-box" viewBox="0 0 24 24"><path d="m4 7 8-4 8 4-8 4zm0 0v10l8 4 8-4V7M12 11v10" /></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm8.5 4-2.2-1.2.1-2.5-2.7-1.6-2.1 1.3L12 6l-1.6 2-2.1-1.3-2.7 1.6.1 2.5L3.5 12l2.2 1.2-.1 2.5 2.7 1.6 2.1-1.3 1.6 2 1.6-2 2.1 1.3 2.7-1.6-.1-2.5z" /></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M18.5 9A7 7 0 0 0 6.7 6.7L4 9m16 6-2.7 2.3A7 7 0 0 1 5.5 15" /></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m15.5 15.5 5 5" /></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z" /></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><path d="M7 5h4v14H7zM14 5h4v14h-4z" /></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5" /></symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 15v5h14v-5" /></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12m0 0 5-5m-5 5-5-5M5 20h14" /></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></symbol>
+      <symbol id="i-edit" viewBox="0 0 24 24"><path d="m4 16-1 5 5-1L19 9l-4-4zM13 7l4 4" /></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" /></symbol>
+      <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7h.01" /></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" /></symbol>
+    </svg>
+
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand">
+          <div class="brand-mark"><span></span><span></span><span></span></div>
+          <div>
+            <strong>海思语音数据集工坊</strong>
+            <small>社区项目 · 非官方</small>
+          </div>
+        </div>
+
+        <nav class="nav-list" aria-label="主导航">
+          <button class="nav-item active" data-view="dashboard">
+            <svg><use href="#i-grid"></use></svg><span>概览</span>
+          </button>
+          <button class="nav-item" data-view="generate">
+            <svg><use href="#i-spark"></use></svg><span>生成语音</span>
+          </button>
+          <button class="nav-item" data-view="tasks">
+            <svg><use href="#i-list"></use></svg><span>任务中心</span><b id="runningTaskBadge" class="nav-badge hidden">0</b>
+          </button>
+          <button class="nav-item" data-view="samples">
+            <svg><use href="#i-wave"></use></svg><span>样本库</span>
+          </button>
+          <button class="nav-item" data-view="noise">
+            <svg><use href="#i-settings"></use></svg><span>噪声增强</span>
+          </button>
+          <button class="nav-item" data-view="export">
+            <svg><use href="#i-box"></use></svg><span>导出数据集</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-foot">
+          <div class="target-card">
+            <div class="target-card-head"><small>当前 KWS 唤醒词</small><button id="projectSettingsButton" type="button">设置</button></div>
+            <strong id="targetWakeWord">你好，芯宝</strong>
+            <code id="targetKeywordId">ni_hao_xin_bao</code>
+          </div>
+          <div class="server-pill" id="serverPill">
+            <i></i><span>正在连接服务器</span>
+          </div>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <button id="menuToggle" class="icon-button menu-button" aria-label="展开菜单">
+            <svg><use href="#i-list"></use></svg>
+          </button>
+          <div class="topbar-title">
+            <span id="viewEyebrow">数据集工作台</span>
+            <h1 id="viewTitle">概览</h1>
+          </div>
+          <div class="topbar-actions">
+            <span class="contract-chip">16 kHz · Mono · S16_LE</span>
+            <button id="providerSettingsButton" class="button secondary compact" title="配置阿里云与火山引擎账号信息">
+              <svg><use href="#i-settings"></use></svg><span>供应商设置</span>
+            </button>
+            <button id="accessTokenButton" class="button secondary compact" title="设置仅保存在当前浏览器会话中的访问令牌">
+              <svg><use href="#i-settings"></use></svg>访问令牌
+            </button>
+            <button class="button secondary compact" data-go="generate">
+              <svg><use href="#i-spark"></use></svg>新建生成任务
+            </button>
+          </div>
+        </header>
+
+        <main class="main-content">
+          <section class="view active" id="view-dashboard" data-title="概览" data-eyebrow="数据集工作台">
+            <div class="hero-card">
+              <div class="hero-copy">
+                <span class="eyebrow">KWS DATASET STUDIO</span>
+                <h2>把中文唤醒词数据，做得更丰富、更可控。</h2>
+                <p>统一管理火山引擎与阿里云音色，批量合成、人工试听、噪声增强，并导出可复现的训练清单。</p>
+                <div class="hero-actions">
+                  <button class="button primary" data-go="generate">开始生成</button>
+                  <button class="button ghost" data-go="samples">查看样本库</button>
+                </div>
+              </div>
+              <div class="hero-visual" aria-hidden="true">
+                <div class="orb orb-one"></div>
+                <div class="orb orb-two"></div>
+                <div class="wave-bars">
+                  <i style="--h: 28%"></i><i style="--h: 55%"></i><i style="--h: 82%"></i><i style="--h: 43%"></i>
+                  <i style="--h: 94%"></i><i style="--h: 64%"></i><i style="--h: 38%"></i><i style="--h: 76%"></i>
+                  <i style="--h: 48%"></i><i style="--h: 88%"></i><i style="--h: 57%"></i><i style="--h: 31%"></i>
+                </div>
+              </div>
+            </div>
+
+            <div class="stats-grid">
+              <article class="stat-card"><span>可用音色</span><strong id="statVoices">—</strong><small>两个中文 TTS 厂商</small></article>
+              <article class="stat-card accent"><span>样本总数</span><strong id="statSamples">—</strong><small id="statSampleDuration">总时长 —</small></article>
+              <article class="stat-card"><span>增强样本</span><strong id="statAugmented">—</strong><small>含可追溯噪声参数</small></article>
+              <article class="stat-card"><span>运行中任务</span><strong id="statRunning">—</strong><small id="statSuccessRate">今日成功率 —</small></article>
+            </div>
+
+            <div class="dashboard-grid">
+              <article class="panel provider-panel">
+                <div class="panel-head">
+                  <div><span class="eyebrow">PROVIDERS</span><h3>语音服务</h3></div>
+                  <button id="refreshAllVoices" class="button text-button"><svg><use href="#i-refresh"></use></svg>刷新全部音色</button>
+                </div>
+                <div id="providerCards" class="provider-list">
+                  <div class="skeleton block"></div><div class="skeleton block"></div>
+                </div>
+              </article>
+
+              <article class="panel">
+                <div class="panel-head"><div><span class="eyebrow">WORKFLOW</span><h3>推荐流程</h3></div></div>
+                <ol class="workflow-list">
+                  <li><b>01</b><div><strong>同步并筛选音色</strong><span>按厂商、男女声和年龄分层覆盖</span></div></li>
+                  <li><b>02</b><div><strong>小批量生成试听</strong><span>先确认当前唤醒词的读音、停顿与自然度</span></div></li>
+                  <li><b>03</b><div><strong>加入真实背景噪声</strong><span>按 SNR 随机增强，同时保留干净原音</span></div></li>
+                  <li><b>04</b><div><strong>审核并导出清单</strong><span>训练集可用 TTS，验证与测试仍以真人录音为主</span></div></li>
+                </ol>
+              </article>
+            </div>
+
+            <article class="panel">
+              <div class="panel-head">
+                <div><span class="eyebrow">RECENT TASKS</span><h3>最近任务</h3></div>
+                <button class="button text-button" data-go="tasks">查看全部<svg><use href="#i-chevron"></use></svg></button>
+              </div>
+              <div id="dashboardTasks" class="task-list compact-list"><div class="empty-inline">正在读取任务…</div></div>
+            </article>
+          </section>
+
+          <section class="view" id="view-generate" data-title="生成语音" data-eyebrow="多音色批量合成">
+            <div class="section-intro">
+              <div><h2>选择音色，配置一批可复现的合成样本</h2><p>云服务账号信息可在“供应商设置”中填写；密钥保存到服务端，不会在页面中回填。</p></div>
+              <div id="generationEstimate" class="estimate-chip"><strong>0</strong><span>预计生成样本</span></div>
+            </div>
+
+            <div class="generate-layout">
+              <article class="panel voice-picker-panel">
+                <div class="panel-head wrap">
+                  <div><span class="eyebrow">VOICE LIBRARY</span><h3>音色库</h3></div>
+                  <button id="refreshVoiceButton" class="button secondary compact"><svg><use href="#i-refresh"></use></svg>查询最新音色</button>
+                </div>
+                <div class="filter-grid voice-filters">
+                  <label class="search-field wide"><svg><use href="#i-search"></use></svg><input id="voiceSearch" type="search" placeholder="搜索音色名称或 ID" /></label>
+                  <label><span>厂商</span><select id="voiceProviderFilter"><option value="">全部厂商</option><option value="volcengine">火山引擎</option><option value="aliyun">阿里云</option></select></label>
+                  <label><span>性别</span><select id="voiceGenderFilter"><option value="">全部</option><option value="female">女声</option><option value="male">男声</option><option value="neutral">中性</option><option value="unknown">未知</option></select></label>
+                  <label><span>年龄</span><select id="voiceAgeFilter"><option value="">全部</option><option value="child">儿童</option><option value="teen">少年</option><option value="young">青年</option><option value="middle">中年</option><option value="senior">老年</option><option value="unknown">未知</option></select></label>
+                </div>
+                <div class="selection-toolbar">
+                  <span>已选择 <strong id="selectedVoiceCount">0</strong> 个音色</span>
+                  <div><button id="selectVisibleVoices" class="link-button">全选当前结果</button><button id="clearSelectedVoices" class="link-button danger-text">清空</button></div>
+                </div>
+                <div id="voiceGrid" class="voice-grid"><div class="empty-state"><span class="loader"></span><p>正在加载音色…</p></div></div>
+              </article>
+
+              <form id="generationForm" class="panel generation-form">
+                <div class="panel-head"><div><span class="eyebrow">SYNTHESIS</span><h3>生成参数</h3></div></div>
+                <label class="field-label" for="generationTexts">文本模板 <span>每行一条；默认使用项目唤醒词</span></label>
+                <textarea id="generationTexts" rows="5" spellcheck="false">你好，芯宝
+你好芯宝
+嗯，你好芯宝
+你好芯宝，打开设备</textarea>
+                <label class="field-label" for="generationInstruction">风格提示 <span>可选；仅支持该能力的模型会生效</span></label>
+                <textarea id="generationInstruction" rows="2" placeholder="例如：自然、亲切，像在安静房间中近距离呼唤设备"></textarea>
+                <div class="inline-fields two-columns">
+                  <label><span>每条文本 / 每音色数量</span><input id="generationCount" type="number" min="1" max="1000" value="3" /></label>
+                  <label><span>随机种子</span><input id="generationSeed" type="number" min="0" value="20260804" /></label>
+                </div>
+
+                <div class="range-stack">
+                  <label><span>语速</span><output id="speedOutput">1.00×</output><input id="generationSpeed" type="range" min="0.5" max="2" step="0.05" value="1" /></label>
+                  <label><span>音高</span><output id="pitchOutput">0 st</output><input id="generationPitch" type="range" min="-12" max="12" step="1" value="0" /></label>
+                  <label><span>音量</span><output id="volumeOutput">0 dB</output><input id="generationVolume" type="range" min="-20" max="10" step="1" value="0" /></label>
+                </div>
+
+                <details class="advanced-settings">
+                  <summary>高级参数</summary>
+                  <div class="inline-fields two-columns">
+                    <label><span>前置留白</span><div class="input-suffix"><input id="silenceBefore" type="number" min="0" max="3000" value="350" /><em>ms</em></div></label>
+                    <label><span>后置留白</span><div class="input-suffix"><input id="silenceAfter" type="number" min="0" max="3000" value="500" /><em>ms</em></div></label>
+                    <label><span>任务并发数</span><input id="generationConcurrency" type="number" min="1" max="16" value="3" /></label>
+                    <label><span>命名模板</span><input id="namingPattern" type="text" value="{keyword}_{provider}_{voice}_{index}" /></label>
+                  </div>
+                  <label class="check-row"><input id="generationDeduplicate" type="checkbox" checked /><span>按文本、音色和参数去重，跳过已有样本</span></label>
+                </details>
+
+                <div class="contract-note"><svg><use href="#i-info"></use></svg><p>输出统一转换为 <strong>16 kHz / 单声道 / S16_LE WAV</strong>，并记录厂商、音色、语速、音高、音量和 seed。火山 V1 暂不支持音高调节，选择火山音色时请保持 <strong>0 st</strong>。</p></div>
+                <button id="startGeneration" type="submit" class="button primary full-button"><svg><use href="#i-spark"></use></svg>创建生成任务</button>
+              </form>
+            </div>
+          </section>
+
+          <section class="view" id="view-tasks" data-title="任务中心" data-eyebrow="生成与处理进度">
+            <div class="section-intro">
+              <div><h2>所有耗时操作都有进度和可追溯记录</h2><p>页面会自动刷新运行中的任务，失败项可查看错误后重试。</p></div>
+              <button id="refreshTasks" class="button secondary"><svg><use href="#i-refresh"></use></svg>刷新</button>
+            </div>
+            <div class="filter-tabs" id="taskStatusTabs">
+              <button class="active" data-status="">全部</button><button data-status="running">运行中</button><button data-status="completed">已完成</button><button data-status="failed">失败</button>
+            </div>
+            <article class="panel no-padding"><div id="taskList" class="task-list"><div class="empty-state"><span class="loader"></span><p>正在加载任务…</p></div></div></article>
+          </section>
+
+          <section class="view" id="view-samples" data-title="样本库" data-eyebrow="试听、审核与管理">
+            <div class="section-intro">
+              <div><h2>逐条听，批量管，始终知道样本从哪里来</h2><p>点击样本可查看静态波形、频谱及完整生成参数。</p></div>
+              <button id="openUploadSample" class="button secondary"><svg><use href="#i-upload"></use></svg>导入真人样本</button>
+            </div>
+
+            <article class="panel sample-browser">
+              <div class="filter-grid sample-filters">
+                <label class="search-field wide"><svg><use href="#i-search"></use></svg><input id="sampleSearch" type="search" placeholder="搜索文本、音色、样本 ID 或标签" /></label>
+                <label><span>厂商 / 来源</span><select id="sampleProviderFilter"><option value="">全部</option><option value="volcengine">火山引擎</option><option value="aliyun">阿里云</option><option value="real">真人录音</option></select></label>
+                <label><span>性别</span><select id="sampleGenderFilter"><option value="">全部</option><option value="female">女声</option><option value="male">男声</option><option value="neutral">中性</option><option value="unknown">未知</option></select></label>
+                <label><span>年龄</span><select id="sampleAgeFilter"><option value="">全部</option><option value="child">儿童</option><option value="teen">少年</option><option value="young">青年</option><option value="middle">中年</option><option value="senior">老年</option><option value="unknown">未知</option></select></label>
+                <label><span>类型</span><select id="sampleTypeFilter"><option value="">全部</option><option value="clean">干净原音</option><option value="augmented">增强样本</option><option value="real">真人样本</option></select></label>
+                <label><span>审核</span><select id="sampleReviewFilter"><option value="">全部</option><option value="pending">待人工审核</option><option value="review">自动检查待复核</option><option value="pass">自动检查通过</option><option value="accepted">人工审核通过</option><option value="rejected">已拒绝</option></select></label>
+              </div>
+
+              <div class="bulk-toolbar">
+                <label class="check-row"><input id="selectAllSamples" type="checkbox" /><span>选择当前页</span></label>
+                <span class="selection-label">已选择 <strong id="selectedSampleCount">0</strong> 条</span>
+                <div class="bulk-actions">
+                  <button id="acceptSelectedSamples" class="button quiet compact"><svg><use href="#i-check"></use></svg>通过</button>
+                  <button id="sendSamplesToNoise" class="button quiet compact"><svg><use href="#i-settings"></use></svg>去增强</button>
+                  <button id="exportSelectedSamples" class="button quiet compact"><svg><use href="#i-download"></use></svg>导出</button>
+                  <button id="deleteSelectedSamples" class="button quiet compact danger"><svg><use href="#i-trash"></use></svg>删除</button>
+                </div>
+              </div>
+
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead><tr><th class="check-cell"></th><th>试听 / 文本</th><th>音色</th><th>分类</th><th>音频</th><th>审核</th><th>生成时间</th><th></th></tr></thead>
+                  <tbody id="sampleTableBody"><tr><td colspan="8"><div class="empty-state"><span class="loader"></span><p>正在加载样本…</p></div></td></tr></tbody>
+                </table>
+              </div>
+              <div class="pagination">
+                <span id="sampleRange">—</span>
+                <div><button id="samplePrev" class="icon-button" aria-label="上一页"><svg class="flip"><use href="#i-chevron"></use></svg></button><span id="samplePageLabel">1 / 1</span><button id="sampleNext" class="icon-button" aria-label="下一页"><svg><use href="#i-chevron"></use></svg></button></div>
+              </div>
+            </article>
+          </section>
+
+          <section class="view" id="view-noise" data-title="噪声增强" data-eyebrow="可复现的随机混音">
+            <div class="section-intro">
+              <div><h2>用真实环境噪声，覆盖设备可能遇到的声学条件</h2><p>原始样本保持不变，每条增强样本记录噪声、SNR、偏移和 seed。</p></div>
+              <span id="noiseSampleSelection" class="selection-summary">尚未选择待增强样本</span>
+            </div>
+
+            <div class="noise-layout">
+              <article class="panel">
+                <div class="panel-head"><div><span class="eyebrow">NOISE LIBRARY</span><h3>背景噪声库</h3></div><button id="selectAllNoises" class="button text-button">全选</button></div>
+                <label id="noiseDropzone" class="dropzone">
+                  <input id="noiseFiles" type="file" accept="audio/*,.wav,.pcm,.flac,.mp3" multiple />
+                  <svg><use href="#i-upload"></use></svg><strong>拖入或选择噪声音频</strong><span>支持 WAV / FLAC / MP3；上传后由服务器校验并转换</span>
+                </label>
+                <div id="noiseUploadMeta" class="upload-meta hidden">
+                  <label><span>类别</span><select id="noiseCategory"><option value="home">家庭</option><option value="tv">电视</option><option value="music">音乐</option><option value="office">办公室</option><option value="traffic">交通</option><option value="outdoor">户外</option><option value="device">目标设备</option><option value="other">其他</option></select></label>
+                  <label><span>来源说明</span><input id="noiseSource" type="text" placeholder="例如：客厅连续录音" /></label>
+                  <label><span>许可 / 使用范围</span><input id="noiseLicense" type="text" placeholder="例如：self-recorded / CC BY 4.0" /></label>
+                  <button id="uploadNoises" class="button primary compact">上传所选文件</button>
+                </div>
+                <div id="noiseList" class="noise-list"><div class="empty-inline">暂无噪声文件</div></div>
+              </article>
+
+              <form id="augmentationForm" class="panel augmentation-form">
+                <div class="panel-head"><div><span class="eyebrow">AUGMENTATION</span><h3>增强参数</h3></div></div>
+                <div class="preset-row">
+                  <button type="button" class="preset-button active" data-preset="balanced">通用均衡</button>
+                  <button type="button" class="preset-button" data-preset="farfield">远场困难</button>
+                  <button type="button" class="preset-button" data-preset="light">轻噪保真</button>
+                </div>
+                <div class="inline-fields two-columns">
+                  <label><span>每条原音生成</span><div class="input-suffix"><input id="augmentVariants" type="number" min="1" max="50" value="3" /><em>份</em></div></label>
+                  <label><span>应用概率</span><div class="input-suffix"><input id="augmentProbability" type="number" min="0" max="100" value="100" /><em>%</em></div></label>
+                  <label><span>最低 SNR</span><div class="input-suffix"><input id="snrMin" type="number" min="-20" max="50" value="0" /><em>dB</em></div></label>
+                  <label><span>最高 SNR</span><div class="input-suffix"><input id="snrMax" type="number" min="-20" max="50" value="20" /><em>dB</em></div></label>
+                  <label><span>每条最多叠加噪声</span><input id="maxNoiseLayers" type="number" min="1" max="4" value="1" /></label>
+                  <label><span>随机种子</span><input id="augmentSeed" type="number" min="0" value="20260804" /></label>
+                </div>
+                <label class="field-label" for="peakNormalize">峰值归一化上限</label>
+                <div class="input-suffix"><input id="peakNormalize" type="number" min="-12" max="0" step="0.5" value="-1" /><em>dBFS</em></div>
+                <div class="toggle-stack">
+                  <label class="switch-row"><span><strong>随机噪声起点</strong><small>从长噪声中随机裁剪匹配片段</small></span><input id="randomNoiseOffset" type="checkbox" checked /><i></i></label>
+                  <label class="switch-row"><span><strong>循环短噪声</strong><small>噪声短于语音时平滑循环</small></span><input id="loopShortNoise" type="checkbox" checked /><i></i></label>
+                  <label class="switch-row"><span><strong>保留干净原音</strong><small>增强样本不会替换或覆盖源文件</small></span><input id="preserveClean" type="checkbox" checked /><i></i></label>
+                </div>
+                <div id="augmentationEstimate" class="estimate-box"><span>预计新增</span><strong>0 条增强样本</strong></div>
+                <button type="submit" class="button primary full-button"><svg><use href="#i-settings"></use></svg>开始批量增强</button>
+              </form>
+            </div>
+          </section>
+
+          <section class="view" id="view-export" data-title="导出数据集" data-eyebrow="清单、音频与校验摘要">
+            <div class="section-intro"><div><h2>从已审核样本生成训练可直接读取的数据包</h2><p>导出任务不会改变样本；每份结果包含配置快照和 SHA-256 摘要。</p></div></div>
+            <div class="export-layout">
+              <form id="exportForm" class="panel export-form">
+                <div class="panel-head"><div><span class="eyebrow">EXPORT CONFIG</span><h3>导出配置</h3></div></div>
+                <div class="format-grid">
+                  <label class="radio-card"><input type="radio" name="exportFormat" value="wekws" checked /><span><strong>WeKWS</strong><small>wav.scp / text / label / JSONL</small></span></label>
+                  <label class="radio-card"><input type="radio" name="exportFormat" value="generic" /><span><strong>通用 JSONL</strong><small>单行元数据，保留全部字段</small></span></label>
+                  <label class="radio-card"><input type="radio" name="exportFormat" value="folders" /><span><strong>分类目录</strong><small>split / keyword / WAV 文件结构</small></span></label>
+                </div>
+                <div class="inline-fields two-columns">
+                  <label><span>数据集名称</span><input id="exportDatasetName" type="text" value="ni_hao_xin_bao_v1" /></label>
+                  <label><span>样本范围</span><select id="exportScope"><option value="accepted">全部已审核通过</option><option value="selected">当前选择的样本</option><option value="all">全部样本（不推荐）</option></select></label>
+                </div>
+                <fieldset class="split-fieldset">
+                  <legend>数据划分（同一音色 / 说话人不会跨集合）</legend>
+                  <div class="split-bar"><i id="trainSplitBar" style="width: 80%"></i><i id="devSplitBar" style="width: 10%"></i><i id="testSplitBar" style="width: 10%"></i></div>
+                  <div class="inline-fields three-columns">
+                    <label><span>Train</span><div class="input-suffix"><input id="trainSplit" type="number" min="0" max="100" value="80" /><em>%</em></div></label>
+                    <label><span>Dev</span><div class="input-suffix"><input id="devSplit" type="number" min="0" max="100" value="10" /><em>%</em></div></label>
+                    <label><span>Test</span><div class="input-suffix"><input id="testSplit" type="number" min="0" max="100" value="10" /><em>%</em></div></label>
+                  </div>
+                  <p id="splitValidation" class="field-hint">总计 100%</p>
+                </fieldset>
+                <div class="toggle-stack">
+                  <label class="switch-row"><span><strong>包含增强样本</strong><small>同时导出 clean 与 augmented 样本</small></span><input id="exportAugmented" type="checkbox" checked /><i></i></label>
+                  <label class="switch-row"><span><strong>复制音频文件</strong><small>关闭时清单记录服务器原始绝对路径，仅适合同一台服务器上的训练</small></span><input id="exportAudio" type="checkbox" checked /><i></i></label>
+                  <label class="switch-row"><span><strong>生成校验和</strong><small>输出 SHA256SUMS 与配置快照</small></span><input id="exportChecksums" type="checkbox" checked /><i></i></label>
+                </div>
+                <button type="submit" class="button primary full-button"><svg><use href="#i-box"></use></svg>创建导出任务</button>
+              </form>
+
+              <article class="panel">
+                <div class="panel-head"><div><span class="eyebrow">EXPORT HISTORY</span><h3>导出记录</h3></div><button id="refreshExports" class="button text-button"><svg><use href="#i-refresh"></use></svg>刷新</button></div>
+                <div id="exportList" class="export-list"><div class="empty-state"><p>还没有导出记录</p><span>配置好左侧参数后创建第一份数据集。</span></div></div>
+              </article>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <dialog id="sampleDialog" class="sample-dialog">
+      <form method="dialog" class="dialog-head"><div><span class="eyebrow">AUDIO INSPECTOR</span><h2 id="sampleDialogTitle">样本详情</h2></div><button class="icon-button" value="cancel" aria-label="关闭"><svg><use href="#i-close"></use></svg></button></form>
+      <div class="dialog-content">
+        <div class="audio-inspector">
+          <div class="audio-meta-line"><span id="sampleDialogId">—</span><span id="sampleAudioSummary">—</span></div>
+          <audio id="sampleAudioPlayer" controls preload="metadata"></audio>
+          <div class="canvas-card"><div><strong>波形</strong><span>时域振幅</span></div><canvas id="waveformCanvas" width="1000" height="220"></canvas></div>
+          <div class="canvas-card"><div><strong>频谱</strong><span>0–8 kHz · Hann window</span></div><canvas id="spectrumCanvas" width="1000" height="260"></canvas></div>
+          <div id="audioMetrics" class="metric-row"><span><small>时长</small><strong>—</strong></span><span><small>峰值</small><strong>—</strong></span><span><small>RMS</small><strong>—</strong></span><span><small>采样率</small><strong>—</strong></span></div>
+        </div>
+        <form id="sampleMetadataForm" class="metadata-form">
+          <h3>样本信息</h3>
+          <input id="sampleEditId" type="hidden" />
+          <label><span>文本</span><input id="sampleEditText" type="text" /></label>
+          <label><span>标准标签</span><input id="sampleEditLabel" type="text" value="你好芯宝" /></label>
+          <div class="inline-fields two-columns">
+            <label><span>说话人 / 音色 ID</span><input id="sampleEditSpeaker" type="text" /></label>
+            <label><span>审核状态</span><select id="sampleEditReview"><option value="pending">待审核</option><option value="accepted">已通过</option><option value="rejected">已拒绝</option></select></label>
+            <label><span>性别</span><select id="sampleEditGender"><option value="unknown">未知</option><option value="female">女声</option><option value="male">男声</option><option value="neutral">中性</option></select></label>
+            <label><span>年龄</span><select id="sampleEditAge"><option value="unknown">未知</option><option value="child">儿童</option><option value="teen">少年</option><option value="young">青年</option><option value="middle">中年</option><option value="senior">老年</option></select></label>
+          </div>
+          <label><span>标签 <small>用英文逗号分隔</small></span><input id="sampleEditTags" type="text" /></label>
+          <div id="sampleProvenance" class="provenance-box"></div>
+          <button type="submit" class="button primary full-button"><svg><use href="#i-check"></use></svg>保存元数据</button>
+        </form>
+      </div>
+    </dialog>
+
+    <dialog id="uploadSampleDialog" class="form-dialog">
+      <form method="dialog" class="dialog-head"><div><span class="eyebrow">IMPORT</span><h2>导入真人样本</h2></div><button class="icon-button" value="cancel" aria-label="关闭"><svg><use href="#i-close"></use></svg></button></form>
+      <form id="uploadSampleForm" class="dialog-form">
+        <label class="dropzone compact-dropzone"><input id="sampleUploadFiles" type="file" accept="audio/*,.wav,.pcm,.flac" multiple required /><svg><use href="#i-upload"></use></svg><strong>选择真人录音</strong><span>建议使用 16 kHz / Mono / S16_LE WAV</span></label>
+        <label><span>文本</span><input id="sampleUploadText" type="text" value="你好，芯宝" /></label>
+        <label><span>标准标签</span><input id="sampleUploadLabel" type="text" value="你好芯宝" /></label>
+        <div class="inline-fields two-columns">
+          <label><span>说话人 ID</span><input id="sampleUploadSpeaker" type="text" placeholder="例如 spk_001" required /></label>
+          <label><span>数据划分</span><select id="sampleUploadSplit"><option value="unspecified">暂不划分</option><option value="train">Train</option><option value="dev">Dev</option><option value="test">Test</option></select></label>
+          <label><span>性别</span><select id="sampleUploadGender"><option value="unknown">未知</option><option value="female">女声</option><option value="male">男声</option><option value="neutral">中性</option></select></label>
+          <label><span>年龄</span><select id="sampleUploadAge"><option value="unknown">未知</option><option value="child">儿童</option><option value="teen">少年</option><option value="young">青年</option><option value="middle">中年</option><option value="senior">老年</option></select></label>
+        </div>
+        <button type="submit" class="button primary full-button"><svg><use href="#i-upload"></use></svg>上传并校验</button>
+      </form>
+    </dialog>
+
+    <dialog id="projectSettingsDialog" class="form-dialog">
+      <form method="dialog" class="dialog-head">
+        <div><span class="eyebrow">KWS PROJECT</span><h2>当前 KWS 唤醒词</h2></div>
+        <button class="icon-button" value="cancel" aria-label="关闭唤醒词设置"><svg><use href="#i-close"></use></svg></button>
+      </form>
+      <form id="projectSettingsForm" class="dialog-form project-settings-form">
+        <p class="project-settings-intro">这里只需要填写产品中展示和朗读的唤醒词；训练标签和内部 ID 会由服务器自动规范化生成。</p>
+        <label><span>显示唤醒词</span><input id="projectDisplayText" type="text" maxlength="100" autocomplete="off" value="你好，芯宝" required /></label>
+        <div class="project-derived-grid" aria-label="服务器派生字段">
+          <label><span>训练标签（只读）</span><input id="projectDerivedLabel" type="text" value="你好芯宝" readonly /></label>
+          <label><span>内部 Keyword ID（只读）</span><input id="projectDerivedKeywordId" type="text" value="ni_hao_xin_bao" readonly /></label>
+        </div>
+        <p id="projectDerivedHint" class="settings-help">派生字段以服务器当前保存的配置为准。</p>
+        <div class="settings-notice catalog-notice project-change-notice">
+          <svg><use href="#i-info"></use></svg>
+          <p><strong>只影响后续数据</strong><span>保存后只更新仍保持旧默认值的生成、上传和导出字段，已经手动编辑的内容会保留；已有样本及历史任务不会被重写。</span></p>
+        </div>
+        <button type="submit" class="button primary full-button"><svg><use href="#i-check"></use></svg>保存唤醒词设置</button>
+      </form>
+    </dialog>
+
+    <dialog id="providerSettingsDialog" class="provider-settings-dialog">
+      <form method="dialog" class="dialog-head">
+        <div><span class="eyebrow">PROVIDER SETTINGS</span><h2>供应商设置</h2></div>
+        <button class="icon-button" value="cancel" aria-label="关闭供应商设置"><svg><use href="#i-close"></use></svg></button>
+      </form>
+      <div class="provider-settings-content">
+        <div class="settings-notice warning-notice">
+          <svg><use href="#i-info"></use></svg>
+          <p><strong>局域网 HTTP 安全提示</strong><span>监听非回环地址前必须配置应用访问令牌，但令牌不会加密传输。跨网段或多人使用时必须部署 HTTPS 反向代理和正式认证。</span></p>
+        </div>
+        <div class="settings-notice catalog-notice">
+          <svg><use href="#i-info"></use></svg>
+          <p><strong>音色目录说明</strong><span>内置回退音色无需账号凭据；阿里凭据用于追加 Workspace 自定义音色。火山使用 AK / SK 查询 Seed-TTS 1.0 公共音色，并结合 AppID 查询本账号已购买或复刻的音色；Access Token 只用于合成。目录中可见不代表账号已获得公版音色的合成授权。</span></p>
+        </div>
+
+        <div class="provider-settings-tabs" role="tablist" aria-label="供应商">
+          <button type="button" class="active" data-provider-settings-tab="aliyun" role="tab" aria-selected="true">阿里云</button>
+          <button type="button" data-provider-settings-tab="volcengine" role="tab" aria-selected="false">火山引擎</button>
+        </div>
+
+        <section class="provider-settings-panel active" data-provider-settings-panel="aliyun" role="tabpanel">
+          <form id="aliyunSettingsForm" class="provider-settings-form" data-provider-settings-form="aliyun">
+            <div class="settings-provider-head">
+              <div class="provider-logo aliyun">阿</div>
+              <div><h3>阿里云 Model Studio</h3><p>用于语音合成，并同步当前 Workspace 下的复刻和设计音色。</p></div>
+              <span id="aliyunSettingsState" class="provider-state">未配置</span>
+            </div>
+            <div class="settings-fields two-columns">
+              <label><span>API Key</span><input id="aliyunApiKey" type="password" autocomplete="new-password" placeholder="尚未配置" /><small id="aliyunApiKeyState" class="secret-state">未配置；保存后不会回填</small></label>
+              <label><span>Workspace ID</span><input id="aliyunWorkspaceId" type="text" autocomplete="off" placeholder="例如 ws-xxxxxxxx" /></label>
+              <label><span>地域（当前固定）</span><input id="aliyunRegion" type="text" value="cn-beijing" readonly /><small class="field-note">当前 V1 阿里合成 HTTP 接口仅支持北京地域。</small></label>
+            </div>
+            <details class="settings-advanced">
+              <summary>高级端点设置</summary>
+              <div class="settings-fields two-columns">
+                <label><span>合成 Endpoint</span><input id="aliyunEndpoint" type="url" autocomplete="off" placeholder="留空使用官方默认地址" /></label>
+                <label><span>自定义音色 Endpoint</span><input id="aliyunCustomizationEndpoint" type="url" autocomplete="off" placeholder="留空使用北京地域默认地址" /></label>
+              </div>
+            </details>
+            <p class="settings-help">API Key 留空保存会保留服务器中已有值；公共预置音色无需填写账号信息。当前合成接口固定使用北京地域。</p>
+            <div class="settings-actions">
+              <button type="button" class="button quiet danger" data-clear-provider="aliyun">清空配置</button>
+              <button type="button" class="button secondary" data-test-provider="aliyun" title="检查服务器中已经保存的配置，不会调用云端">检查已保存配置</button>
+              <button type="submit" class="button primary">保存阿里云设置</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="provider-settings-panel" data-provider-settings-panel="volcengine" role="tabpanel" hidden>
+          <form id="volcengineSettingsForm" class="provider-settings-form" data-provider-settings-form="volcengine">
+            <div class="settings-provider-head">
+              <div class="provider-logo volcengine">火</div>
+              <div><h3>火山引擎语音技术</h3><p>AppID / Token 用于合成；AK / SK 用于公共目录，并与 AppID 一起查询账号复刻音色。</p></div>
+              <span id="volcengineSettingsState" class="provider-state">未配置</span>
+            </div>
+
+            <fieldset class="settings-fieldset">
+              <legend>① 语音合成凭据</legend>
+              <p>AppID / Access Token 只用于调用 TTS 合成，不能查询公共音色目录。</p>
+              <div class="settings-fields two-columns">
+                <label><span>App ID</span><input id="volcengineAppId" type="text" autocomplete="off" placeholder="控制台中的 AppID" /></label>
+                <label><span>Access Token</span><input id="volcengineAccessToken" type="password" autocomplete="new-password" placeholder="尚未配置" /><small id="volcengineAccessTokenState" class="secret-state">未配置；保存后不会回填</small></label>
+                <label><span>Cluster</span><input id="volcengineCluster" type="text" autocomplete="off" value="volcano_tts" /></label>
+                <label><span>合成 Endpoint</span><input id="volcengineEndpoint" type="url" autocomplete="off" placeholder="留空使用官方默认地址" /></label>
+              </div>
+            </fieldset>
+
+            <fieldset class="settings-fieldset">
+              <legend>② 公共与账号音色目录凭据</legend>
+              <p>Access Key / Secret Key 用于查询 Seed-TTS 1.0 公共目录；同时填写 AppID 后，还会按官方 AppID 版接口查询本账号已购买或复刻的音色。公版目录可见只代表能查询，不代表 AppID 已获得相应音色的合成授权。</p>
+              <div class="settings-fields two-columns">
+                <label><span>Access Key ID</span><input id="volcengineAccessKeyId" type="text" autocomplete="off" placeholder="IAM Access Key ID" /></label>
+                <label><span>Access Key Secret</span><input id="volcengineAccessKeySecret" type="password" autocomplete="new-password" placeholder="尚未配置" /><small id="volcengineAccessKeySecretState" class="secret-state">未配置；保存后不会回填</small></label>
+              </div>
+            </fieldset>
+
+            <p class="settings-help">所有密钥留空保存都会保留服务器中已有值；不填 AK / SK 时仅使用内置回退音色。公共目录需要 AK / SK，账号复刻音色还需要 AppID。</p>
+            <div class="settings-actions">
+              <button type="button" class="button quiet danger" data-clear-provider="volcengine">清空配置</button>
+              <button type="button" class="button secondary" data-test-provider="volcengine" title="检查服务器中已经保存的配置，不会调用云端">检查已保存配置</button>
+              <button type="submit" class="button primary">保存火山设置</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </dialog>
+
+    <div id="confirmOverlay" class="confirm-overlay hidden" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
+      <div class="confirm-box"><div class="confirm-icon"><svg><use href="#i-trash"></use></svg></div><h3 id="confirmTitle">确认操作</h3><p id="confirmMessage"></p><div><button id="confirmCancel" class="button secondary">取消</button><button id="confirmAccept" class="button danger-fill">确认</button></div></div>
+    </div>
+    <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
