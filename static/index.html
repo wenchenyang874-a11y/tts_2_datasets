@@ -40,7 +40,7 @@
           <div class="brand-mark"><span></span><span></span><span></span></div>
           <div>
             <strong>语音数据集工坊</strong>
-            <small>社区项目 · 非官方</small>
+            <small>TTS Dataset Studio</small>
           </div>
         </div>
 
@@ -62,6 +62,12 @@
           </button>
           <button class="nav-item" data-view="export">
             <svg><use href="#i-box"></use></svg><span>导出数据集</span>
+          </button>
+          <button class="nav-item" data-view="providers">
+            <svg><use href="#i-settings"></use></svg><span>供应商设置</span>
+          </button>
+          <button class="nav-item" data-view="guide">
+            <svg><use href="#i-info"></use></svg><span>使用说明</span>
           </button>
         </nav>
 
@@ -88,7 +94,7 @@
           </div>
           <div class="topbar-actions">
             <span class="contract-chip">16 kHz · Mono · S16_LE</span>
-            <button id="providerSettingsButton" class="button secondary compact" title="配置阿里云与火山引擎账号信息">
+            <button id="providerSettingsButton" class="button secondary compact" title="打开阿里云与火山引擎供应商设置页">
               <svg><use href="#i-settings"></use></svg><span>供应商设置</span>
             </button>
             <button id="accessTokenButton" class="button secondary compact" title="设置仅保存在当前浏览器会话中的访问令牌">
@@ -163,7 +169,7 @@
 
           <section class="view" id="view-generate" data-title="生成语音" data-eyebrow="多音色批量合成">
             <div class="section-intro">
-              <div><h2>选择音色，配置一批可复现的合成样本</h2><p>云服务账号信息可在“供应商设置”中填写；密钥保存到服务端，不会在页面中回填。</p></div>
+              <div><h2>选择音色，配置一批可复现的合成样本</h2><p>云服务账号信息可在“供应商设置”中填写；密钥保存到当前服务器，不会在页面中回填。</p></div>
               <div id="generationEstimate" class="estimate-chip"><strong>0</strong><span>预计生成样本</span></div>
             </div>
 
@@ -191,35 +197,59 @@
                 <label class="field-label" for="generationTexts">文本模板 <span>每行一条；默认使用项目唤醒词</span></label>
                 <textarea id="generationTexts" rows="5" spellcheck="false">你好，小助手
 你好小助手
-嗯，你好，小助手
+嗯，你好小助手
 你好小助手，打开设备</textarea>
                 <label class="field-label" for="generationInstruction">风格提示 <span>可选；仅支持该能力的模型会生效</span></label>
                 <textarea id="generationInstruction" rows="2" placeholder="例如：自然、亲切，像在安静房间中近距离呼唤设备"></textarea>
                 <div class="inline-fields two-columns">
                   <label><span>每条文本 / 每音色数量</span><input id="generationCount" type="number" min="1" max="1000" value="3" /></label>
                   <label><span>随机种子</span><input id="generationSeed" type="number" min="0" value="20260804" /></label>
+                  <label><span>样本目标类型</span><select id="generationTargetKind"><option value="positive">正样本（目标唤醒词）</option><option value="negative">负样本（混淆词 / 非目标）</option></select></label>
+                  <label><span>后端子任务并发上限</span><input id="generationConcurrency" type="number" min="1" max="16" value="3" /><small class="field-note">由后端统一调度，任务中心显示实际执行数。</small></label>
                 </div>
 
                 <div class="range-stack">
                   <label><span>语速</span><output id="speedOutput">1.00×</output><input id="generationSpeed" type="range" min="0.5" max="2" step="0.05" value="1" /></label>
                   <label><span>音高</span><output id="pitchOutput">0 st</output><input id="generationPitch" type="range" min="-12" max="12" step="1" value="0" /></label>
-                  <label><span>音量</span><output id="volumeOutput">0 dB</output><input id="generationVolume" type="range" min="-20" max="10" step="1" value="0" /></label>
+                  <label><span>供应商音量级</span><output id="volumeOutput">50 / 100</output><input id="generationVolume" type="range" min="0" max="100" step="1" value="50" /></label>
                 </div>
+
+                <div class="random-parameter-grid">
+                  <fieldset class="random-parameter" id="randomSpeedGroup">
+                    <label class="check-row"><input id="randomSpeed" type="checkbox" /><span>随机语速</span></label>
+                    <div class="random-range"><label><span>最小</span><input id="speedMin" type="number" min="0.5" max="2" step="0.05" value="0.85" /></label><label><span>最大</span><input id="speedMax" type="number" min="0.5" max="2" step="0.05" value="1.15" /></label></div>
+                  </fieldset>
+                  <fieldset class="random-parameter" id="randomPitchGroup">
+                    <label class="check-row"><input id="randomPitch" type="checkbox" /><span>随机音高</span></label>
+                    <div class="random-range"><label><span>最小</span><div class="input-suffix"><input id="pitchMin" type="number" min="-12" max="12" step="1" value="-2" /><em>st</em></div></label><label><span>最大</span><div class="input-suffix"><input id="pitchMax" type="number" min="-12" max="12" step="1" value="2" /><em>st</em></div></label></div>
+                    <small id="volcPitchHint" class="field-note hidden">当前批次包含火山音色：火山 V1 不支持音高调节，本批次固定为 0 st。</small>
+                  </fieldset>
+                  <fieldset class="random-parameter" id="randomVolumeGroup">
+                    <label class="check-row"><input id="randomVolume" type="checkbox" /><span>随机音量</span></label>
+                    <div class="random-range"><label><span>最小</span><div class="input-suffix"><input id="volumeMin" type="number" min="0" max="100" step="1" value="40" /><em>相对级</em></div></label><label><span>最大</span><div class="input-suffix"><input id="volumeMax" type="number" min="0" max="100" step="1" value="60" /><em>相对级</em></div></label></div>
+                  </fieldset>
+                </div>
+
+                <fieldset class="provider-audio-settings">
+                  <legend>供应商请求音频</legend>
+                  <p>这里控制云厂商返回格式；服务器入库前仍统一转换为 <strong>16 kHz / 单声道 / S16_LE WAV</strong>。</p>
+                  <div class="provider-audio-grid">
+                    <div><strong>阿里云</strong><label><span>格式</span><select id="aliyunAudioFormat"><option value="wav">WAV</option><option value="mp3">MP3</option></select></label><label><span>采样率</span><select id="aliyunSampleRate"><option value="8000">8 kHz</option><option value="16000" selected>16 kHz</option><option value="24000">24 kHz</option><option value="48000">48 kHz</option></select></label></div>
+                    <div><strong>火山引擎</strong><label><span>格式</span><select id="volcengineAudioFormat"><option value="wav">WAV</option><option value="mp3">MP3</option><option value="ogg_opus">OGG Opus</option></select></label><label><span>采样率</span><select id="volcengineSampleRate"><option value="8000">8 kHz</option><option value="16000" selected>16 kHz</option><option value="24000">24 kHz</option></select></label></div>
+                  </div>
+                </fieldset>
 
                 <details class="advanced-settings">
                   <summary>高级参数</summary>
                   <div class="inline-fields two-columns">
                     <label><span>前置留白</span><div class="input-suffix"><input id="silenceBefore" type="number" min="0" max="3000" value="350" /><em>ms</em></div></label>
                     <label><span>后置留白</span><div class="input-suffix"><input id="silenceAfter" type="number" min="0" max="3000" value="500" /><em>ms</em></div></label>
-                    <label><span>任务并发数</span><input id="generationConcurrency" type="number" min="1" max="16" value="3" /></label>
                     <label><span>命名模板</span><input id="namingPattern" type="text" value="{keyword}_{provider}_{voice}_{index}" /></label>
                   </div>
                   <label class="check-row"><input id="generationDeduplicate" type="checkbox" checked /><span>按文本、音色和参数去重，跳过已有样本</span></label>
                 </details>
 
-                <div class="contract-note billing-warning"><svg><use href="#i-info"></use></svg><p><strong>云端 TTS 可能产生费用。</strong>本工具是自托管客户端，不代收、代付或控制云厂商账单。实际费用、免费额度和退款规则以凭据所属云账号及厂商控制台为准。</p></div>
-                <label class="check-row billing-acknowledgement"><input id="generationCostAcknowledgement" type="checkbox" /><span>使用云端音色时，我确认有权使用所填凭据，并承担该账号产生的全部云服务费用。</span></label>
-                <div class="contract-note"><svg><use href="#i-info"></use></svg><p>输出统一转换为 <strong>16 kHz / 单声道 / S16_LE WAV</strong>，并记录厂商、音色、语速、音高、音量和 seed。火山 V1 暂不支持音高调节，选择火山音色时请保持 <strong>0 st</strong>。</p></div>
+                <div class="contract-note billing-warning"><svg><use href="#i-info"></use></svg><p>云端 TTS 可能产生费用。任务中心显示的金额均为<strong>预估费用，以厂商账单为准</strong>；创建一个批次只发起一次后端调度请求。</p></div>
                 <button id="startGeneration" type="submit" class="button primary full-button"><svg><use href="#i-spark"></use></svg>创建生成任务</button>
               </form>
             </div>
@@ -233,6 +263,7 @@
             <div class="filter-tabs" id="taskStatusTabs">
               <button class="active" data-status="">全部</button><button data-status="running">运行中</button><button data-status="completed">已完成</button><button data-status="failed">失败</button>
             </div>
+            <div class="contract-note task-cost-note"><svg><use href="#i-info"></use></svg><p>生成批次按“总任务 → 每条文本子任务”展示；排队、执行和总耗时分开计算。金额均为<strong>预估费用，以厂商账单为准</strong>。</p></div>
             <article class="panel no-padding"><div id="taskList" class="task-list"><div class="empty-state"><span class="loader"></span><p>正在加载任务…</p></div></div></article>
           </section>
 
@@ -245,6 +276,9 @@
             <article class="panel sample-browser">
               <div class="filter-grid sample-filters">
                 <label class="search-field wide"><svg><use href="#i-search"></use></svg><input id="sampleSearch" type="search" placeholder="搜索文本、音色、样本 ID 或标签" /></label>
+                <label><span>唤醒词隔离</span><select id="sampleKeywordFilter"><option value="">全部唤醒词</option></select></label>
+                <label><span>目标类型</span><select id="sampleTargetKindFilter"><option value="">全部类型</option><option value="positive">正样本</option><option value="negative">负样本</option><option value="background">背景噪声</option></select></label>
+                <label><span>生成总任务</span><select id="sampleJobFilter"><option value="">全部任务</option></select></label>
                 <label><span>厂商 / 来源</span><select id="sampleProviderFilter"><option value="">全部</option><option value="volcengine">火山引擎</option><option value="aliyun">阿里云</option><option value="real">真人录音</option></select></label>
                 <label><span>性别</span><select id="sampleGenderFilter"><option value="">全部</option><option value="female">女声</option><option value="male">男声</option><option value="neutral">中性</option><option value="unknown">未知</option></select></label>
                 <label><span>年龄</span><select id="sampleAgeFilter"><option value="">全部</option><option value="child">儿童</option><option value="teen">少年</option><option value="young">青年</option><option value="middle">中年</option><option value="senior">老年</option><option value="unknown">未知</option></select></label>
@@ -254,6 +288,8 @@
 
               <div class="bulk-toolbar">
                 <label class="check-row"><input id="selectAllSamples" type="checkbox" /><span>选择当前页</span></label>
+                <button id="selectFilteredSamples" class="button quiet compact" type="button"><svg><use href="#i-check"></use></svg>全选当前筛选</button>
+                <button id="clearSelectedSamples" class="button quiet compact" type="button">清空选择</button>
                 <span class="selection-label">已选择 <strong id="selectedSampleCount">0</strong> 条</span>
                 <div class="bulk-actions">
                   <button id="acceptSelectedSamples" class="button quiet compact"><svg><use href="#i-check"></use></svg>通过</button>
@@ -271,7 +307,7 @@
               </div>
               <div class="pagination">
                 <span id="sampleRange">—</span>
-                <div><button id="samplePrev" class="icon-button" aria-label="上一页"><svg class="flip"><use href="#i-chevron"></use></svg></button><span id="samplePageLabel">1 / 1</span><button id="sampleNext" class="icon-button" aria-label="下一页"><svg><use href="#i-chevron"></use></svg></button></div>
+                <div><button id="samplePrev" class="icon-button" aria-label="上一页"><svg class="flip"><use href="#i-chevron"></use></svg></button><span id="samplePageLabel">1 / 1</span><label class="page-jump"><span>跳至</span><input id="samplePageInput" type="number" min="1" value="1" inputmode="numeric" aria-label="输入页码" /><button id="sampleGoPage" type="button">页</button></label><button id="sampleNext" class="icon-button" aria-label="下一页"><svg><use href="#i-chevron"></use></svg></button></div>
               </div>
             </article>
           </section>
@@ -284,9 +320,9 @@
 
             <div class="noise-layout">
               <article class="panel">
-                <div class="panel-head"><div><span class="eyebrow">NOISE LIBRARY</span><h3>背景噪声库</h3></div><button id="selectAllNoises" class="button text-button">全选</button></div>
+                <div class="panel-head wrap"><div><span class="eyebrow">NOISE LIBRARY</span><h3>背景噪声库</h3></div><div class="panel-head-actions"><button id="selectAllNoises" class="button text-button">全选</button><button id="materializeNoises" class="button secondary compact" type="button"><svg><use href="#i-check"></use></svg>加入当前唤醒词样本库</button></div></div>
                 <label id="noiseDropzone" class="dropzone">
-                  <input id="noiseFiles" type="file" accept="audio/*,.wav,.pcm,.flac,.mp3" multiple />
+                  <input id="noiseFiles" type="file" accept="audio/*,.wav,.flac,.mp3,.ogg,.m4a,.mp4" multiple />
                   <svg><use href="#i-upload"></use></svg><strong>拖入或选择噪声音频</strong><span>支持 WAV / FLAC / MP3；上传后由服务器校验并转换</span>
                 </label>
                 <div id="noiseUploadMeta" class="upload-meta hidden">
@@ -355,6 +391,7 @@
                   <label class="switch-row"><span><strong>复制音频文件</strong><small>关闭时清单记录服务器原始绝对路径，仅适合同一台服务器上的训练</small></span><input id="exportAudio" type="checkbox" checked /><i></i></label>
                   <label class="switch-row"><span><strong>生成校验和</strong><small>输出 SHA256SUMS 与配置快照</small></span><input id="exportChecksums" type="checkbox" checked /><i></i></label>
                 </div>
+                <div class="contract-note"><svg><use href="#i-info"></use></svg><p>正样本、负样本和背景噪声样本会在导出清单中保留 <strong>target_kind</strong> 标注；请在训练读取器中按该字段构造目标。</p></div>
                 <button type="submit" class="button primary full-button"><svg><use href="#i-box"></use></svg>创建导出任务</button>
               </form>
 
@@ -363,6 +400,27 @@
                 <div id="exportList" class="export-list"><div class="empty-state"><p>还没有导出记录</p><span>配置好左侧参数后创建第一份数据集。</span></div></div>
               </article>
             </div>
+          </section>
+
+          <section class="view" id="view-providers" data-title="供应商设置" data-eyebrow="账号、凭据与音色目录">
+            <div class="section-intro">
+              <div><h2>在当前服务器配置 TTS 供应商</h2><p>密钥保存到服务器且不会回填明文；不会在这个页面主动发起计费合成。</p></div>
+              <button id="reloadProviderSettings" class="button secondary"><svg><use href="#i-refresh"></use></svg>重新读取</button>
+            </div>
+            <article id="providerSettingsPageMount" class="panel provider-settings-page"><div class="empty-state"><span class="loader"></span><p>正在准备供应商设置…</p></div></article>
+          </section>
+
+          <section class="view" id="view-guide" data-title="使用说明" data-eyebrow="录音、生成、审核与导出">
+            <div class="section-intro"><div><h2>从一条语音到可训练数据集</h2><p>建议先用小批次验证读音和账号权限，再扩大数量。</p></div></div>
+            <div class="guide-grid">
+              <article class="panel guide-card"><b>01</b><h3>配置唤醒词与供应商</h3><p>侧边栏底部可修改当前唤醒词。供应商页保存阿里和火山凭据，音色目录可见不等于账号已获得合成授权。</p></article>
+              <article class="panel guide-card"><b>02</b><h3>生成正样本与负样本</h3><p>一次提交形成一个总任务，每条文本是子任务。并发由后端执行；随机语速、音高、音量都会记录边界和 seed。</p></article>
+              <article class="panel guide-card"><b>03</b><h3>浏览器录制真人音频</h3><p>录音需要 HTTPS 或浏览器认可的安全上下文，并需授予麦克风权限。录制后先试听，再以正样本、负样本或背景样本上传。</p></article>
+              <article class="panel guide-card"><b>04</b><h3>隔离、审核与全选</h3><p>样本库默认按当前唤醒词隔离。切换唤醒词会清空已选集合；“全选当前筛选”会跨页获取全部匹配 ID。</p></article>
+              <article class="panel guide-card"><b>05</b><h3>噪声与数据增强</h3><p>噪声库用于可复现混音；也可将选中噪声物化为当前唤醒词的背景噪声样本，用于连续负例和 FAR 评估。</p></article>
+              <article class="panel guide-card"><b>06</b><h3>导出与费用说明</h3><p>导出保留 keyword_id、target_kind 和来源总任务。页面金额均为<strong>预估费用，以厂商账单为准</strong>；建议为云账号设置预算和告警。</p></article>
+            </div>
+            <article class="panel guide-contract"><h3>固定入库音频契约</h3><p>无论厂商请求 WAV、MP3 或 OGG Opus，服务器最终入库文件均为 <strong>16,000 Hz / 单声道 / 16-bit signed little-endian PCM WAV</strong>。浏览器录音的 WebM/Opus 也会在上传后转换和校验。裸 PCM 没有自描述参数，请先转为 WAV 再上传。</p></article>
           </section>
         </main>
       </div>
@@ -399,10 +457,25 @@
     <dialog id="uploadSampleDialog" class="form-dialog">
       <form method="dialog" class="dialog-head"><div><span class="eyebrow">IMPORT</span><h2>导入真人样本</h2></div><button class="icon-button" value="cancel" aria-label="关闭"><svg><use href="#i-close"></use></svg></button></form>
       <form id="uploadSampleForm" class="dialog-form">
-        <label class="dropzone compact-dropzone"><input id="sampleUploadFiles" type="file" accept="audio/*,.wav,.pcm,.flac" multiple required /><svg><use href="#i-upload"></use></svg><strong>选择真人录音</strong><span>建议使用 16 kHz / Mono / S16_LE WAV</span></label>
+        <div class="record-source-grid">
+          <label class="dropzone compact-dropzone"><input id="sampleUploadFiles" type="file" accept="audio/*,.wav,.flac,.mp3,.webm,.ogg,.m4a,.mp4" multiple /><svg><use href="#i-upload"></use></svg><strong>选择本地音频</strong><span>WAV / FLAC / MP3 / WebM / OGG / M4A；上传后统一转换</span></label>
+          <section id="browserRecorder" class="browser-recorder">
+            <div class="recorder-head"><div><strong>网页麦克风录音</strong><small id="recordingSupportText">正在检查浏览器能力…</small></div><time id="recordingTimer">00:00.0</time></div>
+            <div class="recording-level" aria-label="录音电平"><i id="recordingLevelBar"></i></div>
+            <div class="recorder-actions">
+              <button id="startRecording" type="button" class="button primary compact">开始录音</button>
+              <button id="stopRecording" type="button" class="button secondary compact" disabled>停止</button>
+              <button id="resetRecording" type="button" class="button quiet compact" disabled>重录</button>
+            </div>
+            <audio id="recordingPreview" class="hidden" controls preload="metadata"></audio>
+            <p id="recordingStatus" class="field-note">允许 0.2–30 秒；KWS 建议录制一次简短、完整的发音，完成后先试听再上传。</p>
+          </section>
+        </div>
+        <div id="recordingSecurityNotice" class="settings-notice warning-notice hidden"><svg><use href="#i-info"></use></svg><p><strong>当前不是安全上下文</strong><span>局域网 HTTP 页面通常无法调用麦克风。请部署 HTTPS，或使用本地文件选择器上传。</span></p></div>
         <label><span>文本</span><input id="sampleUploadText" type="text" value="你好，小助手" /></label>
         <label><span>标准标签</span><input id="sampleUploadLabel" type="text" value="你好小助手" /></label>
         <div class="inline-fields two-columns">
+          <label><span>样本目标类型</span><select id="sampleUploadTargetKind"><option value="positive">正样本</option><option value="negative">负样本</option><option value="background">背景噪声</option></select></label>
           <label><span>说话人 ID</span><input id="sampleUploadSpeaker" type="text" placeholder="例如 spk_001" required /></label>
           <label><span>数据划分</span><select id="sampleUploadSplit"><option value="unspecified">暂不划分</option><option value="train">Train</option><option value="dev">Dev</option><option value="test">Test</option></select></label>
           <label><span>性别</span><select id="sampleUploadGender"><option value="unknown">未知</option><option value="female">女声</option><option value="male">男声</option><option value="neutral">中性</option></select></label>
@@ -441,7 +514,7 @@
       <div class="provider-settings-content">
         <div class="settings-notice warning-notice">
           <svg><use href="#i-info"></use></svg>
-          <p><strong>局域网 HTTP 安全提示</strong><span>监听非回环地址前必须配置应用访问令牌，但令牌不会加密传输。跨网段或多人使用时必须部署 HTTPS 反向代理和正式认证。</span></p>
+          <p><strong>局域网 HTTP 安全提示</strong><span>当前页面若通过 HTTP 访问，账号密钥在传输途中不会被 TLS 加密。只在可信局域网使用，正式环境建议在服务前增加 HTTPS 反向代理。</span></p>
         </div>
         <div class="settings-notice catalog-notice">
           <svg><use href="#i-info"></use></svg>
@@ -472,6 +545,15 @@
                 <label><span>自定义音色 Endpoint</span><input id="aliyunCustomizationEndpoint" type="url" autocomplete="off" placeholder="留空使用北京地域默认地址" /></label>
               </div>
             </details>
+            <fieldset class="settings-fieldset pricing-settings">
+              <legend>预估费用配置</legend>
+              <p>只用于页面估算，不代表供应商实际计费。<strong>预估费用，以厂商账单为准</strong>；三项未完整配置时，任务金额显示“未配置”。</p>
+              <div class="settings-fields two-columns">
+                <label><span>计费单位</span><select id="aliyunPricingUnit"><option value="">不配置</option><option value="per_call">每次合成调用</option><option value="per_1k_chars">每千字符</option></select></label>
+                <label><span>单价</span><input id="aliyunPricingRate" type="number" min="0" step="any" inputmode="decimal" placeholder="例如 0.01" /></label>
+                <label><span>币种</span><input id="aliyunPricingCurrency" type="text" maxlength="16" autocomplete="off" placeholder="例如 CNY" /></label>
+              </div>
+            </fieldset>
             <p class="settings-help">API Key 留空保存会保留服务器中已有值；公共预置音色无需填写账号信息。当前合成接口固定使用北京地域。</p>
             <div class="settings-actions">
               <button type="button" class="button quiet danger" data-clear-provider="aliyun">清空配置</button>
@@ -509,7 +591,17 @@
               </div>
             </fieldset>
 
-            <p class="settings-help">所有密钥留空保存都会保留服务器中已有值；不填 AK / SK 时仅使用内置回退音色。公共目录需要 AK / SK，账号复刻音色还需要 AppID。</p>
+            <fieldset class="settings-fieldset pricing-settings">
+              <legend>③ 预估费用配置</legend>
+              <p>只用于页面估算，不代表供应商实际计费。<strong>预估费用，以厂商账单为准</strong>；三项未完整配置时，任务金额显示“未配置”。</p>
+              <div class="settings-fields two-columns">
+                <label><span>计费单位</span><select id="volcenginePricingUnit"><option value="">不配置</option><option value="per_call">每次合成调用</option><option value="per_1k_chars">每千字符</option></select></label>
+                <label><span>单价</span><input id="volcenginePricingRate" type="number" min="0" step="any" inputmode="decimal" placeholder="例如 0.01" /></label>
+                <label><span>币种</span><input id="volcenginePricingCurrency" type="text" maxlength="16" autocomplete="off" placeholder="例如 CNY" /></label>
+              </div>
+            </fieldset>
+
+            <p class="settings-help">所有密钥留空保存都会保留服务器中已有值；不填 AK / SK 时仅使用内置回退音色。公共目录需要 AK / SK，账号复刻音色还需要 AppID。高级 Endpoint 默认只允许当前适配器使用的供应商官方主机；自建代理需由服务器管理员显式启用。</p>
             <div class="settings-actions">
               <button type="button" class="button quiet danger" data-clear-provider="volcengine">清空配置</button>
               <button type="button" class="button secondary" data-test-provider="volcengine" title="检查服务器中已经保存的配置，不会调用云端">检查已保存配置</button>

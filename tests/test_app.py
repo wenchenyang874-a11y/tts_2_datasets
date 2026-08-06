@@ -11,6 +11,7 @@ import sqlite3
 import stat
 import sys
 import tempfile
+import threading
 import time
 import wave
 import zipfile
@@ -27,6 +28,13 @@ os.environ.pop("TTS_APP_API_TOKEN", None)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app as app_module  # type: ignore  # noqa: E402
+
+
+def test_wekws_keyword_token_is_one_ascii_symbol() -> None:
+    assert app_module._wekws_keyword_token("ni_hao_xiao_zhu_shou") == "<NI_HAO_XIAO_ZHU_SHOU>"
+    fallback = app_module._wekws_keyword_token("你好小助手")
+    assert fallback.startswith("<KWS_") and fallback.endswith(">")
+    assert fallback.isascii() and " " not in fallback
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -90,6 +98,9 @@ def test_legacy_noise_table_migrates_deleted_at() -> None:
             """
         )
     migrated = app_module.Database(database_path)
+    # Production startup may execute initialization repeatedly; migrations
+    # must remain idempotent after the first schema upgrade.
+    app_module.Database(database_path)
     with migrated.connect() as connection:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(noises)")}
     assert {"metadata_json", "deleted_at"} <= columns
@@ -116,6 +127,74 @@ def test_legacy_export_table_migrates_deleted_at() -> None:
     assert "idx_exports_active" in indexes
 
 
+def test_legacy_sample_and_task_tables_gain_batch_and_semantic_columns() -> None:
+    database_path = TEST_DATA_DIR / "legacy-batch-and-semantics.sqlite3"
+    with sqlite3.connect(database_path) as legacy:
+        legacy.executescript(
+            """
+            CREATE TABLE samples (
+                id TEXT PRIMARY KEY, provider TEXT NOT NULL, voice_id TEXT NOT NULL,
+                voice_name TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+                text TEXT NOT NULL, label TEXT NOT NULL, keyword_id TEXT NOT NULL,
+                speed REAL NOT NULL, pitch REAL NOT NULL, volume INTEGER NOT NULL,
+                seed INTEGER NOT NULL, file_path TEXT NOT NULL, duration REAL NOT NULL,
+                sample_rate INTEGER NOT NULL, channels INTEGER NOT NULL,
+                sha256 TEXT NOT NULL, parent_id TEXT, noise_id TEXT, snr_db REAL,
+                split TEXT NOT NULL, quality_status TEXT NOT NULL, notes TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                target_kind TEXT NOT NULL DEFAULT 'positive',
+                created_at TEXT NOT NULL, deleted_at TEXT
+            );
+            CREATE TABLE tasks (
+                id TEXT PRIMARY KEY, type TEXT NOT NULL, status TEXT NOT NULL,
+                total INTEGER NOT NULL, completed INTEGER NOT NULL DEFAULT 0,
+                failed INTEGER NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}', result_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            INSERT INTO samples(
+                id,provider,voice_id,text,label,keyword_id,speed,pitch,volume,seed,
+                file_path,duration,sample_rate,channels,sha256,split,quality_status,
+                notes,metadata_json,target_kind,created_at
+            ) VALUES(
+                'legacy-noise','noise','room','room','__noise__','legacy_kw',1,1,50,0,
+                '/tmp/legacy.wav',1,16000,1,'legacy-sha','unassigned','pass','',
+                '{}','noise','2026-01-01T00:00:00+00:00'
+            );
+            """
+        )
+
+    migrated = app_module.Database(database_path)
+    app_module.Database(database_path)
+    with migrated.connect() as connection:
+        sample_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(samples)")
+        }
+        task_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(tasks)")
+        }
+        sample_indexes = {
+            row["name"] for row in connection.execute("PRAGMA index_list(samples)")
+        }
+        task_indexes = {
+            row["name"] for row in connection.execute("PRAGMA index_list(tasks)")
+        }
+        semantic_row = connection.execute(
+            "SELECT target_kind,source_kind,variant_kind FROM samples WHERE id='legacy-noise'"
+        ).fetchone()
+
+    assert {
+        "target_kind", "source_kind", "variant_kind", "origin_task_id", "origin_job_id",
+    } <= sample_columns
+    assert {
+        "parent_id", "item_index", "started_at", "finished_at",
+        "estimated_cost", "currency", "billable_units",
+    } <= task_columns
+    assert {"idx_samples_keyword_target", "idx_samples_origin_job"} <= sample_indexes
+    assert {"idx_tasks_parent", "idx_tasks_status"} <= task_indexes
+    assert tuple(semantic_row) == ("background", "noise", "clean")
+
+
 def test_provider_settings_api_masks_secrets_and_separates_volc_credentials(
     client: TestClient,
 ) -> None:
@@ -128,7 +207,7 @@ def test_provider_settings_api_masks_secrets_and_separates_volc_credentials(
     assert unsupported_region.status_code == 400
     assert "cn-beijing" in unsupported_region.json()["detail"]
 
-    aliyun_secret = "TEST_ONLY_ALI_SECRET_5678"
+    aliyun_secret = "unit-test-api-route-secret-5678"
     saved_aliyun = client.put("/api/settings/providers/aliyun", json={
         "api_key": aliyun_secret,
         "workspace_id": "workspace-unit-test",
@@ -227,7 +306,6 @@ def test_project_settings_api_derives_metadata_and_requires_app_token(
     assert project["updated_at"]
     assert stat.S_IMODE((TEST_DATA_DIR / "project_settings.json").stat().st_mode) == 0o600
 
-    assert client.get("/healthz").json() == {"ok": True}
     status = client.get("/api/status")
     assert status.status_code == 200
     assert status.json()["app"] == "语音数据集工坊"
@@ -248,11 +326,11 @@ def test_project_settings_api_derives_metadata_and_requires_app_token(
     )
     assert authorized.status_code == 200
     assert authorized.json() == project
-    assert client.get("/healthz").status_code == 200
     assert client.get("/api/status").status_code == 401
     assert client.get(
         "/api/status", headers={"X-App-Token": "project-settings-test-token"}
     ).status_code == 200
+    assert client.get("/healthz").status_code == 200
 
     monkeypatch.delenv("TTS_APP_API_TOKEN")
     restored = client.put("/api/settings/project", json={"display_text": "你好，小助手"})
@@ -333,7 +411,7 @@ def test_generate_task_hides_unexpected_exception_detail(
     client: TestClient, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     voice = _first_mock_voice(client)
-    secret = "TEST_ONLY_UNEXPECTED_VALUE"
+    secret = "unit-test-unexpected-secret-value"
 
     class BrokenProvider:
         def synthesize(self, **kwargs):
@@ -365,32 +443,12 @@ def test_volc_pitch_is_rejected_before_task_creation(client: TestClient) -> None
         ("volcengine", "volc-pitch-test"),
     )
 
-    missing_acknowledgement = client.post("/api/tasks/generate", json={
-        "voice_ids": [voice["id"]], "count": 1, "pitch": 1.1,
-    })
-    assert missing_acknowledgement.status_code == 400
-    assert "费用" in missing_acknowledgement.json()["detail"]
-
     response = client.post("/api/tasks/generate", json={
         "voice_ids": [voice["id"]], "count": 1, "pitch": 1.1,
-        "cost_acknowledged": True,
     })
+
     assert response.status_code == 400
     assert "0 st" in response.json()["detail"]
-
-    retry_payload = app_module.GenerateRequest(
-        voice_ids=[voice["id"]], count=1, pitch=1.1, cost_acknowledged=True,
-    ).model_dump()
-    task_id = app_module._create_task("generate", 1, retry_payload)
-    app_module._update_task(task_id, status="failed", message="test fixture")
-    retry_without_acknowledgement = client.post(f"/api/tasks/{task_id}/retry")
-    assert retry_without_acknowledgement.status_code == 400
-    assert "费用" in retry_without_acknowledgement.json()["detail"]
-    retry_with_acknowledgement = client.post(
-        f"/api/tasks/{task_id}/retry", json={"cost_acknowledged": True},
-    )
-    assert retry_with_acknowledgement.status_code == 400
-    assert "0 st" in retry_with_acknowledgement.json()["detail"]
 
 
 def test_voice_upsert_applies_enabled_state(tmp_path: Path) -> None:
@@ -454,7 +512,7 @@ def test_mock_generate_analyze_augment_export_and_restore(client: TestClient) ->
     assert voices
 
     generated = client.post("/api/tasks/generate", json={
-        "text": "你好，小助手", "label": "你好小助手", "keyword_id": "ni_hao_xiao_zhu_shou",
+        "text": "你好，小伙伴", "label": "你好小伙伴", "keyword_id": "ni_hao_xiao_huo_ban",
         "voice_ids": [voices[0]["id"]], "count": 1, "speed": 1.0,
         "pitch": 1.0, "volume": 50, "seed": 20260805,
     })
@@ -503,6 +561,9 @@ def test_mock_generate_analyze_augment_export_and_restore(client: TestClient) ->
     assert augmented.status_code == 200
     augmented_task = _wait_for_task(client, augmented.json()["task_id"])
     assert augmented_task["status"] == "completed"
+    assert augmented_task["cost_available"] is True
+    assert augmented_task["estimated_cost"] == 0
+    assert "本地操作" in augmented_task["cost_disclaimer"]
     augmented_rows = client.get("/api/samples", params={"sample_type": "augmented"}).json()["items"]
     augmented_sample = next(item for item in augmented_rows if item["parent_id"] == sample_id)
     assert isinstance(augmented_sample["metadata"]["noise_offset"], int)
@@ -521,15 +582,19 @@ def test_mock_generate_analyze_augment_export_and_restore(client: TestClient) ->
     assert client.get(f"/api/noises/{noise_id}/audio").status_code == 200
 
     export_project = client.put(
-        "/api/settings/project", json={"display_text": "测试，唤醒"}
+        "/api/settings/project", json={"display_text": "你好，小助手"}
     ).json()
     exported = client.post("/api/exports", json={
-        "name": "neutral_wake_word_test", "format": "wekws", "include_audio": True,
+        "name": "ni_hao_xiao_huo_ban_test", "format": "wekws", "include_audio": True,
         "train_ratio": 0.8, "dev_ratio": 0.1, "seed": 20260805,
+        "keyword_id": "ni_hao_xiao_huo_ban",
     })
     assert exported.status_code == 200
     export_task = _wait_for_task(client, exported.json()["task_id"])
     assert export_task["status"] == "completed"
+    assert export_task["cost_available"] is True
+    assert export_task["estimated_cost"] == 0
+    assert "本地操作" in export_task["cost_disclaimer"]
     export_id = export_task["result"]["export_id"]
     archive = client.get(
         f"/api/exports/{export_id}/download"
@@ -540,11 +605,21 @@ def test_mock_generate_analyze_augment_export_and_restore(client: TestClient) ->
         assert "dataset.json" in names
         assert "SHA256SUMS" in names
         dataset_metadata = json.loads(bundle.read("dataset.json"))
-        assert dataset_metadata["wake_word"] == export_project["display_text"]
-        assert dataset_metadata["label"] == export_project["label"]
-        assert dataset_metadata["keyword_id"] == export_project["keyword_id"]
+        assert dataset_metadata["wake_word"] == "你好小伙伴"
+        assert dataset_metadata["label"] == "你好小伙伴"
+        assert dataset_metadata["keyword_id"] == "ni_hao_xiao_huo_ban"
+        assert dataset_metadata["display_text_unavailable"] is True
+        assert dataset_metadata["keyword_id"] != export_project["keyword_id"]
         assert any(name.startswith("manifests/") for name in names)
         assert any(name.startswith("audio/") for name in names)
+        assert bundle.read("wekws/dict/dict.txt").decode() == (
+            "<FILLER> -1\n<NI_HAO_XIAO_HUO_BAN> 0\n"
+        )
+        assert bundle.read("wekws/dict/words.txt").decode() == (
+            "<FILLER>\n<NI_HAO_XIAO_HUO_BAN>\n"
+        )
+        assert "max-pooling single-keyword" in bundle.read("wekws/README.txt").decode()
+        assert any(name.endswith("/wav.dur") for name in names)
         manifest_records = []
         for name in names:
             if name.startswith("manifests/") and name.endswith(".jsonl"):
@@ -554,6 +629,14 @@ def test_mock_generate_analyze_augment_export_and_restore(client: TestClient) ->
         exported_augmented = next(item for item in manifest_records if item["utt_id"] == augmented_sample["id"])
         assert exported_augmented["noise_offset"] == augmented_sample["metadata"]["noise_offset"]
         assert exported_augmented["source"] == "tts_augmented"
+        assert exported_augmented["sample_rate"] == 16_000
+        assert exported_augmented["channels"] == 1
+        assert exported_augmented["sample_width_bits"] == 16
+        assert exported_augmented["audio_format"] == "wav"
+        assert isinstance(exported_augmented["volume"], int)
+        assert "duration" in exported_augmented
+        assert "quality_status" in exported_augmented
+        assert "metadata" in exported_augmented
     assert client.put(
         "/api/settings/project", json={"display_text": "你好，小助手"}
     ).status_code == 200
@@ -623,6 +706,44 @@ def test_mock_generate_analyze_augment_export_and_restore(client: TestClient) ->
         )
         assert f"{sample_id} {record['audio']}" in wav_scp
 
+    audit_export = client.post("/api/exports", json={
+        "sample_ids": [sample_id], "keyword_id": "ni_hao_xiao_huo_ban",
+        "name": "audit_jsonl", "format": "jsonl", "include_audio": False,
+        "train_ratio": 0.8, "dev_ratio": 0.1, "seed": 20260805,
+    })
+    assert audit_export.status_code == 200
+    audit_task = _wait_for_task(client, audit_export.json()["task_id"])
+    assert audit_task["status"] == "completed"
+    audit_archive = client.get(
+        f"/api/exports/{audit_task['result']['export_id']}/download"
+    )
+    with zipfile.ZipFile(io.BytesIO(audit_archive.content)) as bundle:
+        audit_records = [
+            json.loads(line)
+            for name in bundle.namelist()
+            if name.startswith("manifests/") and name.endswith(".jsonl")
+            for line in bundle.read(name).decode().splitlines()
+            if line
+        ]
+        audit_record = next(item for item in audit_records if item["utt_id"] == sample_id)
+        assert audit_record["volume"] == 50
+        assert audit_record["duration"] > 0
+        assert audit_record["sample_rate"] == 16_000
+        assert audit_record["channels"] == 1
+        assert audit_record["sample_width_bits"] == 16
+        assert audit_record["audio_format"] == "wav"
+        assert audit_record["quality_status"] == "accepted"
+        assert audit_record["notes"] == "offline integration test"
+        assert audit_record["created_at"]
+        assert audit_record["provider_audio_request"] == {
+            "format": "wav", "sample_rate": 16_000,
+        }
+        assert audit_record["normalized_output_audio"] == {
+            "format": "wav", "sample_rate": 16_000,
+            "channels": 1, "sample_width_bits": 16,
+        }
+        assert audit_record["metadata"]["voice_db_id"] == voices[0]["id"]
+
     deleted = client.delete(f"/api/samples/{sample_id}")
     assert deleted.status_code == 200
     assert deleted.json()["recoverable"] is True
@@ -688,7 +809,7 @@ def test_omitted_kws_fields_follow_project_and_explicit_values_are_preserved(
     client: TestClient,
 ) -> None:
     custom = client.put(
-        "/api/settings/project", json={"display_text": "测试，唤醒"}
+        "/api/settings/project", json={"display_text": "你好，小助手"}
     ).json()
     created_ids: list[str] = []
     try:
@@ -812,3 +933,494 @@ def test_missing_sample_file_is_not_reported_recoverable(client: TestClient) -> 
     assert deleted.status_code == 200
     assert deleted.json()["recoverable"] is False
     assert client.post(f"/api/samples/{row['id']}/restore").status_code == 404
+
+
+def test_batch_generation_caps_concurrency_and_preserves_lineage(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    voice = _first_mock_voice(client)
+    requested_concurrency = min(16, max(3, app_module.WORKER_LIMIT + 3))
+    state = {"active": 0, "max_active": 0}
+    lock = threading.Lock()
+
+    class TrackingProvider:
+        def synthesize(self, **kwargs):
+            with lock:
+                state["active"] += 1
+                state["max_active"] = max(state["max_active"], state["active"])
+            try:
+                time.sleep(0.08)
+                return _wav_bytes(0.6, 220.0 + int(kwargs["seed"]) % 500)
+            finally:
+                with lock:
+                    state["active"] -= 1
+
+    provider = TrackingProvider()
+    monkeypatch.setattr(app_module, "get_provider", lambda *args, **kwargs: provider)
+    payload = {
+        "texts": ["批量甲", "批量乙", "批量丙"],
+        "label": "批量唤醒", "keyword_id": "batch_keyword",
+        "target_kind": "noise", "voice_ids": [voice["id"]], "count": 1,
+        "concurrency": requested_concurrency, "seed": 20261001,
+        "random_speed": True, "speed_min": 0.81, "speed_max": 1.19,
+        "random_pitch": True, "pitch_min": 0.91, "pitch_max": 1.09,
+        "random_volume": True, "volume_min": 42, "volume_max": 58,
+        "provider_audio": {"mock": {"format": "wav", "sample_rate": 16000}},
+    }
+
+    created = client.post("/api/tasks/generate-batch", json=payload)
+    assert created.status_code == 200
+    created_json = created.json()
+    assert created_json["requested_concurrency"] == requested_concurrency
+    assert created_json["applied_concurrency"] == min(
+        requested_concurrency, app_module.WORKER_LIMIT, len(payload["texts"])
+    )
+    assert len(created_json["child_ids"]) == 3
+
+    parent = _wait_for_task(client, created_json["parent_id"])
+    assert parent["status"] == "completed"
+    assert parent["completed"] == 3
+    assert parent["requested_concurrency"] == requested_concurrency
+    assert parent["applied_concurrency"] == created_json["applied_concurrency"]
+    assert parent["started_at"] and parent["finished_at"]
+    assert parent["total_duration_seconds"] is not None
+    assert [child["item_index"] for child in parent["children"]] == [0, 1, 2]
+    assert all(child["parent_id"] == parent["id"] for child in parent["children"])
+    assert all(child["status"] == "completed" for child in parent["children"])
+    assert all(child["queue_duration_seconds"] is not None for child in parent["children"])
+    assert all(child["execution_duration_seconds"] is not None for child in parent["children"])
+    assert state["max_active"] <= created_json["applied_concurrency"]
+    assert state["max_active"] == created_json["applied_concurrency"]
+
+    page = client.get("/api/samples", params={
+        "keyword_id": "batch_keyword", "target_kind": "background",
+        "origin_job_id": parent["id"],
+    }).json()
+    assert page["total"] == 3
+    assert {sample["text"] for sample in page["items"]} == set(payload["texts"])
+    assert all(sample["target_kind"] == "background" for sample in page["items"])
+    assert all(sample["source_kind"] == "tts" for sample in page["items"])
+    assert all(sample["variant_kind"] == "clean" for sample in page["items"])
+    assert all(sample["origin_job_id"] == parent["id"] for sample in page["items"])
+    assert all(sample["origin_task_id"] in created_json["child_ids"] for sample in page["items"])
+    assert all(0.81 <= sample["speed"] <= 1.19 for sample in page["items"])
+    assert all(0.91 <= sample["pitch"] <= 1.09 for sample in page["items"])
+    assert all(42 <= sample["volume"] <= 58 for sample in page["items"])
+
+    ids = client.get("/api/samples/ids", params={
+        "keyword_id": "batch_keyword", "target_kind": "noise",
+        "origin_job_id": parent["id"],
+    }).json()
+    assert ids["total"] == 3
+    assert set(ids["ids"]) == {sample["id"] for sample in page["items"]}
+    keyword_summary = next(
+        item for item in client.get("/api/samples/keywords").json()
+        if item["keyword_id"] == "batch_keyword"
+    )
+    assert keyword_summary["background_count"] == 3
+
+    # The same seed and item identity must reproduce the same randomized
+    # parameters, allowing the existing samples to be reused deterministically.
+    repeated = client.post("/api/tasks/generate-batch", json=payload)
+    assert repeated.status_code == 200
+    repeated_parent = _wait_for_task(client, repeated.json()["parent_id"])
+    assert repeated_parent["status"] == "completed"
+    assert all(child["result"]["duplicates"] == 1 for child in repeated_parent["children"])
+    assert client.get("/api/samples", params={"keyword_id": "batch_keyword"}).json()["total"] == 3
+
+
+def test_cost_estimate_distinguishes_unavailable_and_mixed_currency(
+    client: TestClient,
+) -> None:
+    client.delete("/api/settings/providers/aliyun")
+    client.delete("/api/settings/providers/volcengine")
+    aliyun_voice = {"provider": "aliyun"}
+    volc_voice = {"provider": "volcengine"}
+
+    unavailable = app_module._estimate_generation_cost("计费未知", [aliyun_voice], 1)
+    assert unavailable["cost_available"] is False
+    assert unavailable["estimated_cost"] == 0
+    assert unavailable["cost_breakdown"][0]["cost_available"] is False
+    assert "最终费用" in unavailable["cost_disclaimer"]
+
+    assert client.put("/api/settings/providers/aliyun", json={
+        "pricing_unit": "per_call", "pricing_rate": 1.0,
+        "pricing_currency": "CNY",
+    }).status_code == 200
+    assert client.put("/api/settings/providers/volcengine", json={
+        "pricing_unit": "per_call", "pricing_rate": 2.0,
+        "pricing_currency": "USD",
+    }).status_code == 200
+    mixed = app_module._estimate_generation_cost(
+        "混合币种", [aliyun_voice, volc_voice], 1
+    )
+    assert mixed["cost_available"] is False
+    assert mixed["estimated_cost"] == 0
+    assert mixed["currency"] == "MIXED"
+    assert mixed["cost_by_currency"] == {"CNY": 1.0, "USD": 2.0}
+
+    client.delete("/api/settings/providers/aliyun")
+    client.delete("/api/settings/providers/volcengine")
+
+
+def test_cloud_generation_requires_fresh_cost_ack_and_reports_estimate(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client.delete("/api/settings/providers/aliyun")
+    configured = client.put("/api/settings/providers/aliyun", json={
+        "api_key": "test-only-aliyun-key",
+        "workspace_id": "test-workspace",
+        "pricing_unit": "per_1k_chars",
+        "pricing_rate": 2.0,
+        "pricing_currency": "cny",
+    })
+    assert configured.status_code == 200
+    app_module.db.upsert_voice({
+        "provider": "aliyun", "voice_id": "billing-test-voice",
+        "name": "计费测试音色", "model": "cosyvoice-v3.5-plus",
+        "source": "account_custom", "enabled": True,
+    })
+    voice = app_module.db.one(
+        "SELECT id FROM voices WHERE provider='aliyun' AND voice_id='billing-test-voice'"
+    )
+
+    class BillingProvider:
+        def synthesize(self, **kwargs):
+            return _wav_bytes(0.6, 280.0 + int(kwargs["seed"]) % 400)
+
+    monkeypatch.setattr(app_module, "get_provider", lambda *args, **kwargs: BillingProvider())
+    payload = {
+        "text": "计费测试", "label": "计费测试", "keyword_id": "billing_keyword",
+        "voice_ids": [voice["id"]], "count": 2, "seed": 20261002,
+    }
+    task_count_before = app_module.db.one("SELECT COUNT(*) AS n FROM tasks")["n"]
+    rejected = client.post("/api/tasks/generate", json=payload)
+    assert rejected.status_code == 400
+    assert "cost_acknowledged=true" in rejected.json()["detail"]
+    assert app_module.db.one("SELECT COUNT(*) AS n FROM tasks")["n"] == task_count_before
+
+    created = client.post(
+        "/api/tasks/generate", json={**payload, "cost_acknowledged": True}
+    )
+    assert created.status_code == 200
+    assert created.json()["cost_available"] is True
+    assert created.json()["cost_is_estimate"] is True
+    assert created.json()["currency"] == "CNY"
+    assert created.json()["estimated_cost"] == pytest.approx(0.016)
+    completed = _wait_for_task(client, created.json()["task_id"])
+    assert completed["status"] == "completed"
+    assert completed["estimated_cost"] == pytest.approx(0.016)
+    assert completed["billable_units"] == pytest.approx(0.008)
+    assert completed["cost_available"] is True
+    assert "供应商账单" in completed["cost_disclaimer"]
+
+    no_ack_retry = client.post(f"/api/tasks/{completed['id']}/retry")
+    assert no_ack_retry.status_code == 400
+    acknowledged_retry = client.post(
+        f"/api/tasks/{completed['id']}/retry",
+        json={"cost_acknowledged": True},
+    )
+    assert acknowledged_retry.status_code == 200
+    assert _wait_for_task(client, acknowledged_retry.json()["task_id"])["status"] == "completed"
+
+    status = client.get("/api/status").json()
+    assert status["worker_limit"] == app_module.WORKER_LIMIT
+    assert "queued_tasks" in status and "running_tasks" in status
+    assert client.get("/healthz").json()["app"] == "语音数据集工坊"
+    capabilities = client.get("/api/providers/capabilities").json()
+    assert 16000 in capabilities["aliyun"]["sample_rates"]
+    assert "wav" in capabilities["volcengine"]["audio_formats"]
+
+    client.delete("/api/settings/providers/aliyun")
+
+
+def test_batch_rejects_unsupported_volcengine_pitch_before_billing(
+    client: TestClient,
+) -> None:
+    app_module.db.upsert_voice({
+        "provider": "volcengine", "voice_id": "volc-batch-pitch-test",
+        "name": "火山批量音高测试", "model": "seed-tts-1.0",
+        "source": "provider_catalog", "enabled": True,
+    })
+    voice = app_module.db.one(
+        "SELECT id FROM voices WHERE provider='volcengine' "
+        "AND voice_id='volc-batch-pitch-test'"
+    )
+    base = {
+        "texts": ["音高测试"], "voice_ids": [voice["id"]],
+        "cost_acknowledged": True,
+    }
+    # Use the API so validation order and response text are covered.
+    random_response = client.post(
+        "/api/tasks/generate-batch",
+        json={**base, "random_pitch": True, "pitch_min": 1.0, "pitch_max": 1.0},
+    )
+    assert random_response.status_code == 400
+    assert "随机音高" in random_response.json()["detail"]
+    fixed_response = client.post(
+        "/api/tasks/generate-batch", json={**base, "pitch": 1.1}
+    )
+    assert fixed_response.status_code == 400
+    assert "固定音高" in fixed_response.json()["detail"]
+
+
+def test_top_level_task_list_keeps_large_batch_group_complete(
+    client: TestClient,
+) -> None:
+    parent_id = app_module._create_task(
+        "generate_batch", 101, {"texts": [f"文本{i}" for i in range(101)]},
+        result={"requested_concurrency": 3, "applied_concurrency": 2},
+    )
+    child_ids = [
+        app_module._create_task(
+            "generate", 1, {"text": f"文本{index}"},
+            parent_id=parent_id, item_index=index,
+        )
+        for index in range(101)
+    ]
+    app_module._update_task(parent_id, status="completed", completed=101)
+
+    top_level = client.get("/api/tasks", params={"limit": 100}).json()
+    parent = next(task for task in top_level if task["id"] == parent_id)
+    assert len(parent["children"]) == 101
+    assert [child["id"] for child in parent["children"]] == child_ids
+    assert not set(child_ids) & {task["id"] for task in top_level}
+    detail = client.get(f"/api/tasks/{parent_id}").json()
+    assert len(detail["children"]) == 101
+
+
+def test_sample_isolation_semantics_materialization_and_wekws_export(
+    client: TestClient,
+) -> None:
+    first_upload = client.post(
+        "/api/samples/upload",
+        files={"files": ("same-a.wav", _wav_bytes(0.7, 612.0), "audio/wav")},
+        data={
+            "text": "唤醒甲", "label": "唤醒甲", "keyword_id": "keyword_a",
+            "speaker_id": "speaker_a", "target_kind": "positive",
+        },
+    )
+    assert first_upload.status_code == 200
+    first_id = first_upload.json()["sample_ids"][0]
+    first_sample = client.get(
+        "/api/samples", params={"keyword_id": "keyword_a"}
+    ).json()["items"][0]
+    assert first_sample["metadata"]["original_content_type"] == "audio/wav"
+
+    # Identical bytes are still valid distinct rows across keyword/target
+    # semantics; global SHA-only deduplication would incorrectly drop them.
+    second_upload = client.post(
+        "/api/samples/upload",
+        files={"files": ("same-b.wav", _wav_bytes(0.7, 612.0), "audio/wav")},
+        data={
+            "text": "干扰短语", "label": "唤醒乙", "keyword_id": "keyword_b",
+            "speaker_id": "speaker_b", "target_kind": "negative",
+        },
+    )
+    assert second_upload.status_code == 200
+    assert second_upload.json()["imported"] == 1
+    second_id = second_upload.json()["sample_ids"][0]
+    cross_target_upload = client.post(
+        "/api/samples/upload",
+        files={"files": ("same-c.wav", _wav_bytes(0.7, 612.0), "audio/wav")},
+        data={
+            "text": "甲的干扰短语", "label": "唤醒甲", "keyword_id": "keyword_a",
+            "speaker_id": "speaker_c", "target_kind": "negative",
+        },
+    )
+    assert cross_target_upload.status_code == 200
+    assert cross_target_upload.json()["imported"] == 1
+
+    assert client.post("/api/exports", json={
+        "sample_ids": [], "name": "missing-keyword",
+    }).status_code == 400
+    assert client.post("/api/augment", json={
+        "sample_ids": [], "noise_ids": [],
+    }).status_code == 400
+    missing_id = client.post("/api/exports", json={
+        "sample_ids": [first_id, "missing-sample"], "keyword_id": "keyword_a",
+        "name": "missing-id",
+    })
+    assert missing_id.status_code == 400
+    assert "不存在或已删除" in missing_id.json()["detail"]
+    mismatched_keyword = client.post("/api/exports", json={
+        "sample_ids": [first_id], "keyword_id": "keyword_b",
+        "name": "mismatch",
+    })
+    assert mismatched_keyword.status_code == 400
+    mixed_keywords = client.post("/api/exports", json={
+        "sample_ids": [first_id, second_id], "name": "mixed-keywords",
+    })
+    assert mixed_keywords.status_code == 400
+    assert "同一个 keyword_id" in mixed_keywords.json()["detail"]
+
+    duplicate_selection = client.post("/api/exports", json={
+        "sample_ids": [first_id, first_id], "keyword_id": "keyword_a",
+        "name": "deduplicated-selection", "include_audio": False,
+    })
+    assert duplicate_selection.status_code == 200
+    duplicate_task = _wait_for_task(client, duplicate_selection.json()["task_id"])
+    assert duplicate_task["status"] == "completed"
+    assert duplicate_task["completed"] == 1
+
+    noise_upload = client.post(
+        "/api/noises/upload",
+        files={"file": ("semantic-noise.wav", _wav_bytes(0.8, 97.0), "audio/wav")},
+        data={"name": "语义测试噪声", "category": "test"},
+    )
+    assert noise_upload.status_code == 200
+    noise_id = noise_upload.json()["id"]
+    missing_noise = client.post("/api/noises/materialize", json={
+        "noise_ids": [noise_id, "missing-noise"], "keyword_id": "keyword_b",
+    })
+    assert missing_noise.status_code == 400
+    materialized = client.post("/api/noises/materialize", json={
+        "noise_ids": [noise_id], "keyword_id": "keyword_b",
+    })
+    assert materialized.status_code == 200
+    background_id = materialized.json()["sample_ids"][0]
+    materialize_task = client.get(
+        f"/api/tasks/{materialized.json()['task_id']}"
+    ).json()
+    assert materialize_task["cost_available"] is True
+    assert materialize_task["estimated_cost"] == 0
+    assert "本地操作" in materialize_task["cost_disclaimer"]
+    background = next(
+        item for item in client.get("/api/samples", params={
+            "keyword_id": "keyword_b", "target_kind": "background",
+        }).json()["items"]
+        if item["id"] == background_id
+    )
+    assert background["source_kind"] == "noise"
+    assert background["variant_kind"] == "clean"
+
+    reject_background_augment = client.post("/api/augment", json={
+        "sample_ids": [background_id], "keyword_id": "keyword_b",
+        "noise_ids": [noise_id],
+    })
+    assert reject_background_augment.status_code == 400
+    assert "背景噪声样本" in reject_background_augment.json()["detail"]
+
+    augmented = client.post("/api/augment", json={
+        "sample_ids": [second_id], "keyword_id": "keyword_b",
+        "noise_ids": [noise_id], "count": 1, "seed": 20261003,
+    })
+    assert augmented.status_code == 200
+    augmented_task = _wait_for_task(client, augmented.json()["task_id"])
+    assert augmented_task["status"] == "completed"
+    augmented_sample = next(
+        item for item in client.get("/api/samples", params={
+            "keyword_id": "keyword_b", "sample_type": "augmented",
+        }).json()["items"]
+        if item["parent_id"] == second_id
+    )
+    assert augmented_sample["target_kind"] == "negative"
+    assert augmented_sample["source_kind"] == "human"
+    assert augmented_sample["variant_kind"] == "augmented"
+    assert augmented_sample["origin_task_id"] == augmented_task["id"]
+    assert augmented_sample["origin_job_id"] == augmented_task["id"]
+
+    exported = client.post("/api/exports", json={
+        "sample_ids": [second_id, background_id, augmented_sample["id"]],
+        "keyword_id": "keyword_b", "name": "semantic-wekws",
+        "format": "wekws", "include_audio": False,
+    })
+    assert exported.status_code == 200
+    export_task = _wait_for_task(client, exported.json()["task_id"])
+    assert export_task["status"] == "completed"
+    archive = client.get(
+        f"/api/exports/{export_task['result']['export_id']}/download"
+    )
+    with zipfile.ZipFile(io.BytesIO(archive.content)) as bundle:
+        names = set(bundle.namelist())
+        records = [
+            json.loads(line)
+            for name in names
+            if name.startswith("manifests/") and name.endswith(".jsonl")
+            for line in bundle.read(name).decode().splitlines()
+            if line
+        ]
+        by_id = {record["utt_id"]: record for record in records}
+        assert by_id[second_id]["target"] == 0
+        assert by_id[second_id]["target_kind"] == "negative"
+        assert by_id[augmented_sample["id"]]["source"] == "human_recording_augmented"
+        assert by_id[background_id]["source"] == "noise"
+        assert by_id[background_id]["source_kind"] == "noise"
+        text_lines = "".join(
+            bundle.read(name).decode() for name in names if name.endswith("/text")
+        )
+        target_lines = "".join(
+            bundle.read(name).decode() for name in names if name.endswith("/target")
+        )
+        assert f"{second_id} <FILLER>\n" in text_lines
+        assert f"{background_id} <FILLER>\n" in text_lines
+        assert f"{second_id} 0\n" in target_lines
+        assert f"{background_id} 0\n" in target_lines
+        metadata = json.loads(bundle.read("dataset.json"))
+        assert metadata["keyword_id"] == "keyword_b"
+        assert metadata["label"] == "唤醒乙"
+        assert metadata["wake_word"] == "唤醒乙"
+        assert metadata["display_text_unavailable"] is True
+        assert metadata["targets"] == {
+            "positive": 0, "negative": 2, "background": 1,
+        }
+        assert metadata["wekws_text_semantics"] == {
+            "positive": "<KEYWORD_B>",
+            "negative": "<FILLER>",
+            "background": "<FILLER>",
+            "class_ids": {"<FILLER>": -1, "<KEYWORD_B>": 0},
+        }
+        assert bundle.read("wekws/dict/dict.txt").decode() == (
+            "<FILLER> -1\n<KEYWORD_B> 0\n"
+        )
+        assert all(
+            len(line.split()) == 2
+            for line in text_lines.splitlines()
+            if line
+        )
+
+    summaries = client.get("/api/samples/keywords").json()
+    keyword_b = next(item for item in summaries if item["keyword_id"] == "keyword_b")
+    assert keyword_b["label"] == "唤醒乙"
+    assert keyword_b["display_text"] == "唤醒乙"
+    assert keyword_b["display_text_unavailable"] is True
+    assert keyword_b["negative_count"] == 2
+    assert keyword_b["background_count"] == 1
+
+
+def test_materialize_unexpected_error_finishes_task(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uploaded = client.post(
+        "/api/noises/upload",
+        files={"file": ("failure-noise.wav", _wav_bytes(0.7, 83.0), "audio/wav")},
+        data={"name": "异常收敛测试噪声", "category": "test"},
+    )
+    assert uploaded.status_code == 200
+    noise_id = uploaded.json()["id"]
+    original_insert = app_module._insert_sample
+
+    def fail_noise_insert(sample: dict) -> None:
+        if sample.get("provider") == "noise":
+            raise RuntimeError("test-only-sensitive-unexpected-detail")
+        original_insert(sample)
+
+    monkeypatch.setattr(app_module, "_insert_sample", fail_noise_insert)
+    response = client.post("/api/noises/materialize", json={
+        "noise_ids": [noise_id], "keyword_id": "materialize_failure_keyword",
+    })
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert detail["message"] == "噪声物化失败，请查看任务详情和服务器日志"
+    task_id = detail["task_id"]
+    task = client.get(f"/api/tasks/{task_id}").json()
+    assert task["status"] == "failed"
+    assert task["failed"] == 1
+    assert task["started_at"] and task["finished_at"]
+    assert task["result"]["internal_error"] == "RuntimeError"
+    assert "test-only-sensitive-unexpected-detail" not in json.dumps(
+        task, ensure_ascii=False
+    )
+    assert client.get("/api/samples", params={
+        "keyword_id": "materialize_failure_keyword",
+    }).json()["total"] == 0

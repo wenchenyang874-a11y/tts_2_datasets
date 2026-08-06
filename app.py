@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -12,15 +13,16 @@ import tempfile
 import threading
 import uuid
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,7 @@ try:
         ProviderConfigurationError,
         available_providers,
         get_provider,
+        get_provider_capabilities,
         validate_provider_configuration,
     )
     from .project_settings import ProjectSettingsStore, normalize_display_text
@@ -54,7 +57,7 @@ except ImportError:  # Support direct `uvicorn app:app` execution.
     from db import Database, utc_now  # type: ignore
     from providers import (  # type: ignore
         ProviderError, ProviderConfigurationError, available_providers, get_provider,
-        validate_provider_configuration,
+        get_provider_capabilities, validate_provider_configuration,
     )
     from project_settings import ProjectSettingsStore, normalize_display_text  # type: ignore
     from settings_store import ProviderSettingsStore, set_default_settings_store  # type: ignore
@@ -62,8 +65,17 @@ except ImportError:  # Support direct `uvicorn app:app` execution.
 
 
 APP_DIR = Path(__file__).resolve().parent
-# Keep runtime data outside source-controlled files in standalone deployments.
-DEFAULT_DATA_ROOT = APP_DIR / "var"
+# Audio, manifests, databases, and provider configuration may contain private
+# data. Restrict permissions for newly created files without rewriting any
+# existing deployment data.
+os.umask(0o077)
+# Keep the source-tree default convenient without assuming that the application
+# is always nested under ``tools/``. Container images copy it directly to /app.
+DEFAULT_DATA_ROOT = (
+    APP_DIR.parent.parent / "data" / "tts_app"
+    if APP_DIR.parent.name == "tools"
+    else APP_DIR / "data"
+)
 DATA_ROOT = Path(os.getenv("TTS_APP_DATA_DIR", DEFAULT_DATA_ROOT)).resolve()
 # Manifest-only exports may be consumed by training jobs on the Docker host.
 # This logical root can therefore differ from the container's /data mount.
@@ -72,7 +84,6 @@ MANIFEST_DATA_ROOT = Path(
 ).expanduser().resolve()
 MAX_UPLOAD_BYTES = max(1, int(os.getenv("TTS_MAX_UPLOAD_MB", "512"))) * 1024 * 1024
 MAX_TASK_ITEMS = max(1, int(os.getenv("TTS_MAX_TASK_ITEMS", "5000")))
-BILLABLE_TTS_PROVIDERS = frozenset({"aliyun", "alibaba", "volcengine"})
 REAL_SAMPLE_DURATION_RANGE = (0.2, 30.0)
 NOISE_DURATION_RANGE = (0.2, 3600.0)
 STATIC_DIR = APP_DIR / "static"
@@ -112,17 +123,20 @@ _sync_builtin_voice_catalog(db)
 provider_settings = ProviderSettingsStore(DATA_ROOT / "provider_settings.json")
 project_settings = ProjectSettingsStore(DATA_ROOT / "project_settings.json")
 set_default_settings_store(provider_settings)
+WORKER_LIMIT = max(1, int(os.getenv("TTS_APP_WORKERS", "8")))
 # In-process workers cannot survive a service restart. Make interrupted work
 # explicit instead of leaving tasks permanently displayed as running.
+startup_time = utc_now()
 db.execute(
     """
     UPDATE tasks
-    SET status='failed', message='服务重启，任务已中断，请重新创建', updated_at=?
+    SET status='failed', message='服务重启，任务已中断，请重新创建',
+        finished_at=COALESCE(finished_at, ?), updated_at=?
     WHERE status IN ('queued', 'running')
     """,
-    (utc_now(),),
+    (startup_time, startup_time),
 )
-executor = ThreadPoolExecutor(max_workers=max(1, int(os.getenv("TTS_APP_WORKERS", "2"))))
+executor = ThreadPoolExecutor(max_workers=WORKER_LIMIT)
 
 app = FastAPI(
     title="语音数据集工坊",
@@ -143,6 +157,15 @@ async def optional_api_token(request: Request, call_next):
     return await call_next(request)
 
 
+def _canonical_target_kind(value: Any) -> str:
+    normalized = str(value or "positive").strip().lower()
+    if normalized == "noise":
+        normalized = "background"
+    if normalized not in {"positive", "negative", "background"}:
+        raise ValueError("target_kind 必须是 positive、negative 或 background")
+    return normalized
+
+
 class GenerateRequest(BaseModel):
     text: str = "你好，小助手"
     label: str = "你好小助手"
@@ -154,6 +177,8 @@ class GenerateRequest(BaseModel):
     volume: int = Field(50, ge=0, le=100)
     seed: int = Field(20260804, ge=0, le=2**31 - 1)
     instruction: str = ""
+    target_kind: str = "positive"
+    provider_audio: dict[str, dict[str, Any]] = Field(default_factory=dict)
     cost_acknowledged: bool = False
 
     @field_validator("text", "label", "keyword_id")
@@ -165,10 +190,77 @@ class GenerateRequest(BaseModel):
             raise ValueError("value is too long")
         return value.strip()
 
+    @field_validator("target_kind", mode="before")
+    @classmethod
+    def validate_target_kind(cls, value: Any) -> str:
+        return _canonical_target_kind(value)
+
+
+class GenerateBatchRequest(BaseModel):
+    texts: list[str]
+    label: str = "你好小助手"
+    keyword_id: str = "ni_hao_xiao_zhu_shou"
+    target_kind: str = "positive"
+    voice_ids: list[int]
+    count: int = Field(1, ge=1, le=1000)
+    concurrency: int = Field(3, ge=1, le=16)
+    speed: float = Field(1.0, ge=0.5, le=2.0)
+    pitch: float = Field(1.0, ge=0.5, le=2.0)
+    volume: int = Field(50, ge=0, le=100)
+    seed: int = Field(20260804, ge=0, le=2**31 - 1)
+    instruction: str = ""
+    random_speed: bool = False
+    speed_min: float = Field(0.8, ge=0.5, le=2.0)
+    speed_max: float = Field(1.2, ge=0.5, le=2.0)
+    random_pitch: bool = False
+    pitch_min: float = Field(0.9, ge=0.5, le=2.0)
+    pitch_max: float = Field(1.1, ge=0.5, le=2.0)
+    random_volume: bool = False
+    volume_min: int = Field(40, ge=0, le=100)
+    volume_max: int = Field(60, ge=0, le=100)
+    provider_audio: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    cost_acknowledged: bool = False
+
+    @field_validator("texts")
+    @classmethod
+    def validate_texts(cls, values: list[str]) -> list[str]:
+        texts = [str(value).strip() for value in values if str(value).strip()]
+        if not texts:
+            raise ValueError("texts cannot be empty")
+        if len(texts) > 1000:
+            raise ValueError("texts contains too many items")
+        if any(len(text) > 10_000 for text in texts):
+            raise ValueError("text is too long")
+        return texts
+
+    @field_validator("label", "keyword_id")
+    @classmethod
+    def validate_identifier(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("value cannot be blank")
+        return value
+
+    @field_validator("target_kind", mode="before")
+    @classmethod
+    def validate_target_kind(cls, value: Any) -> str:
+        return _canonical_target_kind(value)
+
+    @model_validator(mode="after")
+    def validate_random_ranges(self) -> "GenerateBatchRequest":
+        if self.speed_min > self.speed_max:
+            raise ValueError("speed_min 不能大于 speed_max")
+        if self.pitch_min > self.pitch_max:
+            raise ValueError("pitch_min 不能大于 pitch_max")
+        if self.volume_min > self.volume_max:
+            raise ValueError("volume_min 不能大于 volume_max")
+        return self
+
 
 class AugmentRequest(BaseModel):
-    sample_ids: list[str] = []
-    noise_ids: list[str] = []
+    sample_ids: list[str] = Field(default_factory=list)
+    noise_ids: list[str] = Field(default_factory=list)
+    keyword_id: str = ""
     count: int = Field(1, ge=1, le=100)
     seed: int = Field(20260804, ge=0, le=2**31 - 1)
 
@@ -178,7 +270,8 @@ class DeleteSamplesRequest(BaseModel):
 
 
 class ExportRequest(BaseModel):
-    sample_ids: list[str] = []
+    sample_ids: list[str] = Field(default_factory=list)
+    keyword_id: str = ""
     name: str = "ni_hao_xiao_zhu_shou_dataset"
     format: str = Field("generic", pattern="^(generic|jsonl|folders|wekws)$")
     include_audio: bool = True
@@ -196,16 +289,15 @@ class ProjectSettingsRequest(BaseModel):
         return normalize_display_text(value)
 
 
-class RetryTaskRequest(BaseModel):
-    cost_acknowledged: bool = False
-
-
 class AliyunProviderSettingsRequest(BaseModel):
     api_key: str | None = None
     workspace_id: str | None = None
     region: str | None = None
     endpoint: str | None = None
     customization_endpoint: str | None = None
+    pricing_unit: str | None = Field(None, pattern="^(per_call|per_1k_chars)$")
+    pricing_rate: float | None = Field(None, ge=0)
+    pricing_currency: str | None = None
 
 
 class VolcengineProviderSettingsRequest(BaseModel):
@@ -216,6 +308,30 @@ class VolcengineProviderSettingsRequest(BaseModel):
     access_key_id: str | None = None
     access_key_secret: str | None = None
     catalog_endpoint: str | None = None
+    pricing_unit: str | None = Field(None, pattern="^(per_call|per_1k_chars)$")
+    pricing_rate: float | None = Field(None, ge=0)
+    pricing_currency: str | None = None
+
+
+class NoiseMaterializeRequest(BaseModel):
+    noise_ids: list[str]
+    keyword_id: str
+
+    @field_validator("noise_ids")
+    @classmethod
+    def validate_noise_ids(cls, values: list[str]) -> list[str]:
+        values = [str(value).strip() for value in values if str(value).strip()]
+        if not values:
+            raise ValueError("noise_ids cannot be empty")
+        return values
+
+    @field_validator("keyword_id")
+    @classmethod
+    def validate_keyword_id(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("keyword_id cannot be empty")
+        return value
 
 
 def _json_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -226,6 +342,55 @@ def _json_row(row: dict[str, Any]) -> dict[str, Any]:
     for key in ("enabled",):
         if key in row:
             row[key] = bool(row[key])
+    if "status" in row:
+        task_result = row.get("result") if isinstance(row.get("result"), dict) else {}
+        for key in (
+            "cost_available", "cost_disclaimer", "cost_by_currency",
+            "requested_concurrency", "applied_concurrency",
+        ):
+            if key in task_result:
+                row[key] = task_result[key]
+        row["cost_is_estimate"] = True
+    if "status" in row and "created_at" in row:
+        created_at = row.get("created_at")
+        started_at = row.get("started_at")
+        finished_at = row.get("finished_at")
+        try:
+            created = datetime.fromisoformat(str(created_at)) if created_at else None
+            started = datetime.fromisoformat(str(started_at)) if started_at else None
+            if finished_at:
+                end = datetime.fromisoformat(str(finished_at))
+            elif row.get("status") in {"queued", "running"}:
+                end = datetime.now(timezone.utc)
+            else:
+                end = None
+            queue_duration = (
+                max(0.0, (started - created).total_seconds())
+                if created and started else None
+            )
+            execution_duration = (
+                max(0.0, (end - started).total_seconds()) if started and end else None
+            )
+            total_duration = (
+                max(0.0, (end - created).total_seconds()) if created and end else None
+            )
+            row["queue_duration_seconds"] = (
+                round(queue_duration, 3) if queue_duration is not None else None
+            )
+            row["execution_duration_seconds"] = (
+                round(execution_duration, 3) if execution_duration is not None else None
+            )
+            row["total_duration_seconds"] = (
+                round(total_duration, 3) if total_duration is not None else None
+            )
+            # Backward-compatible alias for clients that previously displayed
+            # only execution time.
+            row["duration_seconds"] = row["execution_duration_seconds"]
+        except ValueError:
+            row["queue_duration_seconds"] = None
+            row["execution_duration_seconds"] = None
+            row["total_duration_seconds"] = None
+            row["duration_seconds"] = None
     return row
 
 
@@ -244,43 +409,111 @@ def _safe_component(value: Any, fallback: str = "item") -> str:
     return component or fallback
 
 
+def _wekws_keyword_token(keyword_id: Any) -> str:
+    """Build one ASCII token for WeKWS max-pooling classification."""
+    value = "".join(
+        character.upper()
+        if character.isascii() and character.isalnum()
+        else "_"
+        for character in str(keyword_id)
+    ).strip("_")
+    if not value:
+        digest = hashlib.sha256(str(keyword_id).encode("utf-8")).hexdigest()[:12].upper()
+        value = f"KWS_{digest}"
+    return f"<{value[:80]}>"
+
+
 def _validate_duration(info: dict[str, Any], minimum: float, maximum: float, kind: str) -> None:
     duration = float(info.get("duration", 0.0))
     if duration < minimum or duration > maximum:
         raise AudioError(f"{kind}时长必须在 {minimum:g} 到 {maximum:g} 秒之间，当前为 {duration:.3f} 秒")
 
 
-def _create_task(task_type: str, total: int, payload: dict[str, Any]) -> str:
+TERMINAL_TASK_STATES = {"completed", "partial", "failed"}
+
+
+def _create_task(
+    task_type: str,
+    total: int,
+    payload: dict[str, Any],
+    *,
+    parent_id: str | None = None,
+    item_index: int | None = None,
+    estimated_cost: float = 0.0,
+    currency: str = "",
+    billable_units: float = 0.0,
+    result: dict[str, Any] | None = None,
+) -> str:
     task_id = uuid.uuid4().hex
     now = utc_now()
     db.execute(
-        "INSERT INTO tasks(id,type,status,total,payload_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-        (task_id, task_type, "queued", total, json.dumps(payload, ensure_ascii=False), now, now),
+        """
+        INSERT INTO tasks(
+            id,parent_id,item_index,type,status,total,payload_json,result_json,
+            estimated_cost,currency,billable_units,created_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            task_id, parent_id, item_index, task_type, "queued", total,
+            json.dumps(payload, ensure_ascii=False),
+            json.dumps(result or {}, ensure_ascii=False),
+            round(max(0.0, float(estimated_cost)), 8), currency,
+            max(0.0, float(billable_units)), now, now,
+        ),
     )
     return task_id
 
 
 def _update_task(task_id: str, **fields: Any) -> None:
-    allowed = {"status", "completed", "failed", "message", "result_json"}
+    allowed = {
+        "status", "completed", "failed", "message", "result_json",
+        "estimated_cost", "currency", "billable_units",
+    }
     updates, values = [], []
     for key, value in fields.items():
         if key not in allowed:
             continue
         updates.append(f"{key}=?")
         values.append(json.dumps(value, ensure_ascii=False) if key == "result_json" else value)
+    now = utc_now()
+    status_value = fields.get("status")
+    if status_value == "running":
+        updates.append("started_at=COALESCE(started_at, ?)")
+        values.append(now)
+    elif status_value in TERMINAL_TASK_STATES:
+        updates.append("started_at=COALESCE(started_at, ?)")
+        values.append(now)
+        updates.append("finished_at=COALESCE(finished_at, ?)")
+        values.append(now)
     updates.append("updated_at=?")
-    values.extend((utc_now(), task_id))
+    values.extend((now, task_id))
     db.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id=?", tuple(values))
 
 
-def _submit(task_id: str, function, *args) -> None:
-    def runner() -> None:
-        _update_task(task_id, status="running")
-        try:
-            function(task_id, *args)
-        except Exception as exc:
-            _update_task(task_id, status="failed", message=str(exc)[:1000])
-    executor.submit(runner)
+def _task_result(task_id: str) -> dict[str, Any]:
+    row = db.one("SELECT result_json FROM tasks WHERE id=?", (task_id,))
+    if not row:
+        return {}
+    return db.decode_json_fields(row).get("result", {})
+
+
+def _execute_task(task_id: str, function, *args) -> None:
+    _update_task(task_id, status="running")
+    try:
+        function(task_id, *args)
+    except Exception as exc:
+        result = _task_result(task_id)
+        result["internal_error"] = type(exc).__name__
+        _update_task(
+            task_id,
+            status="failed",
+            message=str(exc)[:1000],
+            result_json=result,
+        )
+
+
+def _submit(task_id: str, function, *args) -> Future[Any]:
+    return executor.submit(_execute_task, task_id, function, *args)
 
 
 def _insert_sample(sample: dict[str, Any]) -> None:
@@ -289,8 +522,9 @@ def _insert_sample(sample: dict[str, Any]) -> None:
         INSERT INTO samples(
             id,provider,voice_id,voice_name,model,text,label,keyword_id,speed,pitch,volume,seed,
             file_path,duration,sample_rate,channels,sha256,parent_id,noise_id,snr_db,split,
-            quality_status,notes,metadata_json,created_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            quality_status,notes,metadata_json,target_kind,source_kind,variant_kind,
+            origin_task_id,origin_job_id,created_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             sample["id"], sample["provider"], sample["voice_id"], sample.get("voice_name", ""),
@@ -300,9 +534,186 @@ def _insert_sample(sample: dict[str, Any]) -> None:
             sample["file_path"], sample["duration"], sample["sample_rate"], sample.get("channels", 1),
             sample["sha256"], sample.get("parent_id"), sample.get("noise_id"), sample.get("snr_db"),
             sample.get("split", "unassigned"), sample.get("quality_status", "pass"),
-            sample.get("notes", ""), json.dumps(sample.get("metadata", {}), ensure_ascii=False), utc_now(),
+            sample.get("notes", ""), json.dumps(sample.get("metadata", {}), ensure_ascii=False),
+            _canonical_target_kind(sample.get("target_kind", "positive")),
+            sample.get("source_kind", "tts"),
+            sample.get("variant_kind", "clean"), sample.get("origin_task_id"),
+            sample.get("origin_job_id"), utc_now(),
         ),
     )
+
+
+BILLABLE_PROVIDERS = {"aliyun", "volcengine"}
+
+
+def _local_cost_result() -> dict[str, Any]:
+    return {
+        "cost_available": True,
+        "estimated_cost": 0.0,
+        "cost_disclaimer": "本地操作，不产生云费用",
+    }
+
+
+def _select_voices(voice_ids: list[int]) -> list[dict[str, Any]]:
+    if not voice_ids:
+        return []
+    placeholders = ",".join("?" for _ in voice_ids)
+    return db.all(
+        f"SELECT * FROM voices WHERE enabled=1 AND id IN ({placeholders})",
+        tuple(voice_ids),
+    )
+
+
+def _require_cost_acknowledgement(
+    voices: list[dict[str, Any]], cost_acknowledged: bool,
+) -> None:
+    providers = sorted({str(voice["provider"]) for voice in voices} & BILLABLE_PROVIDERS)
+    if providers and not cost_acknowledged:
+        raise HTTPException(
+            400,
+            "选择云供应商会产生费用；请明确设置 cost_acknowledged=true 后重新提交："
+            + ", ".join(providers),
+        )
+
+
+def _provider_audio_for(request: dict[str, Any], provider_name: str) -> dict[str, Any]:
+    configured = request.get("provider_audio") or {}
+    raw = configured.get(provider_name) if isinstance(configured, dict) else None
+    value = raw if isinstance(raw, dict) else {}
+    capabilities = get_provider_capabilities(provider_name)
+    audio_format = str(value.get("format") or value.get("audio_format") or "wav").strip().lower()
+    try:
+        sample_rate = int(value.get("sample_rate", 16_000))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, f"{provider_name} sample_rate 必须是整数") from exc
+    if audio_format not in capabilities["audio_formats"]:
+        raise HTTPException(
+            400,
+            f"{provider_name} 不支持格式 {audio_format}；可选值："
+            + ", ".join(capabilities["audio_formats"]),
+        )
+    if sample_rate not in capabilities["sample_rates"]:
+        raise HTTPException(
+            400,
+            f"{provider_name} 不支持采样率 {sample_rate}；可选值："
+            + ", ".join(str(item) for item in capabilities["sample_rates"]),
+        )
+    return {"format": audio_format, "sample_rate": sample_rate}
+
+
+def _validate_provider_audio(
+    request: dict[str, Any], voices: list[dict[str, Any]],
+) -> None:
+    for provider_name in {str(voice["provider"]) for voice in voices}:
+        _provider_audio_for(request, provider_name)
+
+
+def _estimate_generation_cost(
+    text: str, voices: list[dict[str, Any]], count: int,
+) -> dict[str, Any]:
+    voice_counts: dict[str, int] = {}
+    for voice in voices:
+        provider_name = str(voice["provider"])
+        voice_counts[provider_name] = voice_counts.get(provider_name, 0) + 1
+    breakdown: list[dict[str, Any]] = []
+    currencies: set[str] = set()
+    estimated_cost = 0.0
+    billable_units = 0.0
+    cost_available = True
+    cost_by_currency: dict[str, float] = {}
+    units_by_pricing_unit: dict[str, float] = {}
+    for provider_name, voice_count in sorted(voice_counts.items()):
+        calls = voice_count * count
+        if provider_name not in BILLABLE_PROVIDERS:
+            breakdown.append({
+                "provider": provider_name, "cost_available": True,
+                "pricing_unit": "free", "billable_units": 0.0,
+                "pricing_rate": 0.0, "currency": "", "estimated_cost": 0.0,
+            })
+            continue
+        try:
+            config = provider_settings.get_provider(provider_name)
+        except (ValueError, RuntimeError):
+            config = {}
+        unit = str(config.get("pricing_unit") or "").strip()
+        currency = str(config.get("pricing_currency") or "").strip().upper()
+        try:
+            rate = float(config.get("pricing_rate"))
+        except (TypeError, ValueError):
+            rate = -1.0
+        available = unit in {"per_call", "per_1k_chars"} and rate >= 0 and bool(currency)
+        if unit == "per_call":
+            units = float(calls)
+        elif unit == "per_1k_chars":
+            units = len(text) * calls / 1000.0
+        else:
+            units = 0.0
+        provider_cost = units * rate if available else 0.0
+        cost_available = cost_available and available
+        if available:
+            currencies.add(currency)
+            estimated_cost += provider_cost
+            billable_units += units
+            cost_by_currency[currency] = cost_by_currency.get(currency, 0.0) + provider_cost
+            units_by_pricing_unit[unit] = units_by_pricing_unit.get(unit, 0.0) + units
+        breakdown.append({
+            "provider": provider_name, "cost_available": available,
+            "pricing_unit": unit, "billable_units": round(units, 8),
+            "pricing_rate": rate if rate >= 0 else 0.0,
+            "currency": currency, "estimated_cost": round(provider_cost, 8),
+        })
+    mixed_currency = len(currencies) > 1
+    cost_available = cost_available and not mixed_currency
+    currency = next(iter(currencies)) if len(currencies) == 1 else ("MIXED" if currencies else "")
+    total_cost = estimated_cost if cost_available else 0.0
+    comparable_units = billable_units if len(units_by_pricing_unit) <= 1 else 0.0
+    return {
+        "cost_available": cost_available,
+        "estimated_cost": round(total_cost, 8),
+        "currency": currency,
+        "billable_units": round(comparable_units, 8),
+        "cost_by_currency": {
+            key: round(value, 8) for key, value in sorted(cost_by_currency.items())
+        },
+        "billable_units_by_pricing_unit": {
+            key: round(value, 8) for key, value in sorted(units_by_pricing_unit.items())
+        },
+        "cost_breakdown": breakdown,
+        "cost_disclaimer": "预估费用，最终费用以供应商账单为准",
+    }
+
+
+def _deterministic_generation_parameters(
+    request: dict[str, Any], voice: dict[str, Any], index: int,
+) -> tuple[float, float, int, int]:
+    if not request.get("batch_mode"):
+        return (
+            float(request["speed"]), float(request["pitch"]), int(request["volume"]),
+            int(request["seed"]) + index,
+        )
+    material = "\0".join((
+        str(request["seed"]), str(request["text"]), str(voice["provider"]),
+        str(voice["voice_id"]), str(voice.get("model") or ""),
+        str(request.get("item_index", 0)), str(index),
+    )).encode("utf-8")
+    digest = hashlib.sha256(material).digest()
+    rng = random.Random(int.from_bytes(digest[:8], "big"))
+    speed = (
+        rng.uniform(float(request["speed_min"]), float(request["speed_max"]))
+        if request.get("random_speed") else float(request["speed"])
+    )
+    pitch = (
+        rng.uniform(float(request["pitch_min"]), float(request["pitch_max"]))
+        if request.get("random_pitch") else float(request["pitch"])
+    )
+    volume = (
+        rng.randint(int(request["volume_min"]), int(request["volume_max"]))
+        if request.get("random_volume") else int(request["volume"])
+    )
+    if voice["provider"] == "volcengine":
+        pitch = 1.0
+    item_seed = int.from_bytes(digest[8:12], "big") & 0x7FFFFFFF
+    return round(speed, 6), round(pitch, 6), volume, item_seed
 
 
 def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str, Any]]) -> None:
@@ -335,7 +746,10 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
             _update_task(task_id, failed=failed, message=detail)
             continue
         for index in range(request["count"]):
-            item_seed = request["seed"] + index
+            speed, pitch, volume, item_seed = _deterministic_generation_parameters(
+                request, voice, index
+            )
+            provider_audio = _provider_audio_for(request, provider_name)
             sample_id = uuid.uuid4().hex
             raw_path = TMP_DIR / f"{sample_id}.audio"
             wav_path = (
@@ -350,14 +764,18 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                     SELECT id FROM samples
                     WHERE deleted_at IS NULL AND provider=? AND voice_id=? AND model=?
                       AND text=? AND label=? AND keyword_id=?
+                      AND target_kind=?
                       AND speed=? AND pitch=? AND volume=? AND seed=?
                       AND COALESCE(json_extract(metadata_json, '$.instruction'), '')=?
+                      AND COALESCE(json_extract(metadata_json, '$.provider_audio_request.format'), 'wav')=?
+                      AND COALESCE(json_extract(metadata_json, '$.provider_audio_request.sample_rate'), 16000)=?
                     """,
                     (
                         provider_name, voice["voice_id"], voice["model"], request["text"],
-                        request["label"], request["keyword_id"],
-                        request["speed"], request["pitch"], request["volume"], item_seed,
+                        request["label"], request["keyword_id"], request.get("target_kind", "positive"),
+                        speed, pitch, volume, item_seed,
                         request.get("instruction", ""),
+                        provider_audio["format"], provider_audio["sample_rate"],
                     ),
                 )
                 if existing:
@@ -370,14 +788,26 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                     continue
                 audio = provider.synthesize(
                     text=request["text"], voice=voice["voice_id"], model=voice["model"],
-                    speed=request["speed"], pitch=request["pitch"], volume=request["volume"],
+                    audio_format=provider_audio["format"],
+                    sample_rate=provider_audio["sample_rate"],
+                    speed=speed, pitch=pitch, volume=volume,
                     seed=item_seed, instruction=request.get("instruction", ""),
                 )
                 raw_path.parent.mkdir(parents=True, exist_ok=True)
                 raw_path.write_bytes(audio)
                 info = normalize_wav(raw_path, wav_path, 16000)
                 digest = sha256_file(wav_path)
-                if db.one("SELECT id FROM samples WHERE sha256=? AND deleted_at IS NULL", (digest,)):
+                if db.one(
+                    """
+                    SELECT id FROM samples
+                    WHERE sha256=? AND keyword_id=? AND target_kind=?
+                      AND deleted_at IS NULL
+                    """,
+                    (
+                        digest, request["keyword_id"],
+                        request.get("target_kind", "positive"),
+                    ),
+                ):
                     duplicates += 1
                     wav_path.unlink(missing_ok=True)
                     completed += 1
@@ -389,7 +819,11 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                     "id": sample_id, "provider": provider_name, "voice_id": voice["voice_id"],
                     "voice_name": voice["name"], "model": voice["model"], "text": request["text"],
                     "label": request["label"], "keyword_id": request["keyword_id"],
-                    "speed": request["speed"], "pitch": request["pitch"], "volume": request["volume"],
+                    "target_kind": request.get("target_kind", "positive"),
+                    "source_kind": "tts", "variant_kind": "clean",
+                    "origin_task_id": task_id,
+                    "origin_job_id": request.get("origin_job_id") or task_id,
+                    "speed": speed, "pitch": pitch, "volume": volume,
                     "seed": item_seed, "file_path": str(wav_path), "duration": info["duration"],
                     "sample_rate": info["sample_rate"], "channels": info["channels"], "sha256": digest,
                     "quality_status": quality,
@@ -397,6 +831,11 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                         "voice_db_id": voice["id"], "instruction": request.get("instruction", ""),
                         "gender": voice.get("gender", "unknown"),
                         "age_group": voice.get("age_group", "unknown"),
+                        "provider_audio_request": provider_audio,
+                        "normalized_output_audio": {
+                            "format": "wav", "sample_rate": info["sample_rate"],
+                            "channels": info["channels"], "sample_width_bits": 16,
+                        },
                     },
                 })
                 completed += 1
@@ -411,8 +850,10 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
     summary = f"完成 {completed}，失败 {failed}，重复 {duplicates}"
     if errors:
         summary += f"；首个错误：{errors[0]}"
+    result = _task_result(task_id)
+    result.update({"errors": errors, "duplicates": duplicates})
     _update_task(task_id, status=status, completed=completed, failed=failed,
-                 message=summary[:1000], result_json={"errors": errors})
+                 message=summary[:1000], result_json=result)
 
 
 def _choose_noises(noise_ids: list[str]) -> list[dict[str, Any]]:
@@ -444,7 +885,17 @@ def _augment_task(task_id: str, request: dict[str, Any], samples: list[dict[str,
             try:
                 info = mix_noise(sample["file_path"], noise["file_path"], target, snr, item_seed)
                 digest = sha256_file(target)
-                if db.one("SELECT id FROM samples WHERE sha256=? AND deleted_at IS NULL", (digest,)):
+                if db.one(
+                    """
+                    SELECT id FROM samples
+                    WHERE sha256=? AND keyword_id=? AND target_kind=?
+                      AND deleted_at IS NULL
+                    """,
+                    (
+                        digest, sample["keyword_id"],
+                        sample.get("target_kind", "positive"),
+                    ),
+                ):
                     target.unlink(missing_ok=True)
                     duplicates += 1
                     completed += 1
@@ -458,10 +909,17 @@ def _augment_task(task_id: str, request: dict[str, Any], samples: list[dict[str,
                     "duration": info["duration"], "sample_rate": info["sample_rate"],
                     "parent_id": sample.get("parent_id") or sample["id"], "noise_id": noise["id"],
                     "snr_db": snr, "seed": item_seed,
+                    "target_kind": sample.get("target_kind", "positive"),
+                    "source_kind": sample.get("source_kind") or (
+                        "human" if sample.get("provider") == "real" else "tts"
+                    ),
+                    "variant_kind": "augmented", "origin_task_id": task_id,
+                    "origin_job_id": sample.get("origin_job_id") or task_id,
                     "metadata": {
                         **source_metadata,
                         "augmentation": "additive_noise", "noise_name": noise["name"],
                         "noise_offset": int(info.get("noise_offset", 0)),
+                        "augmentation_task_id": task_id,
                     },
                 })
                 completed += 1
@@ -532,6 +990,9 @@ def _export_task(task_id: str, request: dict[str, Any], samples: list[dict[str, 
     checksums: list[str] = []
     explicit_splits = _explicit_split_map(samples)
     audio_path_type = "archive_relative" if request["include_audio"] else "server_absolute"
+    project = request.get("project") or project_settings.get()
+    wekws_keyword_token = _wekws_keyword_token(project["keyword_id"])
+    wekws_filler_token = "<FILLER>"
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for index, sample in enumerate(samples):
             split = _split_for(sample, request, explicit_splits)
@@ -540,29 +1001,70 @@ def _export_task(task_id: str, request: dict[str, Any], samples: list[dict[str, 
                 audio_name = str(MANIFEST_DATA_ROOT / source_path.relative_to(DATA_ROOT))
             elif request["format"] == "folders":
                 audio_name = (
-                    f"folders/{split}/{_safe_component(sample['keyword_id'], 'keyword')}/"
+                    f"folders/{split}/{_safe_component(sample.get('target_kind', 'positive'), 'target')}/"
+                    f"{_safe_component(sample['keyword_id'], 'keyword')}/"
                     f"{sample['id']}.wav"
                 )
             else:
                 audio_name = f"audio/{split}/{sample['id']}.wav"
             sample_metadata = db.decode_json_fields(dict(sample)).get("metadata", {})
+            source_kind = sample.get("source_kind") or (
+                "human" if sample["provider"] == "real"
+                else "noise" if sample["provider"] == "noise"
+                else "tts"
+            )
+            variant_kind = sample.get("variant_kind") or (
+                "augmented" if sample.get("parent_id") else "clean"
+            )
+            source_prefix = "human_recording" if source_kind == "human" else source_kind
+            source = (
+                f"{source_prefix}_augmented"
+                if variant_kind == "augmented" else source_prefix
+            )
             record = {
                 "utt_id": sample["id"], "audio": audio_name, "label": sample["label"],
                 "audio_path_type": audio_path_type,
                 "keyword_id": sample["keyword_id"], "text": sample["text"],
+                "target_kind": sample.get("target_kind", "positive"),
+                "target": 1 if sample.get("target_kind", "positive") == "positive" else 0,
                 "speaker_id": _speaker_for(sample),
                 "split": split,
-                "source": (
-                    ("human_recording_augmented" if sample.get("parent_id") else "human_recording")
-                    if sample["provider"] == "real"
-                    else "tts" if not sample.get("parent_id") else "tts_augmented"
-                ),
+                "source": source,
+                "source_kind": source_kind,
+                "variant_kind": variant_kind,
+                "origin_task_id": sample.get("origin_task_id"),
+                "origin_job_id": sample.get("origin_job_id"),
                 "provider": sample["provider"], "voice_id": sample["voice_id"],
+                "voice_name": sample.get("voice_name", ""),
                 "model": sample["model"], "speed": sample["speed"], "pitch": sample["pitch"],
+                "volume": sample.get("volume", 50),
                 "seed": sample["seed"], "sha256": sample["sha256"],
+                "duration": sample.get("duration", 0.0),
+                "sample_rate": sample.get("sample_rate", 16_000),
+                "channels": sample.get("channels", 1),
+                "sample_width_bits": sample_metadata.get(
+                    "normalized_output_audio", {}
+                ).get("sample_width_bits", 16),
+                "audio_format": sample_metadata.get(
+                    "normalized_output_audio", {}
+                ).get("format", "wav"),
+                "quality_status": sample.get("quality_status", "unchecked"),
+                "notes": sample.get("notes", ""),
+                "created_at": sample.get("created_at"),
                 "parent_id": sample.get("parent_id"), "noise_id": sample.get("noise_id"),
                 "snr_db": sample.get("snr_db"),
                 "noise_offset": sample_metadata.get("noise_offset"),
+                "provider_audio_request": sample_metadata.get("provider_audio_request"),
+                "normalized_output_audio": sample_metadata.get(
+                    "normalized_output_audio",
+                    {
+                        "format": "wav",
+                        "sample_rate": sample.get("sample_rate", 16_000),
+                        "channels": sample.get("channels", 1),
+                        "sample_width_bits": 16,
+                    },
+                ),
+                "metadata": sample_metadata,
             }
             manifests[split].append(record)
             if request["include_audio"]:
@@ -576,13 +1078,73 @@ def _export_task(task_id: str, request: dict[str, Any], samples: list[dict[str, 
             if request["format"] == "wekws":
                 archive.writestr(
                     f"wekws/{split}/text",
-                    "".join(f"{record['utt_id']} {record['label']}\n" for record in records),
+                    "".join(
+                        f"{record['utt_id']} "
+                        f"{wekws_keyword_token if record['target_kind'] == 'positive' else wekws_filler_token}\n"
+                        for record in records
+                    ),
                 )
                 archive.writestr(
                     f"wekws/{split}/wav.scp",
                     "".join(f"{record['utt_id']} {record['audio']}\n" for record in records),
                 )
-        project = request.get("project") or project_settings.get()
+                archive.writestr(
+                    f"wekws/{split}/wav.dur",
+                    "".join(
+                        f"{record['utt_id']} {float(record['duration']):.6f}\n"
+                        for record in records
+                    ),
+                )
+                archive.writestr(
+                    f"wekws/{split}/target",
+                    "".join(f"{record['utt_id']} {record['target']}\n" for record in records),
+                )
+                archive.writestr(
+                    f"wekws/{split}/utt2target_kind",
+                    "".join(
+                        f"{record['utt_id']} {record['target_kind']}\n" for record in records
+                    ),
+                )
+                archive.writestr(
+                    f"wekws/{split}/utt2source",
+                    "".join(
+                        f"{record['utt_id']} {record['source_kind']}\n" for record in records
+                    ),
+                )
+                archive.writestr(
+                    f"wekws/{split}/utt2variant",
+                    "".join(
+                        f"{record['utt_id']} {record['variant_kind']}\n" for record in records
+                    ),
+                )
+                archive.writestr(
+                    f"wekws/{split}/utt2job",
+                    "".join(
+                        f"{record['utt_id']} {record['origin_job_id'] or '-'}\n"
+                        for record in records
+                    ),
+                )
+        if request["format"] == "wekws":
+            archive.writestr(
+                "wekws/dict/dict.txt",
+                f"{wekws_filler_token} -1\n{wekws_keyword_token} 0\n",
+            )
+            archive.writestr(
+                "wekws/dict/words.txt",
+                f"{wekws_filler_token}\n{wekws_keyword_token}\n",
+            )
+            archive.writestr(
+                "wekws/README.txt",
+                (
+                    "WeKWS max-pooling single-keyword export\n"
+                    f"keyword token: {wekws_keyword_token}\n"
+                    f"filler token: {wekws_filler_token}\n\n"
+                    "Run make_list.py from the extracted archive root, for example:\n"
+                    "python /path/to/wekws/tools/make_list.py "
+                    "wekws/train/wav.scp wekws/train/text wekws/train/wav.dur "
+                    "wekws/train/data.list\n"
+                ),
+            )
         archive.writestr("dataset.json", json.dumps({
             "wake_word": project["display_text"], "label": project["label"],
             "keyword_id": project["keyword_id"],
@@ -597,18 +1159,31 @@ def _export_task(task_id: str, request: dict[str, Any], samples: list[dict[str, 
                 "real_explicit_split_precedence": True,
             },
             "splits": {key: len(value) for key, value in manifests.items()},
+            "targets": {
+                target_kind: sum(
+                    1 for records in manifests.values() for record in records
+                    if record["target_kind"] == target_kind
+                )
+                for target_kind in ("positive", "negative", "background")
+            },
+            "wekws_text_semantics": {
+                "positive": wekws_keyword_token,
+                "negative": wekws_filler_token,
+                "background": wekws_filler_token,
+                "class_ids": {wekws_filler_token: -1, wekws_keyword_token: 0},
+            } if request["format"] == "wekws" else None,
+            "display_text_unavailable": bool(project.get("display_text_unavailable", False)),
         }, ensure_ascii=False, indent=2))
         if checksums:
             archive.writestr("SHA256SUMS", "\n".join(checksums) + "\n")
     db.execute("INSERT INTO exports(id,name,file_path,sample_count,format,created_at) VALUES(?,?,?,?,?,?)",
                (export_id, safe_name, str(archive_path), len(samples), request["format"], utc_now()))
-    _update_task(task_id, status="completed", completed=len(samples),
-                 message=f"已导出 {len(samples)} 条样本", result_json={"export_id": export_id})
-
-
-@app.get("/healthz", include_in_schema=False)
-def healthz() -> dict[str, bool]:
-    return {"ok": True}
+    result = _task_result(task_id)
+    result["export_id"] = export_id
+    _update_task(
+        task_id, status="completed", completed=len(samples),
+        message=f"已导出 {len(samples)} 条样本", result_json=result,
+    )
 
 
 @app.get("/api/status")
@@ -621,7 +1196,10 @@ def status() -> dict[str, Any]:
         "SELECT COALESCE(SUM(duration), 0) AS seconds FROM samples WHERE deleted_at IS NULL"
     )["seconds"]
     running_tasks = db.one(
-        "SELECT COUNT(*) AS n FROM tasks WHERE status IN ('queued','running')"
+        "SELECT COUNT(*) AS n FROM tasks WHERE status='running'"
+    )["n"]
+    queued_tasks = db.one(
+        "SELECT COUNT(*) AS n FROM tasks WHERE status='queued'"
     )["n"]
     voice_count = db.one("SELECT COUNT(*) AS n FROM voices WHERE enabled=1")["n"]
     noise_count = db.one(
@@ -635,9 +1213,15 @@ def status() -> dict[str, Any]:
         "project": project,
         "samples": sample_count, "augmented_samples": augmented_count,
         "sample_duration_seconds": round(float(duration), 3),
-        "running_tasks": running_tasks, "voices": voice_count, "noises": noise_count,
+        "running_tasks": running_tasks, "queued_tasks": queued_tasks,
+        "worker_limit": WORKER_LIMIT, "voices": voice_count, "noises": noise_count,
         "disk_free_gb": round(disk.free / 1024**3, 1),
     }
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, Any]:
+    return {"ok": True, "app": "语音数据集工坊", "version": app.version}
 
 
 @app.get("/api/settings/project")
@@ -656,6 +1240,14 @@ def providers() -> list[dict[str, Any]]:
     for item in available_providers(provider_settings):
         result.append(asdict(item) if is_dataclass(item) else dict(item) if isinstance(item, dict) else {"id": str(item)})
     return result
+
+
+@app.get("/api/providers/capabilities")
+def provider_capabilities() -> dict[str, dict[str, Any]]:
+    return {
+        provider_id: get_provider_capabilities(provider_id)
+        for provider_id in ("mock", "aliyun", "volcengine")
+    }
 
 
 def _provider_settings_model(
@@ -793,23 +1385,117 @@ def refresh_voices(payload: dict[str, Any] = Body(default_factory=dict)) -> dict
     }
 
 
+def _aggregate_parent_task(parent_id: str) -> None:
+    children = db.all(
+        "SELECT * FROM tasks WHERE parent_id=? ORDER BY item_index,created_at", (parent_id,)
+    )
+    if not children:
+        return
+    completed = sum(int(child.get("completed") or 0) for child in children)
+    recorded_failed = sum(int(child.get("failed") or 0) for child in children)
+    failed = recorded_failed + sum(
+        max(
+            0,
+            int(child.get("total") or 0)
+            - int(child.get("completed") or 0)
+            - int(child.get("failed") or 0),
+        )
+        for child in children
+        if child.get("status") == "failed"
+    )
+    statuses = [str(child.get("status") or "queued") for child in children]
+    all_terminal = all(status in TERMINAL_TASK_STATES for status in statuses)
+    if all_terminal:
+        if failed == 0 and all(status == "completed" for status in statuses):
+            status_value = "completed"
+        elif completed > 0:
+            status_value = "partial"
+        else:
+            status_value = "failed"
+    else:
+        status_value = "running"
+    estimated_cost = sum(float(child.get("estimated_cost") or 0.0) for child in children)
+    billable_units = sum(float(child.get("billable_units") or 0.0) for child in children)
+    currencies = {str(child.get("currency") or "") for child in children if child.get("currency")}
+    currency = next(iter(currencies)) if len(currencies) == 1 else ("MIXED" if currencies else "")
+    parent_result = _task_result(parent_id)
+    child_results = [db.decode_json_fields(dict(child)).get("result", {}) for child in children]
+    cost_by_currency: dict[str, float] = {}
+    for result in child_results:
+        for key, value in (result.get("cost_by_currency") or {}).items():
+            cost_by_currency[str(key)] = cost_by_currency.get(str(key), 0.0) + float(value)
+    parent_result.update({
+        "child_ids": [child["id"] for child in children],
+        "child_status_counts": {
+            state: statuses.count(state)
+            for state in ("queued", "running", "completed", "partial", "failed")
+        },
+        "cost_available": all(
+            bool(result.get("cost_available")) for result in child_results
+        ),
+        "cost_by_currency": {
+            key: round(value, 8) for key, value in sorted(cost_by_currency.items())
+        },
+        "cost_disclaimer": "预估费用，最终费用以供应商账单为准",
+    })
+    message = (
+        f"子任务 {sum(status in TERMINAL_TASK_STATES for status in statuses)}/{len(children)}；"
+        f"样本完成 {completed}，失败 {failed}"
+    )
+    _update_task(
+        parent_id,
+        status=status_value,
+        completed=completed,
+        failed=failed,
+        message=message,
+        result_json=parent_result,
+        estimated_cost=estimated_cost,
+        currency=currency,
+        billable_units=billable_units,
+    )
+
+
+def _run_generate_batch(
+    parent_id: str,
+    child_specs: list[tuple[str, dict[str, Any], list[dict[str, Any]]]],
+    applied_concurrency: int,
+) -> None:
+    _update_task(parent_id, status="running")
+    pending = iter(child_specs)
+    active: set[Future[Any]] = set()
+
+    def submit_next() -> bool:
+        try:
+            child_id, payload, voices = next(pending)
+        except StopIteration:
+            return False
+        active.add(_submit(child_id, _generate_task, payload, voices))
+        return True
+
+    try:
+        for _ in range(applied_concurrency):
+            if not submit_next():
+                break
+        while active:
+            done, _ = wait(active, return_when=FIRST_COMPLETED)
+            active.difference_update(done)
+            _aggregate_parent_task(parent_id)
+            for _ in done:
+                submit_next()
+        _aggregate_parent_task(parent_id)
+    except Exception as exc:
+        result = _task_result(parent_id)
+        result["internal_error"] = type(exc).__name__
+        _update_task(
+            parent_id, status="failed", message=str(exc)[:1000], result_json=result
+        )
+
+
 @app.post("/api/tasks/generate")
-def create_generate_task(request: GenerateRequest) -> dict[str, str]:
-    placeholders = ",".join("?" for _ in request.voice_ids)
-    selected = db.all(
-        f"SELECT * FROM voices WHERE enabled=1 AND id IN ({placeholders})", tuple(request.voice_ids)
-    ) if request.voice_ids else []
+def create_generate_task(request: GenerateRequest) -> dict[str, Any]:
+    selected = _select_voices(request.voice_ids)
     if not selected:
         raise HTTPException(400, "请选择至少一个可用音色")
-    uses_billable_provider = any(
-        str(voice["provider"]).lower() in BILLABLE_TTS_PROVIDERS
-        for voice in selected
-    )
-    if uses_billable_provider and not request.cost_acknowledged:
-        raise HTTPException(
-            400,
-            "云端 TTS 调用可能产生费用；请确认费用由凭据所属账号承担后再提交",
-        )
     if any(voice["provider"] == "volcengine" for voice in selected) and abs(
         request.pitch - 1.0
     ) > 1e-9:
@@ -825,14 +1511,146 @@ def create_generate_task(request: GenerateRequest) -> dict[str, str]:
     ):
         if field not in request.model_fields_set:
             payload[field] = project[project_field]
-    task_id = _create_task("generate", len(selected) * request.count, payload)
+    _require_cost_acknowledgement(selected, request.cost_acknowledged)
+    _validate_provider_audio(payload, selected)
+    estimate = _estimate_generation_cost(payload["text"], selected, request.count)
+    task_id = _create_task(
+        "generate", len(selected) * request.count, payload,
+        estimated_cost=estimate["estimated_cost"], currency=estimate["currency"],
+        billable_units=estimate["billable_units"], result=estimate,
+    )
     _submit(task_id, _generate_task, payload, selected)
-    return {"id": task_id, "task_id": task_id}
+    return {
+        "id": task_id, "task_id": task_id,
+        "estimated_cost": estimate["estimated_cost"], "currency": estimate["currency"],
+        "cost_available": estimate["cost_available"], "cost_is_estimate": True,
+    }
+
+
+@app.post("/api/tasks/generate-batch")
+def create_generate_batch(request: GenerateBatchRequest) -> dict[str, Any]:
+    selected = _select_voices(request.voice_ids)
+    if not selected:
+        raise HTTPException(400, "请选择至少一个可用音色")
+    has_volcengine = any(
+        voice["provider"] == "volcengine" for voice in selected
+    )
+    if has_volcengine and request.random_pitch:
+        raise HTTPException(
+            400,
+            "火山引擎 V1 暂不支持随机音高；混合供应商需要随机音高时请拆分批次",
+        )
+    if has_volcengine and abs(request.pitch - 1.0) > 1e-9:
+        raise HTTPException(
+            400, "火山引擎 V1 暂不支持音高调节，请将固定音高设为 0 st"
+        )
+    total = len(request.texts) * len(selected) * request.count
+    if total > MAX_TASK_ITEMS:
+        raise HTTPException(400, f"单个批次最多 {MAX_TASK_ITEMS} 个合成项，请拆分任务")
+    payload = request.model_dump()
+    project = project_settings.get()
+    if "label" not in request.model_fields_set:
+        payload["label"] = project["label"]
+    if "keyword_id" not in request.model_fields_set:
+        payload["keyword_id"] = project["keyword_id"]
+    _require_cost_acknowledgement(selected, request.cost_acknowledged)
+    _validate_provider_audio(payload, selected)
+    applied_concurrency = min(request.concurrency, WORKER_LIMIT, len(request.texts))
+    child_estimates = [
+        _estimate_generation_cost(text, selected, request.count) for text in request.texts
+    ]
+    currencies = {
+        str(estimate["currency"]) for estimate in child_estimates if estimate["currency"]
+    }
+    currency = next(iter(currencies)) if len(currencies) == 1 else ("MIXED" if currencies else "")
+    parent_result = {
+        "requested_concurrency": request.concurrency,
+        "applied_concurrency": applied_concurrency,
+        "cost_available": all(estimate["cost_available"] for estimate in child_estimates),
+        "cost_by_currency": {
+            currency_key: round(sum(
+                estimate.get("cost_by_currency", {}).get(currency_key, 0.0)
+                for estimate in child_estimates
+            ), 8)
+            for currency_key in sorted({
+                key for estimate in child_estimates
+                for key in estimate.get("cost_by_currency", {})
+            })
+        },
+        "cost_disclaimer": "预估费用，最终费用以供应商账单为准",
+    }
+    parent_id = _create_task(
+        "generate_batch", total,
+        {**payload, "applied_concurrency": applied_concurrency},
+        estimated_cost=sum(estimate["estimated_cost"] for estimate in child_estimates),
+        currency=currency,
+        billable_units=sum(estimate["billable_units"] for estimate in child_estimates),
+        result=parent_result,
+    )
+    child_specs: list[tuple[str, dict[str, Any], list[dict[str, Any]]]] = []
+    child_ids: list[str] = []
+    for item_index, (text, estimate) in enumerate(zip(request.texts, child_estimates)):
+        child_payload = {
+            key: value for key, value in payload.items() if key not in {"texts", "concurrency"}
+        }
+        child_payload.update({
+            "text": text, "item_index": item_index, "batch_mode": True,
+            "origin_job_id": parent_id,
+        })
+        child_id = _create_task(
+            "generate", len(selected) * request.count, child_payload,
+            parent_id=parent_id, item_index=item_index,
+            estimated_cost=estimate["estimated_cost"], currency=estimate["currency"],
+            billable_units=estimate["billable_units"], result=estimate,
+        )
+        child_ids.append(child_id)
+        child_specs.append((child_id, child_payload, selected))
+    parent_result["child_ids"] = child_ids
+    _update_task(parent_id, result_json=parent_result)
+    threading.Thread(
+        target=_run_generate_batch,
+        args=(parent_id, child_specs, applied_concurrency),
+        name=f"generate-batch-{parent_id[:8]}",
+        daemon=True,
+    ).start()
+    return {
+        "id": parent_id, "task_id": parent_id, "parent_id": parent_id,
+        "child_ids": child_ids, "requested_concurrency": request.concurrency,
+        "applied_concurrency": applied_concurrency,
+        "estimated_cost": round(sum(e["estimated_cost"] for e in child_estimates), 8),
+        "currency": currency,
+        "cost_available": parent_result["cost_available"], "cost_is_estimate": True,
+    }
 
 
 @app.get("/api/tasks")
-def tasks(limit: int = Query(50, ge=1, le=500)) -> list[dict[str, Any]]:
-    return [_json_row(row) for row in db.all("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,))]
+def tasks(
+    limit: int = Query(50, ge=1, le=500), parent_id: str | None = None,
+) -> list[dict[str, Any]]:
+    if parent_id is not None:
+        rows = db.all(
+            "SELECT * FROM tasks WHERE parent_id=? ORDER BY item_index,created_at LIMIT ?",
+            (parent_id, limit),
+        )
+    else:
+        rows = db.all(
+            "SELECT * FROM tasks WHERE parent_id IS NULL "
+            "ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+    result = [_json_row(row) for row in rows]
+    if parent_id is None:
+        for item, row in zip(result, rows):
+            if row.get("type") == "generate_batch":
+                item["children"] = [
+                    _json_row(child)
+                    for child in db.all(
+                        "SELECT * FROM tasks WHERE parent_id=? "
+                        "ORDER BY item_index,created_at",
+                        (row["id"],),
+                    )
+                ]
+    return result
 
 
 @app.get("/api/tasks/{task_id}")
@@ -840,25 +1658,42 @@ def task(task_id: str) -> dict[str, Any]:
     row = db.one("SELECT * FROM tasks WHERE id=?", (task_id,))
     if not row:
         raise HTTPException(404, "任务不存在")
-    return _json_row(row)
+    result = _json_row(row)
+    if row.get("type") == "generate_batch":
+        result["children"] = [
+            _json_row(child)
+            for child in db.all(
+                "SELECT * FROM tasks WHERE parent_id=? ORDER BY item_index,created_at",
+                (task_id,),
+            )
+        ]
+    return result
 
 
 @app.post("/api/tasks/{task_id}/retry")
 def retry_task(
-    task_id: str, request: RetryTaskRequest | None = None,
-) -> dict[str, str]:
+    task_id: str, confirmation: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
     previous = db.one("SELECT * FROM tasks WHERE id=?", (task_id,))
     if not previous:
         raise HTTPException(404, "任务不存在")
     if previous["status"] in {"queued", "running"}:
         raise HTTPException(409, "任务仍在运行，不能重复创建")
     payload = db.decode_json_fields(previous).get("payload", {})
+    payload["cost_acknowledged"] = bool(confirmation.get("cost_acknowledged", False))
     try:
+        if previous["type"] == "generate_batch":
+            payload.pop("applied_concurrency", None)
+            return create_generate_batch(GenerateBatchRequest(**payload))
         if previous["type"] == "generate":
-            # A retry may call the cloud provider again, so require a fresh acknowledgement.
-            payload["cost_acknowledged"] = bool(
-                request and request.cost_acknowledged
-            )
+            if previous.get("parent_id"):
+                child_payload = dict(payload)
+                child_payload["texts"] = [child_payload.pop("text")]
+                child_payload["concurrency"] = 1
+                child_payload.pop("batch_mode", None)
+                child_payload.pop("item_index", None)
+                child_payload.pop("origin_job_id", None)
+                return create_generate_batch(GenerateBatchRequest(**child_payload))
             return create_generate_task(GenerateRequest(**payload))
         if previous["type"] == "augment":
             return augment(AugmentRequest(**payload))
@@ -869,15 +1704,22 @@ def retry_task(
     raise HTTPException(400, "该任务类型不支持重试")
 
 
-@app.get("/api/samples")
-def samples(
+def _sample_filter(
     provider: str = "", voice_id: str = "", quality: str = "", split: str = "",
     gender: str = "", age_group: str = "", sample_type: str = "",
-    search: str = "", page: int = Query(1, ge=1), page_size: int = Query(24, ge=1, le=200),
-) -> dict[str, Any]:
+    search: str = "", keyword_id: str = "", target_kind: str = "",
+    origin_job_id: str = "",
+) -> tuple[str, list[Any]]:
+    if target_kind:
+        try:
+            target_kind = _canonical_target_kind(target_kind)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     clauses, params = ["deleted_at IS NULL"], []
     for column, value in (("provider", provider), ("voice_id", voice_id),
-                          ("quality_status", quality), ("split", split)):
+                          ("quality_status", quality), ("split", split),
+                          ("keyword_id", keyword_id), ("target_kind", target_kind),
+                          ("origin_job_id", origin_job_id)):
         if value:
             clauses.append(f"{column}=?"); params.append(value)
     if gender:
@@ -891,13 +1733,77 @@ def samples(
     elif sample_type == "clean":
         clauses.append("provider!='real' AND parent_id IS NULL")
     if search:
-        clauses.append("(text LIKE ? OR voice_name LIKE ? OR id LIKE ?)")
-        params.extend((f"%{search}%", f"%{search}%", f"%{search}%"))
-    where = " AND ".join(clauses)
+        clauses.append("(text LIKE ? OR voice_name LIKE ? OR id LIKE ? OR keyword_id LIKE ?)")
+        params.extend((f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"))
+    return " AND ".join(clauses), params
+
+
+@app.get("/api/samples")
+def samples(
+    provider: str = "", voice_id: str = "", quality: str = "", split: str = "",
+    gender: str = "", age_group: str = "", sample_type: str = "",
+    search: str = "", keyword_id: str = "", target_kind: str = "",
+    origin_job_id: str = "",
+    page: int = Query(1, ge=1), page_size: int = Query(24, ge=1, le=200),
+) -> dict[str, Any]:
+    where, params = _sample_filter(
+        provider, voice_id, quality, split, gender, age_group, sample_type,
+        search, keyword_id, target_kind, origin_job_id,
+    )
     total = db.one(f"SELECT COUNT(*) AS n FROM samples WHERE {where}", tuple(params))["n"]
-    params.extend((page_size, (page - 1) * page_size))
-    rows = db.all(f"SELECT * FROM samples WHERE {where} ORDER BY created_at DESC LIMIT ? OFFSET ?", tuple(params))
+    page_params = [*params, page_size, (page - 1) * page_size]
+    rows = db.all(
+        f"SELECT * FROM samples WHERE {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        tuple(page_params),
+    )
     return {"items": [_json_row(row) for row in rows], "total": total, "page": page, "page_size": page_size}
+
+
+@app.get("/api/samples/ids")
+def sample_ids(
+    provider: str = "", voice_id: str = "", quality: str = "", split: str = "",
+    gender: str = "", age_group: str = "", sample_type: str = "",
+    search: str = "", keyword_id: str = "", target_kind: str = "",
+    origin_job_id: str = "",
+) -> dict[str, Any]:
+    where, params = _sample_filter(
+        provider, voice_id, quality, split, gender, age_group, sample_type,
+        search, keyword_id, target_kind, origin_job_id,
+    )
+    rows = db.all(
+        f"SELECT id FROM samples WHERE {where} ORDER BY created_at DESC", tuple(params)
+    )
+    return {"ids": [row["id"] for row in rows], "total": len(rows)}
+
+
+@app.get("/api/samples/keywords")
+def sample_keywords() -> list[dict[str, Any]]:
+    rows = db.all(
+        """
+        SELECT keyword_id,
+               COALESCE(
+                   MAX(CASE WHEN target_kind='positive' THEN NULLIF(label, '') END),
+                   MAX(CASE WHEN target_kind='negative' THEN NULLIF(label, '') END),
+                   keyword_id
+               ) AS label,
+               COUNT(*) AS sample_count,
+               SUM(CASE WHEN target_kind='positive' THEN 1 ELSE 0 END) AS positive_count,
+               SUM(CASE WHEN target_kind='negative' THEN 1 ELSE 0 END) AS negative_count,
+               SUM(CASE WHEN target_kind='background' THEN 1 ELSE 0 END) AS background_count
+        FROM samples
+        WHERE deleted_at IS NULL
+        GROUP BY keyword_id
+        ORDER BY keyword_id
+        """
+    )
+    current = project_settings.get()
+    for row in rows:
+        is_current = row["keyword_id"] == current["keyword_id"]
+        row["display_text"] = (
+            current["display_text"] if is_current else row["label"] or row["keyword_id"]
+        )
+        row["display_text_unavailable"] = not is_current
+    return rows
 
 
 @app.post("/api/samples/upload")
@@ -905,6 +1811,7 @@ async def upload_samples(
     files: list[UploadFile] = File(...), text: str | None = Form(None),
     label: str | None = Form(None), speaker_id: str = Form(...),
     keyword_id: str | None = Form(None),
+    target_kind: str = Form("positive"),
     split: str = Form("unassigned"), gender: str = Form("unknown"),
     age_group: str = Form("unknown"),
 ) -> dict[str, Any]:
@@ -920,6 +1827,10 @@ async def upload_samples(
     )
     if not effective_text or not effective_label or not effective_keyword_id:
         raise HTTPException(400, "text、label 和 keyword_id 不能为空")
+    try:
+        target_kind = _canonical_target_kind(target_kind)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if len(effective_text) > 10_000 or len(effective_label) > 10_000:
         raise HTTPException(400, "text 或 label 过长")
     if len(effective_keyword_id) > 100:
@@ -952,7 +1863,14 @@ async def upload_samples(
             info = await asyncio.to_thread(normalize_wav, temp, target, 16000)
             _validate_duration(info, *REAL_SAMPLE_DURATION_RANGE, "真人样本")
             digest = await asyncio.to_thread(sha256_file, target)
-            if db.one("SELECT id FROM samples WHERE sha256=? AND deleted_at IS NULL", (digest,)):
+            if db.one(
+                """
+                SELECT id FROM samples
+                WHERE sha256=? AND keyword_id=? AND target_kind=?
+                  AND deleted_at IS NULL
+                """,
+                (digest, effective_keyword_id, target_kind),
+            ):
                 target.unlink(missing_ok=True)
                 duplicates.append(upload.filename or sample_id)
                 continue
@@ -960,13 +1878,16 @@ async def upload_samples(
                 "id": sample_id, "provider": "real", "voice_id": speaker_id,
                 "voice_name": speaker_id, "model": "recording", "text": effective_text,
                 "label": effective_label, "keyword_id": effective_keyword_id, "speed": 1.0,
+                "target_kind": target_kind, "source_kind": "human", "variant_kind": "clean",
                 "pitch": 1.0, "volume": 50, "seed": 0, "file_path": str(target),
                 "duration": info["duration"], "sample_rate": info["sample_rate"],
                 "channels": info["channels"], "sha256": digest, "split": split,
                 "quality_status": "pending",
                 "metadata": {
                     "speaker_id": speaker_id, "gender": gender, "age_group": age_group,
-                    "original_filename": upload.filename or "", "source": "human_recording",
+                    "original_filename": upload.filename or "",
+                    "original_content_type": str(upload.content_type or "")[:255],
+                    "source": "human_recording",
                 },
             })
             imported.append(sample_id)
@@ -987,7 +1908,9 @@ def update_sample(sample_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     row = db.one("SELECT * FROM samples WHERE id=? AND deleted_at IS NULL", (sample_id,))
     if not row:
         raise HTTPException(404, "样本不存在")
-    allowed = {"text", "label", "quality_status", "notes", "split"}
+    allowed = {
+        "text", "label", "keyword_id", "target_kind", "quality_status", "notes", "split",
+    }
     values = {key: value for key, value in payload.items() if key in allowed}
     metadata_keys = {"speaker_id", "gender", "age_group", "tags"}
     metadata_updates = {key: payload[key] for key in metadata_keys if key in payload}
@@ -1011,7 +1934,12 @@ def update_sample(sample_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         "unassigned", "unspecified", "train", "dev", "test",
     }:
         raise HTTPException(400, "无效的数据划分")
-    for key in ("text", "label"):
+    if "target_kind" in values:
+        try:
+            values["target_kind"] = _canonical_target_kind(values["target_kind"])
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    for key in ("text", "label", "keyword_id"):
         if key in values and not str(values[key]).strip():
             raise HTTPException(400, f"{key} 不能为空")
     assignments = ", ".join(f"{key}=?" for key in values)
@@ -1164,6 +2092,117 @@ async def upload_noise(
     return {"id": noise_id, **info, "sha256": digest, "metadata": metadata}
 
 
+def _materialize_noise_task(
+    task_id: str, request: dict[str, Any], selected: list[dict[str, Any]],
+) -> None:
+    created: list[str] = []
+    duplicates: list[str] = []
+    failed = 0
+    for noise in selected:
+        existing = db.one(
+            """
+            SELECT id FROM samples
+            WHERE deleted_at IS NULL AND provider='noise' AND voice_id=?
+              AND keyword_id=? AND target_kind='background'
+            """,
+            (noise["id"], request["keyword_id"]),
+        )
+        if existing:
+            duplicates.append(existing["id"])
+            _update_task(task_id, completed=len(created) + len(duplicates), failed=failed)
+            continue
+        sample_id = uuid.uuid4().hex
+        source = _safe_file(noise["file_path"])
+        target = (
+            SAMPLES_DIR / "noise" / _safe_component(request["keyword_id"], "keyword")
+            / f"{sample_id}.wav"
+        )
+        try:
+            if not source.is_file():
+                raise AudioError("背景噪声文件丢失")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            metadata = db.decode_json_fields(dict(noise)).get("metadata", {})
+            _insert_sample({
+                "id": sample_id, "provider": "noise", "voice_id": noise["id"],
+                "voice_name": noise["name"], "model": "materialized",
+                "text": noise["name"], "label": "__noise__",
+                "keyword_id": request["keyword_id"], "target_kind": "background",
+                "source_kind": "noise", "variant_kind": "clean",
+                "origin_task_id": task_id, "origin_job_id": task_id,
+                "speed": 1.0, "pitch": 1.0, "volume": 50, "seed": 0,
+                "file_path": str(target), "duration": noise["duration"],
+                "sample_rate": noise["sample_rate"], "channels": 1,
+                "sha256": noise["sha256"], "quality_status": "pass",
+                "metadata": {
+                    **metadata, "noise_id": noise["id"],
+                    "noise_category": noise["category"], "materialized": True,
+                },
+            })
+            created.append(sample_id)
+        except (AudioError, OSError) as exc:
+            target.unlink(missing_ok=True)
+            failed += 1
+            _update_task(task_id, message=str(exc)[:500])
+        except Exception as exc:
+            target.unlink(missing_ok=True)
+            logger.error(
+                "Unexpected noise materialization failure: task_id=%s noise_id=%s type=%s",
+                task_id, noise["id"], type(exc).__name__,
+            )
+            raise RuntimeError("噪声物化发生内部错误，请查看服务器日志") from exc
+        _update_task(task_id, completed=len(created) + len(duplicates), failed=failed)
+    completed = len(created) + len(duplicates)
+    status_value = "completed" if failed == 0 else ("partial" if completed else "failed")
+    result = {
+        "sample_ids": created, "duplicate_sample_ids": duplicates,
+        **_local_cost_result(),
+    }
+    _update_task(
+        task_id, status=status_value, completed=completed, failed=failed,
+        message=f"已物化 {len(created)}，复用 {len(duplicates)}，失败 {failed}",
+        result_json=result,
+    )
+
+
+@app.post("/api/noises/materialize")
+def materialize_noises(request: NoiseMaterializeRequest) -> dict[str, Any]:
+    unique_noise_ids = list(dict.fromkeys(request.noise_ids))
+    placeholders = ",".join("?" for _ in unique_noise_ids)
+    selected = db.all(
+        f"SELECT * FROM noises WHERE deleted_at IS NULL AND enabled=1 "
+        f"AND id IN ({placeholders}) ORDER BY created_at",
+        tuple(unique_noise_ids),
+    )
+    if len(selected) != len(unique_noise_ids):
+        raise HTTPException(400, "选择中包含不存在、已删除或已禁用的背景噪声")
+    task_id = _create_task(
+        "materialize_noise", len(selected), request.model_dump(),
+        result=_local_cost_result(),
+    )
+    _execute_task(task_id, _materialize_noise_task, request.model_dump(), selected)
+    task_row = _json_row(db.one("SELECT * FROM tasks WHERE id=?", (task_id,)))
+    task_result = task_row.get("result", {})
+    if task_result.get("internal_error"):
+        remaining = max(0, int(task_row["total"]) - int(task_row["completed"]))
+        if remaining > int(task_row["failed"]):
+            _update_task(task_id, failed=remaining)
+        raise HTTPException(
+            500,
+            {
+                "message": "噪声物化失败，请查看任务详情和服务器日志",
+                "task_id": task_id,
+            },
+        )
+    return {
+        "id": task_id, "task_id": task_id, "status": task_row["status"],
+        "created": len(task_result.get("sample_ids", [])),
+        "sample_ids": task_result.get("sample_ids", []),
+        "duplicates": task_result.get("duplicate_sample_ids", []),
+        "failed": task_row["failed"],
+    }
+
+
 @app.patch("/api/noises/{noise_id}")
 def update_noise(noise_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     current = db.one("SELECT * FROM noises WHERE id=? AND deleted_at IS NULL", (noise_id,))
@@ -1223,20 +2262,110 @@ def restore_noise(noise_id: str) -> dict[str, Any]:
     return {"restored": 1, "noise_id": noise_id}
 
 
+def _select_explicit_samples(
+    sample_ids: list[str], keyword_id: str, operation: str,
+) -> list[dict[str, Any]]:
+    """Resolve an explicit selection without silently dropping invalid IDs."""
+
+    unique_ids = list(dict.fromkeys(str(sample_id).strip() for sample_id in sample_ids))
+    placeholders = ",".join("?" for _ in unique_ids)
+    selected = db.all(
+        f"SELECT * FROM samples WHERE deleted_at IS NULL AND id IN ({placeholders})",
+        tuple(unique_ids),
+    )
+    if len(selected) != len(unique_ids):
+        raise HTTPException(
+            400,
+            f"{operation}选择中包含不存在或已删除的样本；请刷新样本列表后重试",
+        )
+    selected_keyword_ids = {
+        str(sample.get("keyword_id") or "").strip() for sample in selected
+    }
+    if len(selected_keyword_ids) != 1:
+        raise HTTPException(400, f"{operation}选择必须属于同一个 keyword_id")
+    expected_keyword_id = keyword_id.strip()
+    if expected_keyword_id:
+        mismatched = sorted({
+            str(sample.get("keyword_id") or "")
+            for sample in selected
+            if str(sample.get("keyword_id") or "") != expected_keyword_id
+        })
+        if mismatched:
+            raise HTTPException(
+                400,
+                f"{operation}选择包含其他关键词样本；keyword_id 必须全部为 "
+                f"{expected_keyword_id}",
+            )
+    return selected
+
+
+def _export_project_metadata(
+    samples: list[dict[str, Any]], requested_keyword_id: str,
+) -> dict[str, Any]:
+    """Describe the selected keyword instead of blindly using current settings."""
+
+    keyword_ids = {
+        str(sample.get("keyword_id") or "").strip() for sample in samples
+    }
+    if len(keyword_ids) != 1:
+        raise HTTPException(400, "导出样本必须属于同一个 keyword_id")
+    keyword_id = next(iter(keyword_ids))
+    if not keyword_id:
+        raise HTTPException(400, "导出样本缺少 keyword_id")
+    if requested_keyword_id.strip() and requested_keyword_id.strip() != keyword_id:
+        raise HTTPException(400, "导出样本与请求的 keyword_id 不一致")
+
+    preferred = [
+        sample for sample in samples if sample.get("target_kind") == "positive"
+    ] or [
+        sample for sample in samples if sample.get("target_kind") != "background"
+    ]
+    labels = [
+        str(sample.get("label") or "").strip() for sample in preferred
+        if str(sample.get("label") or "").strip()
+    ]
+    representative_label = (
+        sorted(set(labels), key=lambda value: (-labels.count(value), value))[0]
+        if labels else keyword_id
+    )
+    current = project_settings.get()
+    is_current = current.get("keyword_id") == keyword_id
+    return {
+        "display_text": current["display_text"] if is_current else representative_label,
+        "label": representative_label,
+        "keyword_id": keyword_id,
+        "display_text_unavailable": not is_current,
+    }
+
+
 @app.post("/api/augment")
 def augment(request: AugmentRequest) -> dict[str, str]:
     if request.sample_ids:
-        placeholders = ",".join("?" for _ in request.sample_ids)
-        selected = db.all(f"SELECT * FROM samples WHERE deleted_at IS NULL AND id IN ({placeholders})",
-                          tuple(request.sample_ids))
+        selected = _select_explicit_samples(
+            request.sample_ids, request.keyword_id, "增强"
+        )
+    elif request.keyword_id.strip():
+        selected = db.all(
+            """
+            SELECT * FROM samples
+            WHERE deleted_at IS NULL AND parent_id IS NULL AND keyword_id=?
+              AND target_kind!='background'
+            """,
+            (request.keyword_id.strip(),),
+        )
     else:
-        selected = db.all("SELECT * FROM samples WHERE deleted_at IS NULL AND parent_id IS NULL")
+        raise HTTPException(400, "未显式选择样本时必须提供 keyword_id")
     if not selected:
         raise HTTPException(400, "没有可增强的样本")
+    if any(sample.get("target_kind") == "background" for sample in selected):
+        raise HTTPException(400, "背景噪声样本不能再次执行噪声增强")
     if len(selected) * request.count > MAX_TASK_ITEMS:
         raise HTTPException(400, f"单个任务最多 {MAX_TASK_ITEMS} 个增强项，请拆分任务")
     payload = request.model_dump()
-    task_id = _create_task("augment", len(selected) * request.count, payload)
+    task_id = _create_task(
+        "augment", len(selected) * request.count, payload,
+        result=_local_cost_result(),
+    )
     _submit(task_id, _augment_task, payload, selected)
     return {"id": task_id, "task_id": task_id}
 
@@ -1246,17 +2375,25 @@ def create_export(request: ExportRequest) -> dict[str, str]:
     if request.train_ratio + request.dev_ratio >= 1:
         raise HTTPException(400, "train_ratio + dev_ratio 必须小于 1")
     if request.sample_ids:
-        placeholders = ",".join("?" for _ in request.sample_ids)
-        selected = db.all(f"SELECT * FROM samples WHERE deleted_at IS NULL AND id IN ({placeholders})",
-                          tuple(request.sample_ids))
+        selected = _select_explicit_samples(
+            request.sample_ids, request.keyword_id, "导出"
+        )
+    elif request.keyword_id.strip():
+        selected = db.all(
+            "SELECT * FROM samples WHERE deleted_at IS NULL AND keyword_id=? ORDER BY created_at",
+            (request.keyword_id.strip(),),
+        )
     else:
-        selected = db.all("SELECT * FROM samples WHERE deleted_at IS NULL ORDER BY created_at")
+        raise HTTPException(400, "未显式选择样本时必须提供 keyword_id")
     if not selected:
         raise HTTPException(400, "没有可导出的样本")
     _explicit_split_map(selected)
     payload = request.model_dump()
-    payload["project"] = project_settings.get()
-    task_id = _create_task("export", len(selected), payload)
+    payload["keyword_id"] = str(selected[0]["keyword_id"])
+    payload["project"] = _export_project_metadata(selected, request.keyword_id)
+    task_id = _create_task(
+        "export", len(selected), payload, result=_local_cost_result()
+    )
     _submit(task_id, _export_task, payload, selected)
     return {"id": task_id, "task_id": task_id}
 

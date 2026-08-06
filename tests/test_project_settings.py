@@ -45,9 +45,9 @@ def test_update_derives_and_persists_custom_project_settings(tmp_path: Path) -> 
 
 
 def test_unicode_and_ascii_punctuation_map_to_canonical_default() -> None:
-    settings = project_settings.derive_project_settings("  你  好,\u3000小 助手？！  ")
+    settings = project_settings.derive_project_settings("  你  好,\u3000小助手？！  ")
 
-    assert settings["display_text"] == "你 好, 小 助手？！"
+    assert settings["display_text"] == "你 好, 小助手？！"
     assert settings["label"] == "你好小助手"
     assert settings["keyword_id"] == "ni_hao_xiao_zhu_shou"
 

@@ -90,6 +90,11 @@ class Database:
                     quality_status TEXT NOT NULL DEFAULT 'unchecked',
                     notes TEXT NOT NULL DEFAULT '',
                     metadata_json TEXT NOT NULL DEFAULT '{}',
+                    target_kind TEXT NOT NULL DEFAULT 'positive',
+                    source_kind TEXT NOT NULL DEFAULT 'tts',
+                    variant_kind TEXT NOT NULL DEFAULT 'clean',
+                    origin_task_id TEXT,
+                    origin_job_id TEXT,
                     created_at TEXT NOT NULL,
                     deleted_at TEXT,
                     FOREIGN KEY(parent_id) REFERENCES samples(id)
@@ -117,6 +122,8 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
+                    parent_id TEXT,
+                    item_index INTEGER,
                     type TEXT NOT NULL,
                     status TEXT NOT NULL,
                     total INTEGER NOT NULL DEFAULT 0,
@@ -125,8 +132,14 @@ class Database:
                     message TEXT NOT NULL DEFAULT '',
                     payload_json TEXT NOT NULL DEFAULT '{}',
                     result_json TEXT NOT NULL DEFAULT '{}',
+                    started_at TEXT,
+                    finished_at TEXT,
+                    estimated_cost REAL NOT NULL DEFAULT 0,
+                    currency TEXT NOT NULL DEFAULT '',
+                    billable_units REAL NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(parent_id) REFERENCES tasks(id)
                 );
 
                 CREATE TABLE IF NOT EXISTS exports (
@@ -159,6 +172,75 @@ class Database:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_exports_active "
                 "ON exports(deleted_at, created_at)"
+            )
+
+            sample_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(samples)").fetchall()
+            }
+            sample_migrations = {
+                "target_kind": "TEXT NOT NULL DEFAULT 'positive'",
+                "source_kind": "TEXT NOT NULL DEFAULT 'tts'",
+                "variant_kind": "TEXT NOT NULL DEFAULT 'clean'",
+                "origin_task_id": "TEXT",
+                "origin_job_id": "TEXT",
+            }
+            added_sample_columns: set[str] = set()
+            for column, definition in sample_migrations.items():
+                if column not in sample_columns:
+                    db.execute(f"ALTER TABLE samples ADD COLUMN {column} {definition}")
+                    added_sample_columns.add(column)
+            if "source_kind" in added_sample_columns:
+                db.execute(
+                    """
+                    UPDATE samples
+                    SET source_kind=CASE
+                        WHEN provider='real' THEN 'human'
+                        WHEN provider='noise' THEN 'noise'
+                        ELSE 'tts'
+                    END
+                    """
+                )
+            if "variant_kind" in added_sample_columns:
+                db.execute(
+                    "UPDATE samples SET variant_kind="
+                    "CASE WHEN parent_id IS NULL THEN 'clean' ELSE 'augmented' END"
+                )
+            # ``noise`` was accepted by an early development build. Keep the
+            # persisted/public vocabulary canonical from this migration onward.
+            db.execute(
+                "UPDATE samples SET target_kind='background' WHERE target_kind='noise'"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_samples_keyword_target "
+                "ON samples(keyword_id, target_kind, deleted_at, created_at)"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_samples_origin_job "
+                "ON samples(origin_job_id, deleted_at, created_at)"
+            )
+
+            task_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(tasks)").fetchall()
+            }
+            task_migrations = {
+                "parent_id": "TEXT",
+                "item_index": "INTEGER",
+                "started_at": "TEXT",
+                "finished_at": "TEXT",
+                "estimated_cost": "REAL NOT NULL DEFAULT 0",
+                "currency": "TEXT NOT NULL DEFAULT ''",
+                "billable_units": "REAL NOT NULL DEFAULT 0",
+            }
+            for column, definition in task_migrations.items():
+                if column not in task_columns:
+                    db.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_parent "
+                "ON tasks(parent_id, item_index, created_at)"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_status "
+                "ON tasks(status, created_at)"
             )
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> int:

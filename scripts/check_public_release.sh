@@ -30,6 +30,20 @@ if [[ -n "${personal_paths}" ]]; then
   failed=1
 fi
 
+local_deployment_markers="$(
+  git grep --cached -n -I -E \
+    '(服务器本地版|本地分支工作流|server/local|\.worktrees/|本机 Ubuntu|PYTHONNOUSERSITE=|DESKTOP-[A-Za-z0-9_-]+)' \
+    -- ':!scripts/check_public_release.sh' \
+    | awk -F: '{print $1 ":" $2}' \
+    | sort -u \
+    || true
+)"
+if [[ -n "${local_deployment_markers}" ]]; then
+  echo "ERROR: server-local deployment detail found in public content:"
+  echo "${local_deployment_markers}"
+  failed=1
+fi
+
 company_markers="$(
   git grep --cached -n -I -i -E \
     '(海思|芯宝|xin[ _.-]*bao|hi[ _.-]*silicon|hispark|hi3516|cv610|h-partners\.com|AI轻智能|文晨阳)' \

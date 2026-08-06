@@ -3,8 +3,6 @@ FROM ${PYTHON_IMAGE}
 
 ARG DEBIAN_MIRROR=
 ARG PIP_INDEX_URL=
-ARG APP_UID=1000
-ARG APP_GID=1000
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -21,7 +19,12 @@ RUN if [ -n "${DEBIAN_MIRROR}" ]; then \
     && apt-get install -y --no-install-recommends ca-certificates ffmpeg tini \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --gid "${APP_GID}" app \
+ARG APP_UID=1000
+ARG APP_GID=1000
+
+RUN test "${APP_UID}" -gt 0 \
+    && test "${APP_GID}" -gt 0 \
+    && groupadd --gid "${APP_GID}" app \
     && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home app
 
 COPY --chown=app:app requirements.txt ./

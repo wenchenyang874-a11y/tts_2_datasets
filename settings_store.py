@@ -13,9 +13,15 @@ import os
 import tempfile
 import threading
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping
 
+
+PRICING_UNITS = frozenset({"per_call", "per_1k_chars"})
+PRICING_FIELDS = frozenset({"pricing_unit", "pricing_rate", "pricing_currency"})
+MAX_PRICING_RATE_LENGTH = 64
+MAX_PRICING_CURRENCY_LENGTH = 16
 
 PROVIDER_FIELDS: dict[str, frozenset[str]] = {
     "aliyun": frozenset(
@@ -25,6 +31,7 @@ PROVIDER_FIELDS: dict[str, frozenset[str]] = {
             "region",
             "endpoint",
             "customization_endpoint",
+            *PRICING_FIELDS,
         }
     ),
     "volcengine": frozenset(
@@ -36,6 +43,7 @@ PROVIDER_FIELDS: dict[str, frozenset[str]] = {
             "access_key_id",
             "access_key_secret",
             "catalog_endpoint",
+            *PRICING_FIELDS,
         }
     ),
 }
@@ -61,6 +69,27 @@ def _mask_secret(value: str) -> str:
     if len(value) <= 4:
         return "****"
     return f"****{value[-4:]}"
+
+
+def _validate_pricing_field(field: str, value: str) -> None:
+    if field == "pricing_unit" and value not in PRICING_UNITS:
+        allowed = ", ".join(sorted(PRICING_UNITS))
+        raise ValueError(f"pricing_unit 仅支持：{allowed}")
+    if field == "pricing_rate":
+        if len(value) > MAX_PRICING_RATE_LENGTH:
+            raise ValueError(
+                f"pricing_rate 超过 {MAX_PRICING_RATE_LENGTH} 字符限制"
+            )
+        try:
+            rate = Decimal(value)
+        except InvalidOperation as exc:
+            raise ValueError("pricing_rate 必须是非负有限数值") from exc
+        if not rate.is_finite() or rate < 0:
+            raise ValueError("pricing_rate 必须是非负有限数值")
+    if field == "pricing_currency" and len(value) > MAX_PRICING_CURRENCY_LENGTH:
+        raise ValueError(
+            f"pricing_currency 超过 {MAX_PRICING_CURRENCY_LENGTH} 字符限制"
+        )
 
 
 class ProviderSettingsStore:
@@ -168,6 +197,8 @@ class ProviderSettingsStore:
                 if not value and preserve_empty_secrets and key in SECRET_FIELDS[provider]:
                     continue
                 if value:
+                    if key in PRICING_FIELDS:
+                        _validate_pricing_field(key, value)
                     current[key] = value
                 else:
                     current.pop(key, None)
@@ -239,6 +270,10 @@ def get_default_settings_store() -> ProviderSettingsStore:
 
 
 __all__ = [
+    "MAX_PRICING_CURRENCY_LENGTH",
+    "MAX_PRICING_RATE_LENGTH",
+    "PRICING_FIELDS",
+    "PRICING_UNITS",
     "PROVIDER_FIELDS",
     "REQUIRED_FIELDS",
     "SECRET_FIELDS",

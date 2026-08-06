@@ -3,9 +3,11 @@
 
   const TOKEN_KEY = "tts_app_token";
   const SAMPLE_PAGE_SIZE = 16;
+  const RECORDING_MIN_MS = 200;
+  const RECORDING_MAX_MS = 30000;
   const ACTIVE_TASK_STATES = new Set(["queued", "running"]);
   const TERMINAL_TASK_STATES = new Set(["completed", "partial", "failed"]);
-  const BILLABLE_PROVIDER_IDS = new Set(["aliyun", "alibaba", "volcengine"]);
+  const RETRYABLE_TASK_TYPES = new Set(["generate", "generate_batch", "augment", "export"]);
   const DEFAULT_PROJECT_SETTINGS = Object.freeze({
     display_text: "你好，小助手",
     label: "你好小助手",
@@ -19,9 +21,13 @@
     providers: [],
     providerSettings: {},
     providerSettingsLoading: false,
+    providerCapabilities: {},
     voices: [],
     tasks: [],
+    taskGroups: [],
     samples: [],
+    sampleKeywords: [],
+    sampleKeywordInitialized: false,
     samplesTotal: 0,
     samplePage: 1,
     samplePages: 1,
@@ -38,6 +44,19 @@
     noiseAudio: null,
     noiseAudioId: null,
     currentAnalysis: null,
+    recording: {
+      recorder: null,
+      stream: null,
+      audioContext: null,
+      analyser: null,
+      chunks: [],
+      file: null,
+      url: null,
+      startedAt: 0,
+      timer: null,
+      levelFrame: null,
+      discardOnStop: false,
+    },
     pollTimer: null,
   };
 
@@ -57,11 +76,13 @@
     alibaba: "阿里云",
     mock: "本地 Mock",
     real: "真人录音",
+    noise: "背景噪声",
   };
   const genderNames = { female: "女声", male: "男声", neutral: "中性", unknown: "未知" };
   const ageNames = { child: "儿童", teen: "少年", young: "青年", middle: "中年", senior: "老年", unknown: "未知" };
-  const taskNames = { generate: "TTS 生成", augment: "噪声增强", export: "数据导出" };
+  const taskNames = { generate: "TTS 生成", generate_batch: "TTS 批量生成", augment: "噪声增强", materialize_noise: "背景噪声入库", export: "数据导出" };
   const statusNames = { queued: "排队中", running: "运行中", completed: "已完成", partial: "部分完成", failed: "失败" };
+  const targetKindNames = { positive: "正样本", negative: "负样本", background: "背景噪声" };
   const qualityNames = {
     unchecked: "未检查", review: "待复核", pass: "已通过", reject: "已拒绝",
     pending: "待审核", accepted: "已通过", rejected: "已拒绝",
@@ -88,7 +109,7 @@
   }
 
   function askForToken(message = "服务器要求访问令牌。请输入 TTS_APP_API_TOKEN：") {
-    const value = window.prompt(message, token());
+    const value = window.prompt(message, "");
     if (value === null) return false;
     setToken(value.trim());
     return Boolean(value.trim());
@@ -368,6 +389,9 @@
       renderProjectSummary();
       fillProjectSettingsForm();
       applyProjectDefaults({ previousProject });
+      state.selectedSamples.clear();
+      await loadSampleKeywords({ selectCurrent: true });
+      await loadSamples(true);
       toast("唤醒词设置已保存", `后续新样本将使用“${state.projectSettings.display_text}”。`, "success");
     } catch (error) {
       toast("唤醒词设置保存失败", error.message, "error", 7000);
@@ -377,12 +401,62 @@
   }
 
   async function loadProviders() {
-    state.providers = await api("/api/providers");
+    const [providers, capabilities] = await Promise.all([
+      api("/api/providers"),
+      api("/api/providers/capabilities").catch(() => ({})),
+    ]);
+    state.providers = Array.isArray(providers) ? providers : (providers?.items || providers?.providers || []);
+    state.providerCapabilities = capabilities && typeof capabilities === "object" ? capabilities : {};
+    state.providers.forEach((provider) => {
+      const id = normalizeProviderId(provider.id || provider.provider);
+      if (provider.capabilities && !state.providerCapabilities[id]) {
+        state.providerCapabilities[id] = provider.capabilities;
+      }
+    });
     renderProviders();
+    renderProviderAudioCapabilities();
   }
 
   function normalizeProviderId(value) {
     return String(value || "") === "alibaba" ? "aliyun" : String(value || "");
+  }
+
+  function capabilityForProvider(providerId) {
+    return state.providerCapabilities[normalizeProviderId(providerId)] || {};
+  }
+
+  function normalizedCapabilityList(value, key = "value") {
+    if (!Array.isArray(value)) return [];
+    return value.map((item) => {
+      if (item && typeof item === "object") return item[key] ?? item.value ?? item.id ?? item.name;
+      return item;
+    }).filter((item) => item !== undefined && item !== null && String(item).trim());
+  }
+
+  function replaceSelectOptions(selectId, values, formatter, preferred) {
+    const select = $(selectId);
+    if (!select || !values.length) return;
+    const previous = select.value;
+    select.innerHTML = values.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(formatter(value))}</option>`).join("");
+    const available = new Set(values.map(String));
+    select.value = available.has(previous) ? previous : available.has(String(preferred)) ? String(preferred) : String(values[0]);
+  }
+
+  function renderProviderAudioCapabilities() {
+    const formatName = (value) => String(value).replaceAll("_", " ").toUpperCase();
+    const rateName = (value) => `${Number(value) / 1000} kHz`;
+    [["aliyun", "aliyun"], ["volcengine", "volcengine"]].forEach(([providerId, prefix]) => {
+      const capabilities = capabilityForProvider(providerId);
+      const formats = normalizedCapabilityList(capabilities.audio_formats);
+      const rates = normalizedCapabilityList(capabilities.sample_rates).map(Number).filter(Number.isFinite);
+      replaceSelectOptions(`${prefix}AudioFormat`, formats, formatName, "wav");
+      replaceSelectOptions(`${prefix}SampleRate`, rates, rateName, 16000);
+      const formatSelect = $(`${prefix}AudioFormat`);
+      const rateSelect = $(`${prefix}SampleRate`);
+      if (formatSelect) formatSelect.title = formats.length ? `当前能力：${formats.map(formatName).join(" / ")}` : "未获取到格式能力，使用页面默认值";
+      if (rateSelect) rateSelect.title = rates.length ? `当前能力：${rates.map(rateName).join(" / ")}` : "未获取到采样率能力，使用页面默认值";
+    });
+    updateRandomParameterState();
   }
 
   function secretDescription(secret) {
@@ -425,12 +499,18 @@
     setInputValue("aliyunRegion", "cn-beijing");
     setInputValue("aliyunEndpoint", aliyun.endpoint);
     setInputValue("aliyunCustomizationEndpoint", aliyun.customization_endpoint);
+    setInputValue("aliyunPricingUnit", aliyun.pricing_unit);
+    setInputValue("aliyunPricingRate", aliyun.pricing_rate);
+    setInputValue("aliyunPricingCurrency", aliyun.pricing_currency);
     updateSecretField("aliyunApiKey", "aliyunApiKeyState", aliyun.api_key);
 
     setInputValue("volcengineAppId", volcengine.app_id);
     setInputValue("volcengineCluster", volcengine.cluster, "volcano_tts");
     setInputValue("volcengineEndpoint", volcengine.endpoint);
     setInputValue("volcengineAccessKeyId", volcengine.access_key_id);
+    setInputValue("volcenginePricingUnit", volcengine.pricing_unit);
+    setInputValue("volcenginePricingRate", volcengine.pricing_rate);
+    setInputValue("volcenginePricingCurrency", volcengine.pricing_currency);
     updateSecretField("volcengineAccessToken", "volcengineAccessTokenState", volcengine.access_token);
     updateSecretField("volcengineAccessKeySecret", "volcengineAccessKeySecretState", volcengine.access_key_secret);
 
@@ -462,26 +542,46 @@
     });
   }
 
-  async function openProviderSettings(providerId = "aliyun") {
+  function mountProviderSettingsPage() {
+    const mount = $("providerSettingsPageMount");
     const dialog = $("providerSettingsDialog");
-    if (dialog.open) {
-      selectProviderSettingsTab(providerId);
-      return;
-    }
+    const content = dialog?.querySelector(".provider-settings-content");
+    if (!mount || !content || mount.contains(content)) return;
+    mount.replaceChildren(content);
+    dialog.remove();
+  }
+
+  async function openProviderSettings(providerId = "aliyun") {
+    mountProviderSettingsPage();
+    navigate("providers");
     if (state.providerSettingsLoading) return;
     state.providerSettingsLoading = true;
-    const triggers = document.querySelectorAll("#providerSettingsButton, [data-config-provider]");
+    const triggers = document.querySelectorAll("#providerSettingsButton, #reloadProviderSettings, [data-config-provider]");
     triggers.forEach((button) => { button.disabled = true; });
     try {
       await loadProviderSettings();
       selectProviderSettingsTab(providerId);
-      dialog.showModal();
     } catch (error) {
       toast("供应商设置读取失败", error.message, "error", 7000);
     } finally {
       state.providerSettingsLoading = false;
       triggers.forEach((button) => { button.disabled = false; });
     }
+  }
+
+  function providerPricingPayload(prefix) {
+    const unit = $(`${prefix}PricingUnit`).value;
+    const rateText = $(`${prefix}PricingRate`).value.trim();
+    const currency = $(`${prefix}PricingCurrency`).value.trim().toUpperCase();
+    if (!unit && !rateText && !currency) {
+      return { pricing_unit: null, pricing_rate: null, pricing_currency: null };
+    }
+    if (!unit || !rateText || !currency) {
+      throw new Error("预估费用的计费单位、单价和币种必须同时填写；如果不使用，请全部留空。");
+    }
+    const rate = Number(rateText);
+    if (!Number.isFinite(rate) || rate < 0) throw new Error("预估费用单价必须是非负有限数值。");
+    return { pricing_unit: unit, pricing_rate: rate, pricing_currency: currency };
   }
 
   function providerSettingsPayload(providerId) {
@@ -491,6 +591,7 @@
         region: $("aliyunRegion").value,
         endpoint: $("aliyunEndpoint").value.trim(),
         customization_endpoint: $("aliyunCustomizationEndpoint").value.trim(),
+        ...providerPricingPayload("aliyun"),
       };
       const apiKey = $("aliyunApiKey").value.trim();
       if (apiKey) payload.api_key = apiKey;
@@ -502,6 +603,7 @@
       cluster: $("volcengineCluster").value.trim() || "volcano_tts",
       endpoint: $("volcengineEndpoint").value.trim(),
       access_key_id: $("volcengineAccessKeyId").value.trim(),
+      ...providerPricingPayload("volcengine"),
     };
     const accessToken = $("volcengineAccessToken").value.trim();
     const accessKeySecret = $("volcengineAccessKeySecret").value.trim();
@@ -518,14 +620,19 @@
     submitButton.disabled = true;
     try {
       await apiJson(`/api/settings/providers/${providerId}`, "PUT", providerSettingsPayload(providerId));
-      toast(`${providerNames[providerId]}设置已保存`, "服务器不会向浏览器回传密钥明文，正在更新音色目录。", "success");
-      await Promise.all([loadProviderSettings(), loadProviders()]);
-      await refreshVoices(providerId);
     } catch (error) {
       toast("供应商设置保存失败", error.message, "error", 7000);
-    } finally {
       submitButton.disabled = false;
+      return;
     }
+    toast(`${providerNames[providerId]}设置已保存`, "服务器不会向浏览器回传密钥明文，正在更新音色目录。", "success");
+    try {
+      await Promise.all([loadProviderSettings(), loadProviders()]);
+    } catch (error) {
+      toast("配置已保存，但页面状态刷新失败", error.message, "error", 7000);
+    }
+    await refreshVoices(providerId, true);
+    submitButton.disabled = false;
   }
 
   async function testProviderSettings(providerId, button) {
@@ -544,7 +651,7 @@
   async function clearProviderSettings(providerId, button) {
     const confirmed = await confirmAction(
       `清空${providerNames[providerId]}配置`,
-      "将从服务端删除该供应商的所有账号信息和密钥。内置回退音色仍会保留。",
+      "将从当前服务器删除该供应商的所有账号信息、密钥和预估费用配置。内置回退音色仍会保留。",
       "清空配置",
     );
     if (!confirmed) return;
@@ -631,18 +738,7 @@
       }).join("");
     }
     $("selectedVoiceCount").textContent = String(state.selectedVoices.size);
-    const hasSelectedVolcVoice = state.voices.some(
-      (voice) => voice.provider === "volcengine" && state.selectedVoices.has(Number(voice.id)),
-    );
-    const pitchInput = $("generationPitch");
-    pitchInput.disabled = hasSelectedVolcVoice;
-    if (hasSelectedVolcVoice) {
-      pitchInput.value = "0";
-      $("pitchOutput").textContent = "0 st";
-      pitchInput.title = "火山引擎 V1 暂不支持音高调节";
-    } else {
-      pitchInput.removeAttribute("title");
-    }
+    updateRandomParameterState();
     updateGenerationEstimate();
   }
 
@@ -655,7 +751,74 @@
     $("generationEstimate").querySelector("strong").textContent = total.toLocaleString("zh-CN");
   }
 
-  async function refreshVoices(provider = null) {
+  function selectedHasVolcengine() {
+    return state.voices.some(
+      (voice) => voice.provider === "volcengine" && state.selectedVoices.has(Number(voice.id)),
+    );
+  }
+
+  function selectedHasUnsupportedCapability(name) {
+    return state.voices.some((voice) => (
+      state.selectedVoices.has(Number(voice.id))
+      && capabilityForProvider(voice.provider)[name] === false
+    ));
+  }
+
+  function setRangeEnabled(baseId, toggleId, minId, maxId, enabled = true) {
+    const randomized = enabled && $(toggleId).checked;
+    $(toggleId).disabled = !enabled;
+    $(baseId).disabled = !enabled || randomized;
+    $(minId).disabled = !randomized;
+    $(maxId).disabled = !randomized;
+    $(toggleId).closest(".random-parameter")?.classList.toggle("disabled", !enabled);
+  }
+
+  function updateRandomParameterState() {
+    const speedSupported = !selectedHasUnsupportedCapability("speed");
+    const volumeSupported = !selectedHasUnsupportedCapability("volume");
+    if (!speedSupported) {
+      $("randomSpeed").checked = false;
+      $("generationSpeed").value = "1";
+      $("speedOutput").textContent = "1.00×";
+      $("generationSpeed").title = "当前选中的音色包含不支持语速调节的供应商";
+    } else {
+      $("generationSpeed").removeAttribute("title");
+    }
+    if (!volumeSupported) {
+      $("randomVolume").checked = false;
+      $("generationVolume").value = "50";
+      $("volumeOutput").textContent = "50 / 100";
+      $("generationVolume").title = "当前选中的音色包含不支持音量调节的供应商";
+    } else {
+      $("generationVolume").removeAttribute("title");
+    }
+    setRangeEnabled("generationSpeed", "randomSpeed", "speedMin", "speedMax", speedSupported);
+    setRangeEnabled("generationVolume", "randomVolume", "volumeMin", "volumeMax", volumeSupported);
+    const pitchUnsupported = selectedHasUnsupportedCapability("pitch") || selectedHasVolcengine();
+    if (pitchUnsupported) {
+      $("randomPitch").checked = false;
+      $("generationPitch").value = "0";
+      $("pitchOutput").textContent = "0 st";
+      $("generationPitch").title = "当前选中的音色包含不支持音高调节的供应商";
+    } else {
+      $("generationPitch").removeAttribute("title");
+    }
+    setRangeEnabled("generationPitch", "randomPitch", "pitchMin", "pitchMax", !pitchUnsupported);
+    $("volcPitchHint").classList.toggle("hidden", !pitchUnsupported);
+  }
+
+  function validatedRange(minId, maxId, label) {
+    const min = Number($(minId).value);
+    const max = Number($(maxId).value);
+    if (!Number.isFinite(min) || !Number.isFinite(max)) throw new Error(`${label}范围必须是数字`);
+    if (min > max) throw new Error(`${label}最小值不能大于最大值`);
+    return [min, max];
+  }
+
+  const semitoneToRatio = (value) => clamp(2 ** (Number(value) / 12), 0.5, 2);
+  const providerVolumeLevel = (value) => Math.round(clamp(Number(value), 0, 100));
+
+  async function refreshVoices(provider = null, afterSettingsSave = false) {
     const buttons = [$("refreshVoiceButton"), $("refreshAllVoices")];
     buttons.forEach((button) => { button.disabled = true; });
     try {
@@ -669,7 +832,7 @@
         warnings.length ? 8000 : 4200,
       );
     } catch (error) {
-      toast("音色查询失败", error.message, "error", 6500);
+      toast(afterSettingsSave ? "配置已保存，但音色刷新失败" : "音色查询失败", error.message, "error", 6500);
     } finally {
       buttons.forEach((button) => { button.disabled = false; });
     }
@@ -696,51 +859,55 @@
     const count = Number($("generationCount").value);
     if (!texts.length) return toast("请输入合成文本", "至少保留一条非空文本。", "error");
     if (!voiceIds.length) return toast("请选择音色", "建议先选少量音色试听，再扩大批次。", "error");
-    const usesBillableProvider = state.voices.some(
-      (voice) => state.selectedVoices.has(Number(voice.id)) && BILLABLE_PROVIDER_IDS.has(voice.provider),
-    );
-    const costAcknowledged = $("generationCostAcknowledgement").checked;
-    if (usesBillableProvider && !costAcknowledged) {
-      return toast(
-        "请确认云服务计费责任",
-        "云端 TTS 可能按调用量收费；费用由凭据所属账号承担。",
-        "error",
-        7000,
-      );
-    }
+    if (!Number.isInteger(count) || count < 1) return toast("数量无效", "每条文本 / 每音色数量必须大于 0。", "error");
     const total = texts.length * voiceIds.length * count;
     const confirmed = await confirmAction(
-      usesBillableProvider ? "确认创建可能计费的云 API 任务" : "确认创建本地生成任务",
-      usesBillableProvider
-        ? `将创建 ${texts.length} 个任务，预计调用合成接口 ${total} 次。\n实际费用由厂商、模型和文本长度决定，并由凭据所属账号承担。请先用 1 个音色 × 1 条样本验证。`
-        : `将创建 ${texts.length} 个任务，预计生成 ${total} 条本地 Mock 样本。`,
+      "确认创建批量生成任务",
+      `将创建 1 个总任务和 ${texts.length} 个文本子任务，预计调用合成接口 ${total} 次。\n页面金额仅是预估费用，以厂商账单为准。建议先用 1 个音色 × 1 条样本验证。`,
       `生成 ${total} 条`,
     );
     if (!confirmed) return;
     const button = $("startGeneration");
     button.disabled = true;
     button.textContent = "正在创建任务…";
-    const baseSeed = Number($("generationSeed").value || 20260804);
-    const pitch = clamp(2 ** (Number($("generationPitch").value) / 12), 0.5, 2);
-    const volume = Math.round(clamp(50 + Number($("generationVolume").value) * 2.5, 0, 100));
     try {
-      const concurrency = clamp(Number($("generationConcurrency").value || 3), 1, 16);
-      await runWithLimit(texts.map((text, index) => ({ text, index })), concurrency, ({ text, index }) => apiJson("/api/tasks/generate", "POST", {
-        text,
-        display_text: project.display_text,
+      const baseSeed = Number($("generationSeed").value || 20260804);
+      const concurrency = Math.round(clamp(Number($("generationConcurrency").value || 3), 1, 16));
+      const [speedMin, speedMax] = validatedRange("speedMin", "speedMax", "语速");
+      const [pitchMinSt, pitchMaxSt] = validatedRange("pitchMin", "pitchMax", "音高");
+      const [volumeMinLevel, volumeMaxLevel] = validatedRange("volumeMin", "volumeMax", "供应商音量级");
+      const pitchUnsupported = selectedHasUnsupportedCapability("pitch") || selectedHasVolcengine();
+      const result = await apiJson("/api/tasks/generate-batch", "POST", {
+        texts,
         label: project.label,
         keyword_id: project.keyword_id,
+        target_kind: $("generationTargetKind").value,
         voice_ids: voiceIds,
         count,
+        concurrency,
         speed: Number($("generationSpeed").value),
-        pitch,
-        volume,
-        seed: (baseSeed + index * 100003) % 2147483647,
+        pitch: pitchUnsupported ? 1 : semitoneToRatio($("generationPitch").value),
+        volume: providerVolumeLevel($("generationVolume").value),
+        seed: baseSeed,
         instruction: $("generationInstruction").value.trim(),
-        cost_acknowledged: usesBillableProvider && costAcknowledged,
-      }));
-      $("generationCostAcknowledgement").checked = false;
-      toast("生成任务已创建", `${texts.length} 个任务已进入队列，可在任务中心查看。`, "success");
+        random_speed: $("randomSpeed").checked,
+        speed_min: speedMin,
+        speed_max: speedMax,
+        random_pitch: !pitchUnsupported && $("randomPitch").checked,
+        pitch_min: pitchUnsupported ? 1 : semitoneToRatio(pitchMinSt),
+        pitch_max: pitchUnsupported ? 1 : semitoneToRatio(pitchMaxSt),
+        random_volume: $("randomVolume").checked,
+        volume_min: providerVolumeLevel(volumeMinLevel),
+        volume_max: providerVolumeLevel(volumeMaxLevel),
+        provider_audio: {
+          aliyun: { format: $("aliyunAudioFormat").value, sample_rate: Number($("aliyunSampleRate").value) },
+          volcengine: { format: $("volcengineAudioFormat").value, sample_rate: Number($("volcengineSampleRate").value) },
+        },
+        cost_acknowledged: true,
+      });
+      const parentId = result?.parent_id || result?.id || "";
+      const children = result?.child_ids || result?.children || [];
+      toast("生成批次已创建", `总任务 ${String(parentId).slice(0, 12) || "已入队"}，${Array.isArray(children) ? children.length : texts.length} 个子任务已由后端调度。`, "success");
       await Promise.all([loadTasks(), loadStatus()]);
       navigate("tasks");
     } catch (error) {
@@ -753,12 +920,15 @@
 
   async function loadTasks(silent = false) {
     try {
-      state.tasks = await api("/api/tasks?limit=100");
+      const payload = await api("/api/tasks?limit=500");
+      state.tasks = Array.isArray(payload) ? payload : (payload.items || payload.tasks || []);
+      state.taskGroups = groupTasks(state.tasks);
       renderTasks();
+      renderSampleJobOptions();
       const running = state.tasks.filter((task) => ACTIVE_TASK_STATES.has(task.status)).length;
       updateRunningBadge(running);
       $("statRunning").textContent = String(running);
-      const terminal = state.tasks.filter((task) => TERMINAL_TASK_STATES.has(task.status));
+      const terminal = state.taskGroups.filter((task) => TERMINAL_TASK_STATES.has(task.status));
       const successful = terminal.filter((task) => task.status === "completed").length;
       $("statSuccessRate").textContent = terminal.length ? `近期成功率 ${Math.round(successful / terminal.length * 100)}%` : "暂无已完成任务";
       if (state.tasks.some((task) => task.type === "export" && task.status === "completed")) loadExports(true);
@@ -767,7 +937,138 @@
     }
   }
 
-  function taskHtml(task) {
+  function aggregateStatus(children) {
+    if (children.some((child) => child.status === "running")) return "running";
+    if (children.some((child) => child.status === "queued")) return "queued";
+    if (children.every((child) => child.status === "completed")) return "completed";
+    if (children.some((child) => child.status === "completed" || child.status === "partial")) return "partial";
+    return children.length ? "failed" : "queued";
+  }
+
+  function hasEstimatedCost(task) {
+    const cost = taskCostInfo(task);
+    return cost.available === true && Number.isFinite(cost.amount);
+  }
+
+  function taskCostInfo(task) {
+    const result = task?.result && typeof task.result === "object" ? task.result : {};
+    const available = result.cost_available ?? task?.cost_available ?? null;
+    const rawAmount = result.estimated_cost ?? task?.estimated_cost;
+    const amount = rawAmount === null || rawAmount === undefined || rawAmount === "" ? NaN : Number(rawAmount);
+    const rawByCurrency = result.cost_by_currency ?? task?.cost_by_currency;
+    const byCurrency = rawByCurrency && typeof rawByCurrency === "object"
+      ? Object.entries(rawByCurrency).map(([currency, value]) => [String(currency).toUpperCase(), Number(value)])
+        .filter(([currency, value]) => currency && Number.isFinite(value))
+      : [];
+    return {
+      available: available === true,
+      amount,
+      currency: String(result.currency ?? task?.currency ?? "").toUpperCase(),
+      byCurrency,
+    };
+  }
+
+  function groupTasks(tasks) {
+    const rows = tasks.map((task) => ({ ...task }));
+    const byId = new Map(rows.map((task) => [String(task.id), task]));
+    const parentMap = new Map();
+    const childIds = new Set();
+
+    rows.forEach((task) => {
+      if (Array.isArray(task.children) || task.type === "generate_batch" || task.is_parent) {
+        parentMap.set(String(task.id), task);
+      }
+    });
+    rows.forEach((task) => {
+      if (!task.parent_id) return;
+      const parentId = String(task.parent_id);
+      if (!parentMap.has(parentId)) {
+        parentMap.set(parentId, byId.get(parentId) || {
+          id: parentId,
+          type: "generate_batch",
+          status: "queued",
+          created_at: task.created_at,
+          message: "批量生成任务",
+          synthetic_parent: true,
+        });
+      }
+    });
+
+    parentMap.forEach((parent, parentId) => {
+      const embedded = Array.isArray(parent.children) ? parent.children : [];
+      const children = embedded.map((child) => {
+        if (child && typeof child === "object") return { ...child, parent_id: child.parent_id || parentId };
+        return byId.get(String(child)) || { id: String(child), parent_id: parentId, type: "generate", status: "queued" };
+      });
+      rows.filter((task) => String(task.parent_id || "") === parentId).forEach((child) => {
+        if (!children.some((item) => String(item.id) === String(child.id))) children.push(child);
+      });
+      children.forEach((child) => childIds.add(String(child.id)));
+      parent._children = children;
+      if (children.length) {
+        const sum = (key) => children.reduce((total, child) => total + Math.max(0, Number(child[key] || 0)), 0);
+        if (parent.synthetic_parent || !parent.status) parent.status = aggregateStatus(children);
+        parent.total = Number(parent.total || 0) || sum("total");
+        parent.completed = Number(parent.completed || 0) || sum("completed");
+        parent.failed = Number(parent.failed || 0) || sum("failed");
+        if (!hasEstimatedCost(parent)) {
+          const costs = children.filter(hasEstimatedCost).map((child) => Number(child.estimated_cost));
+          if (costs.length) parent.estimated_cost = costs.reduce((total, value) => total + value, 0);
+        }
+        const childCosts = children.map(taskCostInfo);
+        parent.cost_available = parent.cost_available ?? (childCosts.length > 0 && childCosts.every((cost) => cost.available));
+        parent.currency = parent.currency || children.find((child) => child.currency)?.currency;
+      }
+    });
+
+    const grouped = [...parentMap.values()];
+    rows.forEach((task) => {
+      const id = String(task.id);
+      if (task.parent_id || childIds.has(id) || parentMap.has(id)) return;
+      grouped.push(task);
+    });
+    return grouped.sort((left, right) => String(right.created_at || "").localeCompare(String(left.created_at || "")));
+  }
+
+  function taskTiming(task) {
+    const result = task.result && typeof task.result === "object" ? task.result : {};
+    const explicit = (...values) => {
+      const value = values.find((item) => item !== null && item !== undefined && item !== "");
+      if (value === undefined) return null;
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : null;
+    };
+    return {
+      queue: explicit(task.queue_duration_seconds, result.queue_duration_seconds),
+      execution: explicit(task.execution_duration_seconds, task.duration_seconds, result.execution_duration_seconds, result.duration_seconds),
+      total: explicit(task.total_duration_seconds, result.total_duration_seconds),
+    };
+  }
+
+  function formatEstimatedCost(task) {
+    const result = task?.result && typeof task.result === "object" ? task.result : {};
+    const disclaimer = String(result.cost_disclaimer ?? task?.cost_disclaimer ?? "");
+    if (disclaimer.includes("本地操作") && disclaimer.includes("不产生云费用")) {
+      return "本地操作 · 不产生云费用";
+    }
+    const cost = taskCostInfo(task);
+    if (cost.byCurrency.length > 1) {
+      const parts = cost.byCurrency.map(([currency, amount]) => `${currency} ${amount.toFixed(amount < 0.01 ? 4 : 2)}`);
+      return `${parts.join(" + ")} （分币种预估，不能直接汇总） · 预估费用，以厂商账单为准`;
+    }
+    if (!cost.available || !Number.isFinite(cost.amount)) return "未配置 · 预估费用，以厂商账单为准";
+    const { amount, currency } = cost;
+    const prefix = currency === "CNY" ? "¥" : currency === "USD" ? "$" : currency ? `${currency} ` : "";
+    return `${prefix}${amount.toFixed(amount < 0.01 ? 4 : 2)} · 预估费用，以厂商账单为准`;
+  }
+
+  function taskTitle(task, isParent = false) {
+    if (isParent) return `批量生成 · ${task._children?.length || 0} 个文本子任务`;
+    const text = task.text || task.request?.text || task.payload?.text;
+    return text ? `${taskNames[task.type] || task.type} · ${text}` : (taskNames[task.type] || task.type || "任务");
+  }
+
+  function taskHtml(task, { child = false, parent = false } = {}) {
     const total = Math.max(0, Number(task.total || 0));
     const done = Math.max(0, Number(task.completed || 0));
     const failed = Math.max(0, Number(task.failed || 0));
@@ -776,39 +1077,60 @@
     const errorDetails = errors.length
       ? `<details class="task-errors"><summary>查看错误详情（${errors.length}）</summary><ul>${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul></details>`
       : "";
-    return `<div class="task-item">
-      <div class="task-main"><strong>${escapeHtml(taskNames[task.type] || task.type)}</strong><small>${escapeHtml(task.id.slice(0, 12))} · ${escapeHtml(formatDate(task.created_at))}</small><span class="task-message" title="${escapeHtml(task.message)}">${escapeHtml(task.message || "等待处理")}</span>${errorDetails}</div>
+    const timing = taskTiming(task);
+    const result = task.result && typeof task.result === "object" ? task.result : {};
+    const payload = task.payload && typeof task.payload === "object" ? task.payload : {};
+    const requestedConcurrency = Number(result.requested_concurrency ?? task.requested_concurrency ?? payload.concurrency ?? task.concurrency ?? 0);
+    const appliedConcurrency = Number(result.applied_concurrency ?? task.applied_concurrency ?? payload.applied_concurrency ?? 0);
+    const activeChildren = task._children?.filter((item) => item.status === "running").length || 0;
+    const timingLabel = `排队 ${timing.queue === null ? "—" : formatDuration(timing.queue)} · 执行 ${timing.execution === null ? "—" : formatDuration(timing.execution)} · 总耗时 ${timing.total === null ? "—" : formatDuration(timing.total)}`;
+    const concurrencyParts = parent ? [
+      `当前运行子任务 ${activeChildren}`,
+      requestedConcurrency ? `请求并发 ${requestedConcurrency}` : "",
+      appliedConcurrency ? `后端实际并发上限 ${appliedConcurrency}` : "",
+    ].filter(Boolean) : [];
+    const concurrencyLabel = concurrencyParts.join(" · ");
+    const retryable = ["failed", "partial"].includes(task.status) && RETRYABLE_TASK_TYPES.has(task.type);
+    return `<div class="task-item ${child ? "task-child" : ""}">
+      <div class="task-main"><strong>${escapeHtml(taskTitle(task, parent))}</strong><small>${escapeHtml(String(task.id || "").slice(0, 12))} · ${escapeHtml(formatDate(task.created_at))}</small><span class="task-message" title="${escapeHtml(task.message)}">${escapeHtml(task.message || "等待处理")}</span><div class="task-labels"><span class="task-label task-timing">${escapeHtml(timingLabel)}</span><span class="task-label task-cost">${escapeHtml(formatEstimatedCost(task))}</span>${concurrencyLabel ? `<span class="task-label">${escapeHtml(concurrencyLabel)}</span>` : ""}</div>${errorDetails}</div>
       <div class="task-progress"><div class="progress-track"><i style="width:${progress.toFixed(1)}%"></i></div><div class="progress-meta"><span>${done} 完成 · ${failed} 失败</span><b>${progress.toFixed(0)}%</b></div></div>
-      <div class="task-actions"><span class="status-badge ${escapeHtml(task.status)}">${escapeHtml(statusNames[task.status] || task.status)}</span>${["failed", "partial"].includes(task.status) ? `<button class="button quiet compact" data-retry-task="${escapeHtml(task.id)}">重试</button>` : ""}</div>
+      <div class="task-actions"><span class="status-badge ${escapeHtml(task.status)}">${escapeHtml(statusNames[task.status] || task.status)}</span>${retryable ? `<button class="button quiet compact" data-retry-task="${escapeHtml(task.id)}">重试</button>` : ""}</div>
     </div>`;
   }
 
+  function taskGroupHtml(task, compact = false) {
+    const children = task._children || [];
+    if (!children.length || compact) return taskHtml(task, { parent: Boolean(children) });
+    return `<article class="task-group">${taskHtml(task, { parent: true })}<details ${ACTIVE_TASK_STATES.has(task.status) ? "open" : ""}><summary>查看 ${children.length} 个文本子任务</summary><div class="task-children">${children.map((child) => taskHtml(child, { child: true })).join("")}</div></details></article>`;
+  }
+
   function renderTasks() {
-    const filtered = state.taskStatus ? state.tasks.filter((task) => {
+    const filtered = state.taskStatus ? state.taskGroups.filter((task) => {
       if (state.taskStatus === "running") return ACTIVE_TASK_STATES.has(task.status);
       return task.status === state.taskStatus;
-    }) : state.tasks;
-    $("taskList").innerHTML = filtered.length ? filtered.map(taskHtml).join("") : '<div class="empty-state"><p>当前筛选下没有任务</p></div>';
-    $("dashboardTasks").innerHTML = state.tasks.length ? state.tasks.slice(0, 5).map(taskHtml).join("") : '<div class="empty-inline">还没有任务，先创建一批小样吧。</div>';
+    }) : state.taskGroups;
+    $("taskList").innerHTML = filtered.length ? filtered.map((task) => taskGroupHtml(task)).join("") : '<div class="empty-state"><p>当前筛选下没有任务</p></div>';
+    $("dashboardTasks").innerHTML = state.taskGroups.length ? state.taskGroups.slice(0, 5).map((task) => taskGroupHtml(task, true)).join("") : '<div class="empty-inline">还没有任务，先创建一批小样吧。</div>';
   }
 
   async function retryTask(button) {
     const taskId = button.dataset.retryTask;
-    const task = state.tasks.find((item) => item.id === taskId);
-    const retriesGeneration = task?.type === "generate";
-    if (retriesGeneration) {
-      const confirmed = await confirmAction(
-        "确认重试生成任务",
-        "重试可能再次调用云端 TTS 并产生新的费用，费用由凭据所属账号承担。是否继续？",
-        "确认重试",
-      );
-      if (!confirmed) return;
-    }
+    const task = state.tasks.find((item) => String(item.id) === taskId)
+      || state.taskGroups.find((item) => String(item.id) === taskId)
+      || state.taskGroups.flatMap((item) => item._children || []).find((item) => String(item.id) === taskId);
+    const billable = ["generate", "generate_batch"].includes(task?.type);
+    if (billable && !await confirmAction(
+      "确认重试云端合成任务",
+      "重试会创建新任务并可能再次调用云端 TTS。预估费用，以厂商账单为准。",
+      "确认重试",
+    )) return;
     button.disabled = true;
     try {
-      await apiJson(`/api/tasks/${encodeURIComponent(taskId)}/retry`, "POST", {
-        cost_acknowledged: retriesGeneration,
-      });
+      if (billable) {
+        await apiJson(`/api/tasks/${encodeURIComponent(taskId)}/retry`, "POST", { cost_acknowledged: true });
+      } else {
+        await apiJson(`/api/tasks/${encodeURIComponent(taskId)}/retry`, "POST", {});
+      }
       await loadTasks();
       toast("重试任务已创建", "旧任务保留，新任务已进入队列。", "success");
     } catch (error) {
@@ -818,8 +1140,63 @@
     }
   }
 
-  function sampleQuery() {
-    const params = new URLSearchParams({ page: String(state.samplePage), page_size: String(SAMPLE_PAGE_SIZE) });
+  function renderSampleJobOptions() {
+    const select = $("sampleJobFilter");
+    if (!select) return;
+    const previous = select.value;
+    const parents = state.taskGroups.filter((task) => (
+      task.type === "generate_batch" || task.is_parent || (task._children && task._children.length)
+    ));
+    select.innerHTML = '<option value="">全部任务</option>' + parents.map((task) => {
+      const childCount = task._children?.length || task.child_count || 0;
+      const title = task.name || task.batch_name || String(task.id || "").slice(0, 12);
+      return `<option value="${escapeHtml(task.id)}">${escapeHtml(title)} · ${childCount} 个子任务 · ${escapeHtml(formatDate(task.created_at))}</option>`;
+    }).join("");
+    if (previous && !parents.some((task) => String(task.id) === previous)) {
+      select.insertAdjacentHTML("beforeend", `<option value="${escapeHtml(previous)}">${escapeHtml(previous.slice(0, 12))} · 历史总任务</option>`);
+    }
+    select.value = previous;
+  }
+
+  function normalizeSampleKeyword(item) {
+    if (typeof item === "string") return { keyword_id: item, label: item, display_text: item, sample_count: 0 };
+    return {
+      ...item,
+      keyword_id: String(item?.keyword_id || item?.id || "").trim(),
+      sample_count: Number(item?.sample_count ?? item?.count ?? 0),
+    };
+  }
+
+  async function loadSampleKeywords({ selectCurrent = false } = {}) {
+    const payload = await api("/api/samples/keywords");
+    const items = Array.isArray(payload) ? payload : (payload?.items || payload?.keywords || []);
+    state.sampleKeywords = items.map(normalizeSampleKeyword).filter((item) => item.keyword_id);
+    const currentId = state.projectSettings.keyword_id;
+    if (currentId && !state.sampleKeywords.some((item) => item.keyword_id === currentId)) {
+      state.sampleKeywords.unshift({
+        keyword_id: currentId,
+        label: state.projectSettings.label,
+        display_text: state.projectSettings.display_text,
+        sample_count: 0,
+      });
+    }
+    const select = $("sampleKeywordFilter");
+    const previous = select.value;
+    select.innerHTML = '<option value="">全部唤醒词</option>' + state.sampleKeywords.map((item) => {
+      const title = item.display_text || item.label || item.keyword_id;
+      return `<option value="${escapeHtml(item.keyword_id)}">${escapeHtml(title)} · ${item.sample_count} 条</option>`;
+    }).join("");
+    const desired = selectCurrent || !state.sampleKeywordInitialized ? currentId : previous;
+    select.value = state.sampleKeywords.some((item) => item.keyword_id === desired) ? desired : "";
+    state.sampleKeywordInitialized = true;
+  }
+
+  function sampleQuery({ paginate = true } = {}) {
+    const params = new URLSearchParams();
+    if (paginate) {
+      params.set("page", String(state.samplePage));
+      params.set("page_size", String(SAMPLE_PAGE_SIZE));
+    }
     const mapping = [
       ["provider", $("sampleProviderFilter").value],
       ["gender", $("sampleGenderFilter").value],
@@ -827,17 +1204,63 @@
       ["sample_type", $("sampleTypeFilter").value],
       ["quality", $("sampleReviewFilter").value],
       ["search", $("sampleSearch").value.trim()],
+      ["keyword_id", $("sampleKeywordFilter").value],
+      ["target_kind", $("sampleTargetKindFilter").value],
+      ["origin_job_id", $("sampleJobFilter").value],
     ];
     mapping.forEach(([key, value]) => { if (value) params.set(key, value); });
     return params;
+  }
+
+  function currentSampleKeywordId() {
+    return $("sampleKeywordFilter").value || state.projectSettings.keyword_id;
+  }
+
+  function resetSampleSelectionAndLoad() {
+    state.selectedSamples.clear();
+    updateSelectedSampleCount();
+    loadSamples(true);
+  }
+
+  async function selectFilteredSamples() {
+    const button = $("selectFilteredSamples");
+    button.disabled = true;
+    try {
+      const payload = await api(`/api/samples/ids?${sampleQuery({ paginate: false })}`);
+      const rows = Array.isArray(payload) ? payload : (payload?.ids || payload?.items || []);
+      const ids = rows.map((item) => typeof item === "object" ? item.id : item).filter(Boolean).map(String);
+      ids.forEach((id) => state.selectedSamples.add(id));
+      renderSamples();
+      toast("已选中当前筛选的全部样本", `共 ${ids.length} 条，包含未显示的分页。`, "success");
+    } catch (error) {
+      toast("全选失败", error.message, "error", 6500);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function clearSelectedSamples() {
+    state.selectedSamples.clear();
+    renderSamples();
+  }
+
+  function goToSamplePage() {
+    const requested = Math.trunc(Number($("samplePageInput").value));
+    if (!Number.isFinite(requested) || requested < 1 || requested > state.samplePages) {
+      $("samplePageInput").value = String(state.samplePage);
+      return toast("页码无效", `请输入 1–${state.samplePages} 之间的页码。`, "error");
+    }
+    if (requested === state.samplePage) return;
+    state.samplePage = requested;
+    loadSamples();
   }
 
   async function loadSamples(resetPage = false) {
     if (resetPage) state.samplePage = 1;
     try {
       const result = await api(`/api/samples?${sampleQuery()}`);
-      state.samples = result.items || [];
-      state.samplesTotal = Number(result.total || 0);
+      state.samples = Array.isArray(result) ? result : (result.items || result.samples || []);
+      state.samplesTotal = Number(Array.isArray(result) ? result.length : (result.total || 0));
       state.samplePages = Math.max(1, Math.ceil(state.samplesTotal / SAMPLE_PAGE_SIZE));
       if (state.samplePage > state.samplePages) {
         state.samplePage = state.samplePages;
@@ -871,12 +1294,14 @@
         const voice = voiceForSample(sample);
         const gender = sample.metadata?.gender || voice?.gender || "unknown";
         const age = sample.metadata?.age_group || voice?.age_group || "unknown";
+        const targetKind = sample.target_kind || sample.metadata?.target_kind || "positive";
+        const originJobId = sample.origin_job_id || sample.metadata?.origin_job_id || "";
         const playing = state.inlineAudioId === sample.id && state.inlineAudio && !state.inlineAudio.paused;
         return `<tr data-sample-id="${escapeHtml(sample.id)}">
           <td class="check-cell"><input class="sample-check" type="checkbox" ${selected ? "checked" : ""} aria-label="选择样本" /></td>
           <td><div class="sample-title"><button class="play-button" data-action="play" aria-label="${playing ? "暂停" : "试听"}">${icon(playing ? "pause" : "play")}</button><div><strong title="${escapeHtml(sample.text)}">${escapeHtml(sample.text)}</strong><small>${escapeHtml(sample.id.slice(0, 16))}</small></div></div></td>
           <td><div class="cell-stack"><strong>${escapeHtml(sample.voice_name || sample.voice_id)}</strong><small>${escapeHtml(providerNames[sample.provider] || sample.provider)} · ${escapeHtml(sample.model || "—")}</small></div></td>
-          <td><span class="tag">${escapeHtml(sampleType(sample))}</span> <span class="tag">${escapeHtml(genderNames[gender] || "未知")}</span><small class="cell-note">${escapeHtml(ageNames[age] || "未知")}</small></td>
+          <td><span class="tag target-kind ${escapeHtml(targetKind)}">${escapeHtml(targetKindNames[targetKind] || targetKind)}</span> <span class="tag">${escapeHtml(sampleType(sample))}</span><small class="cell-note">${escapeHtml(genderNames[gender] || "未知")} · ${escapeHtml(ageNames[age] || "未知")}${originJobId ? ` · 任务 ${escapeHtml(String(originJobId).slice(0, 8))}` : ""}</small></td>
           <td><div class="cell-stack"><strong>${formatDuration(sample.duration)}</strong><small>${Number(sample.sample_rate || 0) / 1000} kHz · ${sample.channels || 1} ch</small></div></td>
           <td><span class="status-badge ${sample.quality_status === "accepted" || sample.quality_status === "pass" ? "completed" : sample.quality_status === "rejected" || sample.quality_status === "reject" ? "failed" : "queued"}">${escapeHtml(qualityNames[sample.quality_status] || sample.quality_status)}</span></td>
           <td>${escapeHtml(formatDate(sample.created_at))}</td>
@@ -888,6 +1313,8 @@
     const end = Math.min(state.samplesTotal, state.samplePage * SAMPLE_PAGE_SIZE);
     $("sampleRange").textContent = `${start}–${end} / ${state.samplesTotal}`;
     $("samplePageLabel").textContent = `${state.samplePage} / ${state.samplePages}`;
+    $("samplePageInput").value = String(state.samplePage);
+    $("samplePageInput").max = String(state.samplePages);
     $("samplePrev").disabled = state.samplePage <= 1;
     $("sampleNext").disabled = state.samplePage >= state.samplePages;
     $("selectAllSamples").checked = Boolean(state.samples.length) && state.samples.every((sample) => state.selectedSamples.has(sample.id));
@@ -897,7 +1324,7 @@
   function updateSelectedSampleCount() {
     $("selectedSampleCount").textContent = String(state.selectedSamples.size);
     const label = state.selectedSamples.size
-      ? `已选择 ${state.selectedSamples.size} 条样本用于增强`
+      ? `已选择 ${state.selectedSamples.size} 条样本`
       : "未选择时将增强服务端全部干净样本";
     $("noiseSampleSelection").textContent = label;
     updateAugmentationEstimate();
@@ -954,6 +1381,8 @@
     $("sampleEditSpeaker").disabled = sample.provider !== "real";
     $("sampleProvenance").innerHTML = [
       ["来源", providerNames[sample.provider] || sample.provider], ["模型", sample.model || "—"],
+      ["目标类型", targetKindNames[sample.target_kind] || sample.target_kind || "正样本"],
+      ["唤醒词 ID", sample.keyword_id || "—"], ["生成总任务", sample.origin_job_id || "—"],
       ["音色 ID", sample.voice_id], ["Seed", sample.seed], ["语速 / 音高 / 音量", `${sample.speed} / ${sample.pitch} / ${sample.volume}`],
       ["父样本", sample.parent_id || "—"], ["噪声 / SNR", sample.noise_id ? `${sample.noise_id} / ${Number(sample.snr_db).toFixed(1)} dB` : "—"],
       ["SHA-256", sample.sha256],
@@ -1078,7 +1507,7 @@
     try {
       const result = await apiJson("/api/samples/delete", "POST", { ids });
       ids.forEach((id) => state.selectedSamples.delete(id));
-      await Promise.all([loadSamples(), loadStatus()]);
+      await Promise.all([loadSampleKeywords(), loadSamples(), loadStatus()]);
       toast("样本已软删除", `${result.deleted || 0} 条已移入回收目录；可立即撤销`, "success", 12000, {
         label: "撤销",
         handler: () => restoreSamples(ids),
@@ -1091,7 +1520,7 @@
   async function restoreSamples(ids) {
     try {
       await runWithLimit(ids, 5, (id) => api(`/api/samples/${encodeURIComponent(id)}/restore`, { method: "POST" }));
-      await Promise.all([loadSamples(), loadStatus()]);
+      await Promise.all([loadSampleKeywords(), loadSamples(), loadStatus()]);
       toast("样本已恢复", `${ids.length} 条样本已回到样本库`, "success");
     } catch (error) {
       toast("恢复失败", `${error.message}；可通过恢复 API 或服务器数据目录继续处理。`, "error", 7000);
@@ -1109,20 +1538,187 @@
     }
   }
 
+  function recordingMimeType() {
+    const candidates = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm"];
+    return candidates.find((mime) => window.MediaRecorder?.isTypeSupported?.(mime)) || "";
+  }
+
+  function formatRecordingTime(milliseconds) {
+    const value = Math.max(0, Number(milliseconds) || 0);
+    const minutes = Math.floor(value / 60000);
+    const seconds = Math.floor((value % 60000) / 1000);
+    const tenths = Math.floor((value % 1000) / 100);
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${tenths}`;
+  }
+
+  function setRecorderButtons(recording = false, hasRecording = Boolean(state.recording.file)) {
+    $("startRecording").disabled = recording;
+    $("stopRecording").disabled = !recording;
+    $("resetRecording").disabled = !recording && !hasRecording;
+  }
+
+  async function releaseRecordingInput() {
+    if (state.recording.timer) window.clearInterval(state.recording.timer);
+    if (state.recording.levelFrame) window.cancelAnimationFrame(state.recording.levelFrame);
+    state.recording.timer = null;
+    state.recording.levelFrame = null;
+    state.recording.stream?.getTracks().forEach((track) => track.stop());
+    state.recording.stream = null;
+    if (state.recording.audioContext && state.recording.audioContext.state !== "closed") {
+      try { await state.recording.audioContext.close(); } catch (_) { /* Browser already closed it. */ }
+    }
+    state.recording.audioContext = null;
+    state.recording.analyser = null;
+    $("recordingLevelBar").style.width = "0%";
+    $("browserRecorder").classList.remove("recording");
+  }
+
+  function clearRecordedFile() {
+    if (state.recording.url) URL.revokeObjectURL(state.recording.url);
+    state.recording.file = null;
+    state.recording.url = null;
+    state.recording.chunks = [];
+    const preview = $("recordingPreview");
+    preview.pause();
+    preview.removeAttribute("src");
+    preview.classList.add("hidden");
+    $("recordingTimer").textContent = "00:00.0";
+    $("recordingStatus").textContent = "允许 0.2–30 秒；KWS 建议录制一次简短、完整的发音，完成后先试听再上传。";
+    setRecorderButtons(false, false);
+  }
+
+  function updateRecordingLevel() {
+    const analyser = state.recording.analyser;
+    if (!analyser) return;
+    const values = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(values);
+    const rms = Math.sqrt(values.reduce((sum, value) => sum + ((value - 128) / 128) ** 2, 0) / values.length);
+    $("recordingLevelBar").style.width = `${clamp(rms * 260, 1, 100).toFixed(1)}%`;
+    state.recording.levelFrame = window.requestAnimationFrame(updateRecordingLevel);
+  }
+
+  function initializeRecorderSupport() {
+    const secure = window.isSecureContext;
+    const supported = secure && Boolean(navigator.mediaDevices?.getUserMedia) && Boolean(window.MediaRecorder);
+    $("recordingSecurityNotice").classList.toggle("hidden", secure);
+    $("recordingSupportText").textContent = supported
+      ? "支持录音；首次使用需授予麦克风权限"
+      : secure ? "当前浏览器不支持 MediaRecorder" : "需要 HTTPS 安全上下文";
+    $("startRecording").disabled = !supported;
+    $("browserRecorder").classList.toggle("unsupported", !supported);
+  }
+
+  async function startRecording() {
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      initializeRecorderSupport();
+      return toast("无法使用麦克风", "请通过 HTTPS 打开页面，或选择本地录音文件上传。", "error", 7000);
+    }
+    clearRecordedFile();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      });
+      const mimeType = recordingMimeType();
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      state.recording.stream = stream;
+      state.recording.recorder = recorder;
+      state.recording.chunks = [];
+      state.recording.discardOnStop = false;
+      state.recording.startedAt = performance.now();
+      recorder.addEventListener("dataavailable", (event) => {
+        if (event.data?.size) state.recording.chunks.push(event.data);
+      });
+      recorder.addEventListener("stop", async () => {
+        const elapsed = performance.now() - state.recording.startedAt;
+        await releaseRecordingInput();
+        if (state.recording.discardOnStop) {
+          state.recording.discardOnStop = false;
+          clearRecordedFile();
+          return;
+        }
+        const type = recorder.mimeType || mimeType || "audio/webm";
+        const blob = new Blob(state.recording.chunks, { type });
+        if (!blob.size) {
+          clearRecordedFile();
+          return toast("录音失败", "浏览器未生成有效的音频数据。", "error");
+        }
+        if (elapsed < RECORDING_MIN_MS) {
+          clearRecordedFile();
+          return toast("录音太短", "真人样本至少需要 0.2 秒，请重新录制一次完整发音。", "error");
+        }
+        const extension = type.includes("ogg") ? "ogg" : type.includes("mp4") ? "m4a" : type.includes("wav") ? "wav" : "webm";
+        state.recording.file = new File([blob], `browser_recording_${Date.now()}.${extension}`, { type });
+        state.recording.url = URL.createObjectURL(blob);
+        $("recordingPreview").src = state.recording.url;
+        $("recordingPreview").classList.remove("hidden");
+        $("recordingTimer").textContent = formatRecordingTime(elapsed);
+        $("recordingStatus").textContent = `录音已就绪（${formatRecordingTime(elapsed)}），请试听后上传或点击重录。`;
+        state.recording.recorder = null;
+        setRecorderButtons(false, true);
+      }, { once: true });
+      recorder.start(250);
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (AudioContext) {
+        state.recording.audioContext = new AudioContext();
+        state.recording.analyser = state.recording.audioContext.createAnalyser();
+        state.recording.analyser.fftSize = 256;
+        state.recording.audioContext.createMediaStreamSource(stream).connect(state.recording.analyser);
+        updateRecordingLevel();
+      }
+      state.recording.timer = window.setInterval(() => {
+        const elapsed = performance.now() - state.recording.startedAt;
+        $("recordingTimer").textContent = formatRecordingTime(elapsed);
+        if (elapsed >= RECORDING_MAX_MS - 100 && recorder.state === "recording") {
+          recorder.stop();
+          toast("已达录音上限", "真人样本最长 30 秒，已自动停止；KWS 建议使用更短的单次发音。", "info");
+        }
+      }, 100);
+      $("recordingStatus").textContent = "正在录音……请在完成后点击停止。";
+      $("browserRecorder").classList.add("recording");
+      setRecorderButtons(true, false);
+    } catch (error) {
+      await releaseRecordingInput();
+      state.recording.recorder = null;
+      initializeRecorderSupport();
+      toast("麦克风启动失败", `${error.message}；请检查浏览器权限和 HTTPS 连接。`, "error", 7000);
+    }
+  }
+
+  function stopRecording() {
+    const recorder = state.recording.recorder;
+    if (recorder?.state === "recording") {
+      $("stopRecording").disabled = true;
+      recorder.stop();
+    }
+  }
+
+  function resetRecording() {
+    const recorder = state.recording.recorder;
+    if (recorder?.state === "recording") {
+      state.recording.discardOnStop = true;
+      recorder.stop();
+      return;
+    }
+    clearRecordedFile();
+    initializeRecorderSupport();
+  }
+
   async function uploadRealSamples(event) {
     event.preventDefault();
     const files = [...$("sampleUploadFiles").files];
-    if (!files.length) return toast("请选择录音", "可一次选择多条真人音频。", "error");
+    if (state.recording.file) files.push(state.recording.file);
+    if (!files.length) return toast("请选择或录制音频", "可一次选择多条真人音频，也可使用网页麦克风录音。", "error");
     const form = new FormData();
     files.forEach((file) => form.append("files", file));
     form.append("text", $("sampleUploadText").value.trim());
     form.append("label", $("sampleUploadLabel").value.trim());
     form.append("keyword_id", state.projectSettings.keyword_id);
+    form.append("target_kind", $("sampleUploadTargetKind").value);
     form.append("speaker_id", $("sampleUploadSpeaker").value.trim());
     form.append("split", $("sampleUploadSplit").value);
     form.append("gender", $("sampleUploadGender").value);
     form.append("age_group", $("sampleUploadAge").value);
-    const button = event.submitter;
+    const button = event.submitter || event.currentTarget.querySelector('button[type="submit"]');
     button.disabled = true;
     button.textContent = `正在上传 ${files.length} 个文件…`;
     try {
@@ -1131,7 +1727,8 @@
       event.target.reset();
       $("sampleUploadText").value = state.projectSettings.display_text;
       $("sampleUploadLabel").value = state.projectSettings.label;
-      await Promise.all([loadSamples(true), loadStatus()]);
+      resetRecording();
+      await Promise.all([loadSampleKeywords(), loadSamples(true), loadStatus()]);
       const extra = `${result.duplicates?.length || 0} 重复，${result.failures?.length || 0} 失败`;
       toast("真人样本导入完成", `${result.imported || 0} 成功，${extra}`, result.failures?.length ? "info" : "success", 6500);
     } catch (error) {
@@ -1253,6 +1850,36 @@
     }
   }
 
+  async function materializeNoises() {
+    const enabled = state.noises.filter((noise) => noise.enabled);
+    const chosen = state.selectedNoises.size
+      ? enabled.filter((noise) => state.selectedNoises.has(noise.id))
+      : enabled;
+    if (!chosen.length) return toast("没有可入库的背景噪声", "请先上传并启用背景噪声，或勾选需要的条目。", "error");
+    const keyword = state.projectSettings.display_text;
+    if (!await confirmAction(
+      "将背景噪声加入样本库",
+      `将 ${chosen.length} 条背景噪声关联到当前唤醒词“${keyword}”，并标注为背景噪声样本。该本地操作不会调用云端 TTS。`,
+      `入库 ${chosen.length} 条`,
+    )) return;
+    const button = $("materializeNoises");
+    button.disabled = true;
+    try {
+      const result = await apiJson("/api/noises/materialize", "POST", {
+        noise_ids: chosen.map((noise) => noise.id),
+        keyword_id: state.projectSettings.keyword_id,
+      });
+      await Promise.all([loadTasks(), loadSampleKeywords(), loadSamples(true), loadStatus()]);
+      const created = result?.created ?? result?.sample_ids?.length ?? 0;
+      const reused = result?.duplicates ?? result?.duplicate_sample_ids?.length ?? 0;
+      toast("背景噪声已加入样本库", `新建 ${created} 条，复用 ${reused} 条；可在样本库按“背景噪声”筛选。`, "success", 6500);
+    } catch (error) {
+      toast("背景噪声入库失败", error.message, "error", 7000);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   function updateAugmentationEstimate() {
     const variants = Math.max(0, Number($("augmentVariants").value || 0));
     const selected = state.selectedSamples.size;
@@ -1277,7 +1904,7 @@
     const count = Number($("augmentVariants").value);
     const sourceText = state.selectedSamples.size ? `${state.selectedSamples.size} 条已选样本` : "全部干净样本";
     if (!await confirmAction("确认批量增强", `${sourceText} × ${count} 份；从 ${chosen.length} 条噪声随机选择，SNR ${minSnr}–${maxSnr} dB。\n原始干净音频不会被覆盖。`, "开始增强")) return;
-    const button = event.submitter;
+    const button = event.submitter || event.currentTarget.querySelector('button[type="submit"]');
     button.disabled = true;
     button.textContent = "正在创建任务…";
     try {
@@ -1285,6 +1912,7 @@
       await apiJson("/api/augment", "POST", {
         sample_ids: [...state.selectedSamples],
         noise_ids: state.selectedNoises.size ? [...state.selectedNoises] : [],
+        keyword_id: currentSampleKeywordId(),
         count,
         seed: Number($("augmentSeed").value || 20260804),
       });
@@ -1369,6 +1997,7 @@
     button.textContent = "正在收集完整样本清单…";
     const scope = $("exportScope").value;
     const includeAugmented = $("exportAugmented").checked;
+    const keywordId = currentSampleKeywordId();
     let sampleIds = [];
     try {
       if (scope === "selected") {
@@ -1376,16 +2005,19 @@
         if (!sampleIds.length) return toast("没有选择样本", "回到样本库选择后再导出，或改为全部范围。", "error");
         if (!includeAugmented) {
           const selectedSet = new Set(sampleIds);
-          sampleIds = (await fetchAllSamples()).filter((sample) => selectedSet.has(sample.id) && !sample.parent_id).map((sample) => sample.id);
+          sampleIds = (await fetchAllSamples({ keyword_id: keywordId })).filter((sample) => selectedSet.has(sample.id) && !sample.parent_id).map((sample) => sample.id);
           if (!sampleIds.length) return toast("所选范围为空", "当前选择仅包含增强样本；请开启“包含增强样本”或重选。", "error");
         }
       } else if (scope === "accepted") {
-        const [passed, accepted] = await Promise.all([fetchAllSamples({ quality: "pass" }), fetchAllSamples({ quality: "accepted" })]);
+        const [passed, accepted] = await Promise.all([
+          fetchAllSamples({ quality: "pass", keyword_id: keywordId }),
+          fetchAllSamples({ quality: "accepted", keyword_id: keywordId }),
+        ]);
         const unique = new Map([...passed, ...accepted].map((sample) => [sample.id, sample]));
         sampleIds = [...unique.values()].filter((sample) => includeAugmented || !sample.parent_id).map((sample) => sample.id);
         if (!sampleIds.length) return toast("没有已通过样本", "请先在样本库试听并完成审核。", "error");
       } else if (!includeAugmented) {
-        sampleIds = (await fetchAllSamples()).filter((sample) => !sample.parent_id).map((sample) => sample.id);
+        sampleIds = (await fetchAllSamples({ keyword_id: keywordId })).filter((sample) => !sample.parent_id).map((sample) => sample.id);
       }
       const train = Number($("trainSplit").value) / 100;
       const dev = Number($("devSplit").value) / 100;
@@ -1394,6 +2026,7 @@
       if (!await confirmAction("创建导出任务", `${countText}；格式 ${format.toUpperCase()}；Train / Dev / Test = ${Math.round(train * 100)} / ${Math.round(dev * 100)} / ${Math.round((1 - train - dev) * 100)}。`, "开始导出")) return;
       await apiJson("/api/exports", "POST", {
         sample_ids: sampleIds,
+        keyword_id: keywordId,
         name: $("exportDatasetName").value.trim() || `${state.projectSettings.keyword_id}_dataset`,
         format,
         include_audio: $("exportAudio").checked,
@@ -1472,7 +2105,10 @@
   }
 
   function bindEvents() {
-    document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.view)));
+    document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => {
+      if (button.dataset.view === "providers") openProviderSettings();
+      else navigate(button.dataset.view);
+    }));
     document.querySelectorAll("[data-go]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.go)));
     $("menuToggle").addEventListener("click", () => $("sidebar").classList.toggle("open"));
     $("projectSettingsButton").addEventListener("click", openProjectSettings);
@@ -1485,13 +2121,14 @@
     });
     $("accessTokenButton").addEventListener("click", async () => {
       const message = token() ? "修改访问令牌；输入空字符串可清除（仅当前浏览器会话）：" : "输入 TTS_APP_API_TOKEN（仅当前浏览器会话）：";
-      const value = window.prompt(message, token());
+      const value = window.prompt(message, "");
       if (value === null) return;
       setToken(value.trim());
       toast(value.trim() ? "访问令牌已设置" : "访问令牌已清除", "将重新连接受保护接口。", "success");
       try { await loadProviders(); } catch (error) { toast("令牌验证失败", error.message, "error"); }
     });
     $("providerSettingsButton").addEventListener("click", () => openProviderSettings());
+    $("reloadProviderSettings").addEventListener("click", () => openProviderSettings());
     $("providerCards").addEventListener("click", (event) => {
       const button = event.target.closest("button[data-config-provider]");
       if (button) openProviderSettings(button.dataset.configProvider);
@@ -1500,6 +2137,11 @@
     document.querySelectorAll("[data-provider-settings-form]").forEach((form) => form.addEventListener("submit", saveProviderSettings));
     document.querySelectorAll("[data-test-provider]").forEach((button) => button.addEventListener("click", () => testProviderSettings(button.dataset.testProvider, button)));
     document.querySelectorAll("[data-clear-provider]").forEach((button) => button.addEventListener("click", () => clearProviderSettings(button.dataset.clearProvider, button)));
+    ["aliyun", "volcengine"].forEach((prefix) => $(`${prefix}PricingUnit`).addEventListener("change", (event) => {
+      if (event.target.value) return;
+      $(`${prefix}PricingRate`).value = "";
+      $(`${prefix}PricingCurrency`).value = "";
+    }));
 
     ["voiceSearch", "voiceProviderFilter", "voiceGenderFilter", "voiceAgeFilter"].forEach((id) => $(id).addEventListener("input", renderVoices));
     $("voiceGrid").addEventListener("change", (event) => {
@@ -1516,7 +2158,8 @@
     ["generationTexts", "generationCount"].forEach((id) => $(id).addEventListener("input", updateGenerationEstimate));
     $("generationSpeed").addEventListener("input", (event) => { $("speedOutput").textContent = `${Number(event.target.value).toFixed(2)}×`; });
     $("generationPitch").addEventListener("input", (event) => { $("pitchOutput").textContent = `${event.target.value} st`; });
-    $("generationVolume").addEventListener("input", (event) => { $("volumeOutput").textContent = `${event.target.value} dB`; });
+    $("generationVolume").addEventListener("input", (event) => { $("volumeOutput").textContent = `${event.target.value} / 100`; });
+    ["randomSpeed", "randomPitch", "randomVolume"].forEach((id) => $(id).addEventListener("change", updateRandomParameterState));
     $("generationForm").addEventListener("submit", submitGeneration);
 
     $("refreshTasks").addEventListener("click", () => loadTasks());
@@ -1533,10 +2176,19 @@
     });
 
     let sampleSearchTimer;
-    $("sampleSearch").addEventListener("input", () => { clearTimeout(sampleSearchTimer); sampleSearchTimer = setTimeout(() => loadSamples(true), 260); });
-    ["sampleProviderFilter", "sampleGenderFilter", "sampleAgeFilter", "sampleTypeFilter", "sampleReviewFilter"].forEach((id) => $(id).addEventListener("change", () => loadSamples(true)));
+    $("sampleSearch").addEventListener("input", () => {
+      state.selectedSamples.clear();
+      updateSelectedSampleCount();
+      clearTimeout(sampleSearchTimer);
+      sampleSearchTimer = setTimeout(() => loadSamples(true), 260);
+    });
+    ["sampleProviderFilter", "sampleGenderFilter", "sampleAgeFilter", "sampleTypeFilter", "sampleReviewFilter", "sampleTargetKindFilter", "sampleJobFilter", "sampleKeywordFilter"].forEach((id) => $(id).addEventListener("change", resetSampleSelectionAndLoad));
     $("samplePrev").addEventListener("click", () => { if (state.samplePage > 1) { state.samplePage -= 1; loadSamples(); } });
     $("sampleNext").addEventListener("click", () => { if (state.samplePage < state.samplePages) { state.samplePage += 1; loadSamples(); } });
+    $("sampleGoPage").addEventListener("click", goToSamplePage);
+    $("samplePageInput").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); goToSamplePage(); } });
+    $("selectFilteredSamples").addEventListener("click", selectFilteredSamples);
+    $("clearSelectedSamples").addEventListener("click", clearSelectedSamples);
     $("selectAllSamples").addEventListener("change", (event) => {
       state.samples.forEach((sample) => { if (event.target.checked) state.selectedSamples.add(sample.id); else state.selectedSamples.delete(sample.id); });
       renderSamples();
@@ -1560,8 +2212,15 @@
     $("sendSamplesToNoise").addEventListener("click", () => { if (!state.selectedSamples.size) toast("未选择样本", "将使用服务端全部干净原音；也可以返回样本库先多选。", "info"); navigate("noise"); });
     $("exportSelectedSamples").addEventListener("click", () => { if (!state.selectedSamples.size) return toast("没有选择样本", "请先选择要导出的样本。", "error"); $("exportScope").value = "selected"; navigate("export"); });
     $("sampleMetadataForm").addEventListener("submit", saveSampleMetadata);
-    $("openUploadSample").addEventListener("click", () => $("uploadSampleDialog").showModal());
+    $("openUploadSample").addEventListener("click", () => {
+      initializeRecorderSupport();
+      $("uploadSampleDialog").showModal();
+    });
     $("uploadSampleForm").addEventListener("submit", uploadRealSamples);
+    $("startRecording").addEventListener("click", startRecording);
+    $("stopRecording").addEventListener("click", stopRecording);
+    $("resetRecording").addEventListener("click", resetRecording);
+    $("uploadSampleDialog").addEventListener("close", resetRecording);
 
     $("noiseFiles").addEventListener("change", () => $("noiseUploadMeta").classList.toggle("hidden", !$("noiseFiles").files.length));
     ["dragenter", "dragover"].forEach((name) => $("noiseDropzone").addEventListener(name, (event) => {
@@ -1598,6 +2257,7 @@
       enabled.forEach((noise) => { if (allSelected) state.selectedNoises.delete(noise.id); else state.selectedNoises.add(noise.id); });
       renderNoises();
     });
+    $("materializeNoises").addEventListener("click", materializeNoises);
     $("augmentVariants").addEventListener("input", updateAugmentationEstimate);
     document.querySelectorAll(".preset-button").forEach((button) => button.addEventListener("click", () => {
       const presets = { balanced: [0, 20], farfield: [-5, 10], light: [15, 30] };
@@ -1648,11 +2308,13 @@
   }
 
   async function initialize() {
+    mountProviderSettingsPage();
     bindEvents();
     markFixedBackendOptions();
     updateTokenButton();
     updateGenerationEstimate();
     updateSplitValidation();
+    initializeRecorderSupport();
     navigate((location.hash || "#dashboard").slice(1));
     const online = await loadStatus();
     if (!online) return;
@@ -1666,7 +2328,8 @@
     }
     try {
       await loadProviders();
-      await Promise.all([loadVoices(), loadTasks(), loadSamples(), loadNoises(), loadExports()]);
+      await Promise.all([loadVoices(), loadTasks(), loadSampleKeywords(), loadNoises(), loadExports(), loadProviderSettings()]);
+      await loadSamples();
     } catch (error) {
       toast("初始化失败", error.message, "error", 7500);
     }
@@ -1676,7 +2339,7 @@
       if (hasRunning) {
         await Promise.all([loadTasks(true), loadStatus()]);
         if (!state.tasks.some((task) => ACTIVE_TASK_STATES.has(task.status))) {
-          await Promise.all([loadSamples(), loadExports(true)]);
+          await Promise.all([loadSampleKeywords(), loadSamples(), loadExports(true)]);
         }
       }
     }, 3000);
@@ -1684,6 +2347,8 @@
 
   window.addEventListener("beforeunload", () => {
     if (state.pollTimer) clearInterval(state.pollTimer);
+    state.recording.stream?.getTracks().forEach((track) => track.stop());
+    if (state.recording.url) URL.revokeObjectURL(state.recording.url);
     state.audioUrls.forEach((url) => URL.revokeObjectURL(url));
   });
   window.addEventListener("DOMContentLoaded", initialize);

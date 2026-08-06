@@ -47,8 +47,55 @@ def test_mock_provider_outputs_deterministic_kws_wav() -> None:
         assert wav_file.getnframes() > 4_000
 
 
+def test_provider_capability_contract_is_public_and_copy_safe() -> None:
+    assert providers.PROVIDER_CAPABILITIES["mock"] == {
+        "audio_formats": ("wav",),
+        "sample_rates": (16_000,),
+        "speed": True,
+        "pitch": True,
+        "volume": True,
+    }
+    assert providers.get_provider_capabilities("aliyun") == {
+        "audio_formats": ["wav", "mp3"],
+        "sample_rates": [8_000, 16_000, 24_000, 48_000],
+        "speed": True,
+        "pitch": True,
+        "volume": True,
+    }
+    volc = providers.get_provider_capabilities("doubao")
+    assert volc == {
+        "audio_formats": ["wav", "mp3", "ogg_opus"],
+        "sample_rates": [8_000, 16_000, 24_000],
+        "speed": True,
+        "pitch": False,
+        "volume": True,
+    }
+    volc["audio_formats"].append("invalid")
+    assert "invalid" not in providers.get_provider_capabilities("volcengine")["audio_formats"]
+
+
+@pytest.mark.parametrize(
+    ("audio_format", "sample_rate", "message"),
+    [
+        ("mp3", 16_000, "音频格式"),
+        ("wav", 8_000, "采样率"),
+        ("WAV", 16_000, "音频格式"),
+    ],
+)
+def test_mock_provider_strictly_validates_audio_contract(
+    audio_format: str, sample_rate: int, message: str,
+) -> None:
+    with pytest.raises(providers.ProviderRequestError, match=message):
+        providers.MockTTSProvider().synthesize(
+            text="你好，小助手",
+            voice="mock_female_young",
+            audio_format=audio_format,
+            sample_rate=sample_rate,
+        )
+
+
 def test_available_providers_never_exposes_credentials(tmp_path: Path) -> None:
-    secret = "TEST_ONLY_PROVIDER_SECRET"
+    secret = "unit-test-provider-secret"
     store = settings_store.ProviderSettingsStore(tmp_path / "settings.json")
     store.update_provider("aliyun", {"api_key": secret})
     store.update_provider(
@@ -56,7 +103,7 @@ def test_available_providers_never_exposes_credentials(tmp_path: Path) -> None:
         {
             "app_id": "app-secret-id",
             "access_token": "volc-secret-token",
-            "access_key_id": "ak-test",
+            "access_key_id": "fixture-catalog-access-id",
             "access_key_secret": "volc-catalog-secret",
         },
     )
@@ -104,10 +151,11 @@ def test_alibaba_payload_and_audio_download(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(providers, "_request", fake_request)
     audio = providers.AlibabaTTSProvider({
-        "api_key": "TEST_ONLY_ALI_KEY",
-        "endpoint": "https://aliyun.test/SpeechSynthesizer",
+        "api_key": "fixture-synthesis-credential",
+        "endpoint": "https://dashscope.aliyuncs.com/SpeechSynthesizer",
     }).synthesize(
         text="你好，小助手", voice="longxiaoxia_v2", model="cosyvoice-v2",
+        audio_format="mp3", sample_rate=24_000,
         speed=1.1, pitch=0.9, volume=62, seed=70_000,
     )
 
@@ -116,13 +164,14 @@ def test_alibaba_payload_and_audio_download(monkeypatch: pytest.MonkeyPatch) -> 
     assert request_input == {
         "text": "你好，小助手",
         "voice": "longxiaoxia_v2",
-        "format": "wav",
-        "sample_rate": 16_000,
+        "format": "mp3",
+        "sample_rate": 24_000,
         "volume": 62,
         "rate": 1.1,
         "pitch": 0.9,
         "seed": 70_000 % 65_536,
     }
+    assert calls[0]["retry_transient"] is False
     assert calls[1]["method"] == "GET"
     assert "headers" not in calls[1]
 
@@ -285,6 +334,47 @@ def test_configured_endpoints_reject_query_and_fragment(field: str, url: str) ->
         )
 
 
+@pytest.mark.parametrize(
+    "provider,config",
+    [
+        ("aliyun", {"endpoint": "https://credentials.example/tts"}),
+        (
+            "aliyun",
+            {"endpoint": "https://tenant.oss-cn-beijing.aliyuncs.com/tts"},
+        ),
+        ("volcengine", {"endpoint": "https://credentials.example/tts"}),
+        (
+            "volcengine",
+            {"endpoint": "https://tenant.bytedance.com/tts"},
+        ),
+        (
+            "volcengine",
+            {"catalog_endpoint": "https://credentials.example/catalog"},
+        ),
+        ("volcengine", {"endpoint": "http://127.0.0.1:9000/tts"}),
+    ],
+)
+def test_credential_bearing_endpoints_reject_non_vendor_hosts(
+    monkeypatch: pytest.MonkeyPatch, provider: str, config: dict[str, str],
+) -> None:
+    monkeypatch.delenv("TTS_ALLOW_CUSTOM_PROVIDER_ENDPOINTS", raising=False)
+    with pytest.raises(providers.ProviderConfigurationError, match="指定官方主机"):
+        providers.validate_provider_configuration(
+            provider, config, require_credentials=False,
+        )
+
+
+def test_custom_provider_endpoint_requires_explicit_server_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TTS_ALLOW_CUSTOM_PROVIDER_ENDPOINTS", "1")
+    providers.validate_provider_configuration(
+        "volcengine",
+        {"endpoint": "https://trusted-private-proxy.example/tts"},
+        require_credentials=False,
+    )
+
+
 def test_alibaba_saved_configuration_only_accepts_beijing_region() -> None:
     with pytest.raises(providers.ProviderConfigurationError, match="cn-beijing"):
         providers.validate_provider_configuration(
@@ -365,6 +455,36 @@ def test_provider_request_retry_preserves_raw_request_body(
     assert bodies == [request_body, request_body]
 
 
+def test_billable_request_can_disable_implicit_transient_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        return httpx.Response(503, json={"message": "temporary"}, request=request)
+
+    real_client = httpx.Client
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        providers.httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=transport, **kwargs),
+    )
+    monkeypatch.setenv("TTS_RETRY_COUNT", "5")
+
+    with pytest.raises(providers.ProviderRequestError, match="HTTP 503"):
+        providers._request(
+            "POST",
+            "https://provider.test/billable-synthesis",
+            provider="计费合成",
+            json_body={"text": "unit test"},
+            retry_transient=False,
+        )
+
+    assert len(attempts) == 1
+
+
 def test_alibaba_region_endpoint_rules() -> None:
     workspace_endpoint = providers._ali_service_endpoint(
         {"workspace_id": "ws-unit", "region": "ap-southeast-1"},
@@ -379,6 +499,38 @@ def test_alibaba_region_endpoint_rules() -> None:
     with pytest.raises(providers.ProviderConfigurationError, match="仅支持北京"):
         providers._ali_service_endpoint(
             {"region": "ap-southeast-1"}, "SpeechSynthesizer"
+        )
+
+
+@pytest.mark.parametrize(
+    ("audio_format", "sample_rate", "message"),
+    [
+        ("ogg_opus", 16_000, "音频格式"),
+        ("wav", 44_100, "采样率"),
+    ],
+)
+def test_alibaba_rejects_unsupported_audio_contract_before_request(
+    monkeypatch: pytest.MonkeyPatch,
+    audio_format: str,
+    sample_rate: int,
+    message: str,
+) -> None:
+    monkeypatch.setattr(
+        providers,
+        "_request",
+        lambda *args, **kwargs: pytest.fail("remote request must not run"),
+    )
+    adapter = providers.AlibabaTTSProvider({
+        "api_key": "fixture-synthesis-credential",
+    })
+
+    with pytest.raises(providers.ProviderRequestError, match=message):
+        adapter.synthesize(
+            text="你好，小助手",
+            voice="longxiaoxia_v2",
+            model="cosyvoice-v2",
+            audio_format=audio_format,
+            sample_rate=sample_rate,
         )
 
 
@@ -398,22 +550,24 @@ def test_volc_payload_and_base64_audio(monkeypatch: pytest.MonkeyPatch) -> None:
     audio = providers.VolcTTSProvider({
         "app_id": "unit-app",
         "access_token": "unit-token",
-        "endpoint": "https://volc.test/api/v1/tts",
+        "endpoint": "https://openspeech.bytedance.com/api/v1/tts",
     }).synthesize(
         text="你好，小助手", voice="zh_female_cancan_mars_bigtts",
+        audio_format="ogg_opus", sample_rate=8_000,
         speed=1.2, pitch=1.0, volume=50,
     )
 
     payload = captured["json_body"]
     assert audio == b"RIFF-volc-test"
-    assert payload["audio"]["encoding"] == "wav"
-    assert payload["audio"]["rate"] == 16_000
+    assert payload["audio"]["encoding"] == "ogg_opus"
+    assert payload["audio"]["rate"] == 8_000
     assert payload["audio"]["speed_ratio"] == 1.2
     assert payload["audio"]["loudness_ratio"] == 1.0
     assert "volume_ratio" not in payload["audio"]
     assert "pitch_ratio" not in payload["audio"]
     assert payload["request"]["operation"] == "query"
     assert captured["headers"]["Authorization"] == "Bearer;unit-token"
+    assert captured["retry_transient"] is False
 
 
 def test_volc_v1_rejects_pitch_before_remote_request(
@@ -435,6 +589,38 @@ def test_volc_v1_rejects_pitch_before_remote_request(
         adapter.synthesize(text="你好，小助手", voice="unit-voice", pitch=1.1)
 
     assert called is False
+
+
+@pytest.mark.parametrize(
+    ("audio_format", "sample_rate", "message"),
+    [
+        ("flac", 16_000, "音频格式"),
+        ("wav", 48_000, "采样率"),
+    ],
+)
+def test_volc_rejects_unsupported_audio_contract_before_request(
+    monkeypatch: pytest.MonkeyPatch,
+    audio_format: str,
+    sample_rate: int,
+    message: str,
+) -> None:
+    monkeypatch.setattr(
+        providers,
+        "_request",
+        lambda *args, **kwargs: pytest.fail("remote request must not run"),
+    )
+    adapter = providers.VolcTTSProvider({
+        "app_id": "fixture-app-id",
+        "access_token": "fixture-synthesis-token",
+    })
+
+    with pytest.raises(providers.ProviderRequestError, match=message):
+        adapter.synthesize(
+            text="你好，小助手",
+            voice="fixture-voice",
+            audio_format=audio_format,
+            sample_rate=sample_rate,
+        )
 
 
 @pytest.mark.parametrize(("volume", "expected"), [(0, 0.5), (100, 2.0)])
@@ -480,8 +666,8 @@ def test_volc_catalog_signs_and_paginates_without_synthesis_credentials(
 
     monkeypatch.setattr(providers, "_request", fake_request)
     client = providers.VolcVoiceCatalogClient({
-        "access_key_id": "ak-unit-test",
-        "access_key_secret": "TEST_ONLY_VOLC_SECRET",
+        "access_key_id": "fixture-catalog-access-id",
+        "access_key_secret": "fixture-catalog-secret",
         "catalog_endpoint": "https://open.volcengineapi.com",
     })
     speakers = client.list_speakers(page_size=1)
@@ -490,7 +676,7 @@ def test_volc_catalog_signs_and_paginates_without_synthesis_credentials(
     assert all(call["method"] == "POST" for call in calls)
     assert "Action=ListSpeakers&Version=2025-05-20" in calls[0]["url"]
     assert calls[0]["headers"]["Authorization"].startswith(
-        "HMAC-SHA256 Credential=ak-unit-test/"
+        "HMAC-SHA256 Credential=fixture-catalog-access-id/"
     )
     assert calls[0]["headers"]["X-Content-Sha256"] == providers.hashlib.sha256(
         calls[0]["content"]
@@ -512,8 +698,8 @@ def test_volc_catalog_preserves_trailing_slash_in_signed_request_url(
 
     monkeypatch.setattr(providers, "_request", fake_request)
     client = providers.VolcVoiceCatalogClient({
-        "access_key_id": "ak-unit-test",
-        "access_key_secret": "TEST_ONLY_VOLC_SECRET",
+        "access_key_id": "fixture-catalog-access-id",
+        "access_key_secret": "fixture-catalog-secret",
         "catalog_endpoint": "https://open.volcengineapi.com/custom/",
     })
 
@@ -542,8 +728,8 @@ def test_volc_account_catalog_uses_appid_api_region_and_paginates(
 
     monkeypatch.setattr(providers, "_request", fake_request)
     client = providers.VolcVoiceCatalogClient({
-        "access_key_id": "ak-unit-test",
-        "access_key_secret": "TEST_ONLY_VOLC_SECRET",
+        "access_key_id": "fixture-catalog-access-id",
+        "access_key_secret": "fixture-catalog-secret",
         "catalog_endpoint": "https://open.volcengineapi.com",
     })
 
@@ -558,8 +744,8 @@ def test_volc_account_catalog_uses_appid_api_region_and_paginates(
 def test_volc_catalog_voice_mapping(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     store = settings_store.ProviderSettingsStore(tmp_path / "settings.json")
     store.update_provider("volcengine", {
-        "access_key_id": "ak-unit-test",
-        "access_key_secret": "TEST_ONLY_VOLC_SECRET",
+        "access_key_id": "fixture-catalog-access-id",
+        "access_key_secret": "fixture-catalog-secret",
     })
     monkeypatch.setattr(
         providers.VolcVoiceCatalogClient,
@@ -589,8 +775,8 @@ def test_volc_account_voice_mapping_only_enables_compatible_ready_voice(
     store = settings_store.ProviderSettingsStore(tmp_path / "settings.json")
     store.update_provider("volcengine", {
         "app_id": "unit-app",
-        "access_key_id": "ak-unit-test",
-        "access_key_secret": "TEST_ONLY_VOLC_SECRET",
+        "access_key_id": "fixture-catalog-access-id",
+        "access_key_secret": "fixture-catalog-secret",
     })
     monkeypatch.setattr(
         providers.VolcVoiceCatalogClient,
@@ -653,8 +839,8 @@ def test_volc_catalog_partial_failure_keeps_successful_snapshot(
     store.update_provider("volcengine", {
         "app_id": "unit-app",
         "access_token": "unit-token",
-        "access_key_id": "ak-unit-test",
-        "access_key_secret": "TEST_ONLY_VOLC_SECRET",
+        "access_key_id": "fixture-catalog-access-id",
+        "access_key_secret": "fixture-catalog-secret",
     })
 
     def public_ok(settings_store, refresh_state):
@@ -704,8 +890,8 @@ def test_volc_catalog_raises_when_both_dynamic_queries_fail(
     store.update_provider("volcengine", {
         "app_id": "unit-app",
         "access_token": "unit-token",
-        "access_key_id": "ak-unit-test",
-        "access_key_secret": "TEST_ONLY_VOLC_SECRET",
+        "access_key_id": "fixture-catalog-access-id",
+        "access_key_secret": "fixture-catalog-secret",
     })
 
     def failed(*args, **kwargs):
@@ -721,7 +907,7 @@ def test_volc_catalog_raises_when_both_dynamic_queries_fail(
 
 
 def test_remote_error_redacts_secret() -> None:
-    secret = "TEST_ONLY_REDACTION_SECRET"
+    secret = "unit-test-secret-should-not-leak"
     response = _response(401, payload={"code": "InvalidKey", "message": f"bad key {secret}"})
 
     message = providers._response_error(response, "阿里云", (secret,))
@@ -765,12 +951,12 @@ def test_custom_alibaba_voice_mapping(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     store = settings_store.ProviderSettingsStore(tmp_path / "settings.json")
-    store.update_provider("aliyun", {"api_key": "TEST_ONLY_ALI_KEY"})
+    store.update_provider("aliyun", {"api_key": "fixture-synthesis-credential"})
     monkeypatch.setattr(
         providers.AlibabaTTSProvider,
         "list_custom_voices",
         lambda self: [{
-            "voice_id": "cosyvoice-v3.5-plus-vd-demo-1234",
+            "voice_id": "cosyvoice-v3.5-plus-vd-xiaozhushou-1234",
             "target_model": "cosyvoice-v3.5-plus",
             "voice_prompt": "沉稳的中年女性普通话播音员",
             "status": "OK",
@@ -791,12 +977,12 @@ def test_qwen3_custom_voice_is_retained_but_not_enabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     store = settings_store.ProviderSettingsStore(tmp_path / "settings.json")
-    store.update_provider("aliyun", {"api_key": "TEST_ONLY_ALI_KEY"})
+    store.update_provider("aliyun", {"api_key": "fixture-synthesis-credential"})
     monkeypatch.setattr(
         providers.AlibabaTTSProvider,
         "list_custom_voices",
         lambda self: [{
-            "voice_id": "qwen3-tts-vc-demo",
+            "voice_id": "qwen3-tts-vc-xiaozhushou",
             "target_model": "qwen3-tts-vc-realtime-2026-01-15",
             "status": "OK",
             "design_model": "qwen-voice-enrollment",
@@ -824,7 +1010,7 @@ def test_alibaba_catalog_keeps_successful_design_when_another_is_unsupported(
         })
 
     monkeypatch.setattr(providers, "_request", fake_request)
-    adapter = providers.AlibabaTTSProvider({"api_key": "TEST_ONLY_ALI_KEY"})
+    adapter = providers.AlibabaTTSProvider({"api_key": "fixture-synthesis-credential"})
 
     voices = adapter.list_custom_voices()
 

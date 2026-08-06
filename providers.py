@@ -62,6 +62,58 @@ class ProviderInfo:
     catalog_configured: bool = False
 
 
+PROVIDER_CAPABILITIES: dict[str, dict[str, Any]] = {
+    "mock": {
+        "audio_formats": ("wav",),
+        "sample_rates": (16_000,),
+        "speed": True,
+        "pitch": True,
+        "volume": True,
+    },
+    "aliyun": {
+        "audio_formats": ("wav", "mp3"),
+        "sample_rates": (8_000, 16_000, 24_000, 48_000),
+        "speed": True,
+        "pitch": True,
+        "volume": True,
+    },
+    "volcengine": {
+        "audio_formats": ("wav", "mp3", "ogg_opus"),
+        "sample_rates": (8_000, 16_000, 24_000),
+        "speed": True,
+        "pitch": False,
+        "volume": True,
+    },
+}
+
+
+def get_provider_capabilities(name: str) -> dict[str, Any]:
+    """Return a copy of the public synthesis contract for one provider."""
+
+    normalized = name.strip().lower().replace("-", "_")
+    aliases = {
+        "offline": "mock",
+        "demo": "mock",
+        "alibaba": "aliyun",
+        "ali": "aliyun",
+        "dashscope": "aliyun",
+        "volc": "volcengine",
+        "doubao": "volcengine",
+        "bytedance": "volcengine",
+    }
+    provider_id = aliases.get(normalized, normalized)
+    capabilities = PROVIDER_CAPABILITIES.get(provider_id)
+    if capabilities is None:
+        raise ProviderConfigurationError(f"不支持的 TTS 供应商：{_redact(name)}")
+    return {
+        "audio_formats": list(capabilities["audio_formats"]),
+        "sample_rates": list(capabilities["sample_rates"]),
+        "speed": bool(capabilities["speed"]),
+        "pitch": bool(capabilities["pitch"]),
+        "volume": bool(capabilities["volume"]),
+    }
+
+
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     try:
         value = int(os.getenv(name, str(default)))
@@ -111,6 +163,45 @@ def _validate_endpoint(
     return url
 
 
+def _validate_vendor_endpoint(
+    url: str,
+    provider: str,
+    allowed_hosts: tuple[str, ...],
+) -> str:
+    """Restrict credential-bearing requests to vendor-owned hosts by default."""
+    endpoint = _validate_endpoint(url, provider)
+    parsed = urlparse(endpoint)
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    custom_allowed = os.getenv(
+        "TTS_ALLOW_CUSTOM_PROVIDER_ENDPOINTS", ""
+    ).lower() in {"1", "true", "yes", "on"}
+    official = hostname in allowed_hosts
+    if not (official or custom_allowed):
+        allowed = "、".join(allowed_hosts)
+        raise ProviderConfigurationError(
+            f"{provider} endpoint 必须使用指定官方主机（{allowed}）；"
+            "自建代理需由服务器管理员显式启用高风险开关"
+        )
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ProviderConfigurationError(f"{provider} endpoint 端口无效") from exc
+    if official and port not in (None, 443) and not custom_allowed:
+        raise ProviderConfigurationError(
+            f"{provider} 官方 endpoint 只允许标准 HTTPS 端口 443"
+        )
+    return endpoint
+
+
+def _aliyun_endpoint_hosts(config: Mapping[str, Any]) -> tuple[str, ...]:
+    hosts = {"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"}
+    workspace_id = str(config.get("workspace_id", "")).strip()
+    region = str(config.get("region", "cn-beijing")).strip() or "cn-beijing"
+    if workspace_id and re.fullmatch(r"[A-Za-z0-9-]+", workspace_id):
+        hosts.add(f"{workspace_id}.{region}.maas.aliyuncs.com".lower())
+    return tuple(sorted(hosts))
+
+
 def _response_error(response: httpx.Response, provider: str, secrets: tuple[str, ...]) -> str:
     code: object = response.status_code
     message: object = "remote request failed"
@@ -147,15 +238,22 @@ def _request(
     content: bytes | None = None,
     secrets: tuple[str, ...] = (),
     max_response_bytes: int | None = None,
+    retry_transient: bool = True,
 ) -> httpx.Response:
-    """Make a bounded, retried request without including request data in errors."""
+    """Make a bounded request without including request data in errors.
+
+    Billable synthesis POSTs set ``retry_transient=False``.  A transport
+    timeout does not prove that a provider failed to process a request, so an
+    automatic retry could create an unacknowledged duplicate charge.  Catalog
+    reads and audio downloads may keep the bounded transient retry behavior.
+    """
 
     # Request URLs may contain provider-generated signatures or OpenAPI query
     # parameters. User-configured base endpoints are validated separately and
     # never permit a query or fragment.
     endpoint = _validate_endpoint(url, provider, allow_query=True)
     timeout = _env_float("TTS_HTTP_TIMEOUT_SECONDS", 60.0, 1.0, 600.0)
-    retry_count = _env_int("TTS_RETRY_COUNT", 3, 0, 5)
+    retry_count = _env_int("TTS_RETRY_COUNT", 3, 0, 5) if retry_transient else 0
     attempts = retry_count + 1
     response_limit = max_response_bytes or 4 * 1024 * 1024
     last_error: Exception | None = None
@@ -318,6 +416,8 @@ class BaseTTSProvider:
         text: str,
         voice: str,
         model: str,
+        audio_format: str = "wav",
+        sample_rate: int = 16_000,
         speed: float = 1.0,
         pitch: float = 1.0,
         volume: int = 50,
@@ -326,9 +426,16 @@ class BaseTTSProvider:
     ) -> bytes:
         raise NotImplementedError
 
-    @staticmethod
+    @classmethod
     def _validate_input(
-        text: str, voice: str, speed: float, pitch: float, volume: int,
+        cls,
+        text: str,
+        voice: str,
+        audio_format: str,
+        sample_rate: int,
+        speed: float,
+        pitch: float,
+        volume: int,
     ) -> None:
         if not text.strip():
             raise ProviderRequestError("合成文本不能为空")
@@ -342,6 +449,33 @@ class BaseTTSProvider:
             raise ProviderRequestError("音高必须在 0.5 到 2.0 之间")
         if not 0 <= volume <= 100:
             raise ProviderRequestError("音量必须在 0 到 100 之间")
+        capabilities = get_provider_capabilities(cls.provider_id)
+        if not isinstance(audio_format, str) or audio_format not in capabilities["audio_formats"]:
+            supported = ", ".join(capabilities["audio_formats"])
+            raise ProviderRequestError(
+                f"{cls.provider_id} 不支持音频格式 {audio_format!r}；可选值：{supported}"
+            )
+        if (
+            isinstance(sample_rate, bool)
+            or not isinstance(sample_rate, int)
+            or sample_rate not in capabilities["sample_rates"]
+        ):
+            supported_rates = ", ".join(str(item) for item in capabilities["sample_rates"])
+            raise ProviderRequestError(
+                f"{cls.provider_id} 不支持采样率 {sample_rate!r}；可选值：{supported_rates}"
+            )
+        if not capabilities["speed"] and not math.isclose(
+            speed, 1.0, rel_tol=0.0, abs_tol=1e-9
+        ):
+            raise ProviderRequestError(f"{cls.provider_id} 不支持语速调节")
+        if not capabilities["pitch"] and not math.isclose(
+            pitch, 1.0, rel_tol=0.0, abs_tol=1e-9
+        ):
+            raise ProviderRequestError(
+                f"{cls.provider_id} 不支持音高调节，请将音高设为 0 st（pitch=1.0）"
+            )
+        if not capabilities["volume"] and volume != 50:
+            raise ProviderRequestError(f"{cls.provider_id} 不支持音量调节")
 
 
 class MockTTSProvider(BaseTTSProvider):
@@ -355,14 +489,17 @@ class MockTTSProvider(BaseTTSProvider):
         text: str,
         voice: str,
         model: str = "mock-v1",
+        audio_format: str = "wav",
+        sample_rate: int = 16_000,
         speed: float = 1.0,
         pitch: float = 1.0,
         volume: int = 50,
         seed: int = 0,
         instruction: str = "",
     ) -> bytes:
-        self._validate_input(text, voice, speed, pitch, volume)
-        sample_rate = 16_000
+        self._validate_input(
+            text, voice, audio_format, sample_rate, speed, pitch, volume
+        )
         symbols = [character for character in text.strip() if not character.isspace()]
         symbol_count = max(1, len(symbols))
         duration = max(0.55, min(8.0, 0.13 + symbol_count * 0.19 / speed))
@@ -471,8 +608,10 @@ class AlibabaTTSProvider(BaseTTSProvider):
         self.api_key = str(self.config.get("api_key", "")).strip()
         if not self.api_key:
             raise ProviderConfigurationError("阿里云未配置：请在设置页面填写 API Key")
-        self.endpoint = _validate_endpoint(
-            _ali_service_endpoint(self.config, "SpeechSynthesizer"), "阿里云"
+        self.endpoint = _validate_vendor_endpoint(
+            _ali_service_endpoint(self.config, "SpeechSynthesizer"),
+            "阿里云",
+            _aliyun_endpoint_hosts(self.config),
         )
         self.catalog_complete = False
 
@@ -486,20 +625,24 @@ class AlibabaTTSProvider(BaseTTSProvider):
         text: str,
         voice: str,
         model: str,
+        audio_format: str = "wav",
+        sample_rate: int = 16_000,
         speed: float = 1.0,
         pitch: float = 1.0,
         volume: int = 50,
         seed: int = 0,
         instruction: str = "",
     ) -> bytes:
-        self._validate_input(text, voice, speed, pitch, volume)
+        self._validate_input(
+            text, voice, audio_format, sample_rate, speed, pitch, volume
+        )
         if not model.strip():
             raise ProviderRequestError("阿里云音色必须绑定模型 ID")
         input_data: dict[str, Any] = {
             "text": text,
             "voice": voice,
-            "format": "wav",
-            "sample_rate": 16_000,
+            "format": audio_format,
+            "sample_rate": sample_rate,
             "volume": volume,
             "rate": speed,
             "pitch": pitch,
@@ -511,6 +654,7 @@ class AlibabaTTSProvider(BaseTTSProvider):
             "POST", self.endpoint, provider="阿里云", headers=self._headers,
             json_body={"model": model, "input": input_data}, secrets=(self.api_key,),
             max_response_bytes=_max_audio_wire_bytes(),
+            retry_transient=False,
         )
         content_type = response.headers.get("content-type", "").lower()
         if "audio/" in content_type or response.content.startswith((b"RIFF", b"ID3", b"OggS")):
@@ -541,8 +685,10 @@ class AlibabaTTSProvider(BaseTTSProvider):
         request actions and returned voice-ID fields differ.
         """
 
-        endpoint = _validate_endpoint(
-            _ali_service_endpoint(self.config, "customization"), "阿里云"
+        endpoint = _validate_vendor_endpoint(
+            _ali_service_endpoint(self.config, "customization"),
+            "阿里云",
+            _aliyun_endpoint_hosts(self.config),
         )
         page_size = 100
         max_pages = 10
@@ -661,7 +807,9 @@ class VolcTTSProvider(BaseTTSProvider):
         base = str(self.config.get("endpoint", "")).strip()
         if not base:
             base = "https://openspeech.bytedance.com/api/v1/tts"
-        self.endpoint = _validate_endpoint(base, "火山引擎")
+        self.endpoint = _validate_vendor_endpoint(
+            base, "火山引擎", ("openspeech.bytedance.com",)
+        )
 
     def synthesize(
         self,
@@ -669,13 +817,17 @@ class VolcTTSProvider(BaseTTSProvider):
         text: str,
         voice: str,
         model: str = "",
+        audio_format: str = "wav",
+        sample_rate: int = 16_000,
         speed: float = 1.0,
         pitch: float = 1.0,
         volume: int = 50,
         seed: int = 0,
         instruction: str = "",
     ) -> bytes:
-        self._validate_input(text, voice, speed, pitch, volume)
+        self._validate_input(
+            text, voice, audio_format, sample_rate, speed, pitch, volume
+        )
         if len(text.encode("utf-8")) > 1024:
             raise ProviderRequestError("火山引擎在线短文本接口单次输入不能超过 1024 字节")
         if model and model not in {
@@ -684,16 +836,14 @@ class VolcTTSProvider(BaseTTSProvider):
             raise ProviderRequestError(
                 f"火山引擎 V1 不支持模型 {model}；Seed-TTS 2.0 需要 V3 接口"
             )
-        if not math.isclose(pitch, 1.0, rel_tol=0.0, abs_tol=1e-9):
-            raise ProviderRequestError("火山引擎 V1 暂不支持音高调节，请将音高设为 0 st")
         request_id = str(uuid.uuid4())
         payload = {
             "app": {"appid": self.app_id, "token": self.token, "cluster": self.cluster},
             "user": {"uid": "kws-tts-dataset-app"},
             "audio": {
                 "voice_type": voice,
-                "encoding": "wav",
-                "rate": 16_000,
+                "encoding": audio_format,
+                "rate": sample_rate,
                 "speed_ratio": speed,
                 "loudness_ratio": max(0.5, min(2.0, volume / 50.0)),
             },
@@ -712,6 +862,7 @@ class VolcTTSProvider(BaseTTSProvider):
             },
             json_body=payload, secrets=(self.token, self.app_id),
             max_response_bytes=_max_audio_wire_bytes(),
+            retry_transient=False,
         )
         content_type = response.headers.get("content-type", "").lower()
         if "audio/" in content_type or response.content.startswith((b"RIFF", b"ID3", b"OggS")):
@@ -759,8 +910,10 @@ class VolcVoiceCatalogClient:
                 "火山音色目录未配置：请在设置页面填写 Access Key ID 和 Access Key Secret"
             )
         endpoint = str(self.config.get("catalog_endpoint", "")).strip()
-        self.endpoint = _validate_endpoint(
-            endpoint or "https://open.volcengineapi.com", "火山引擎音色目录"
+        self.endpoint = _validate_vendor_endpoint(
+            endpoint or "https://open.volcengineapi.com",
+            "火山引擎音色目录",
+            ("open.volcengineapi.com",),
         )
 
     @staticmethod
@@ -961,18 +1114,24 @@ def validate_provider_configuration(
         ):
             endpoint = str(config.get(field, "")).strip()
             if endpoint:
-                _validate_endpoint(endpoint, label)
+                _validate_vendor_endpoint(
+                    endpoint, label, _aliyun_endpoint_hosts(config)
+                )
         if require_credentials:
             AlibabaTTSProvider(config=config)
         return
     if normalized in {"volcengine", "volc", "doubao", "bytedance"}:
-        for field, label in (
-            ("endpoint", "火山引擎合成"),
-            ("catalog_endpoint", "火山引擎音色目录"),
+        for field, label, allowed_hosts in (
+            ("endpoint", "火山引擎合成", ("openspeech.bytedance.com",)),
+            (
+                "catalog_endpoint",
+                "火山引擎音色目录",
+                ("open.volcengineapi.com",),
+            ),
         ):
             endpoint = str(config.get(field, "")).strip()
             if endpoint:
-                _validate_endpoint(endpoint, label)
+                _validate_vendor_endpoint(endpoint, label, allowed_hosts)
         if require_credentials:
             synthesis_present = bool(config.get("app_id") or config.get("access_token"))
             catalog_present = bool(
@@ -1049,6 +1208,7 @@ __all__ = [
     "AliyunTTSProvider",
     "BaseTTSProvider",
     "MockTTSProvider",
+    "PROVIDER_CAPABILITIES",
     "ProviderConfigurationError",
     "ProviderError",
     "ProviderInfo",
@@ -1057,5 +1217,6 @@ __all__ = [
     "VolcVoiceCatalogClient",
     "available_providers",
     "get_provider",
+    "get_provider_capabilities",
     "validate_provider_configuration",
 ]

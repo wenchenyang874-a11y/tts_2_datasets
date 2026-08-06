@@ -1,0 +1,37 @@
+version: "3.8"
+
+# Copy this file to docker-compose.https.yml, keep the certificate directory
+# outside Git, and load it after the base Compose file.
+services:
+  tts-app:
+    command:
+      - uvicorn
+      - app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --workers
+      - "1"
+      - --log-level
+      - "${TTS_APP_LOG_LEVEL:-info}"
+      - --ssl-keyfile
+      - /certs/server.key
+      - --ssl-certfile
+      - /certs/server.crt
+    volumes:
+      - "${TTS_APP_HOST_DATA_DIR:-./var}:/data"
+      - "${TTS_TLS_CERT_DIR:?Set TTS_TLS_CERT_DIR to a trusted certificate directory}:/certs:ro"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import ssl, urllib.request;
+          urllib.request.urlopen('https://127.0.0.1:8080/healthz',
+          context=ssl._create_unverified_context(), timeout=4)
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
