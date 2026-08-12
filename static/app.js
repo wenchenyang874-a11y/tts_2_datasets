@@ -89,6 +89,19 @@
     pending: "未审核", accepted: "已通过", rejected: "已拒绝",
   };
 
+  function canonicalReviewStatus(value) {
+    if (value === "accepted" || value === "pass") return "accepted";
+    if (value === "rejected" || value === "reject") return "rejected";
+    return "pending";
+  }
+
+  function nextReviewStatus(value) {
+    const current = canonicalReviewStatus(value);
+    if (current === "pending") return "accepted";
+    if (current === "accepted") return "rejected";
+    return "pending";
+  }
+
   function token() {
     return sessionStorage.getItem(TOKEN_KEY) || "";
   }
@@ -1205,13 +1218,18 @@
     try {
       const payload = await api("/api/samples/speakers");
       state.sampleSpeakers = Array.isArray(payload) ? payload : (payload?.items || payload?.speakers || []);
-      $("sampleSpeakerOptions").innerHTML = state.sampleSpeakers.map((speaker) => {
+      const currentSpeakerId = $("sampleUploadSpeaker").value.trim();
+      const select = $("sampleExistingSpeaker");
+      select.innerHTML = '<option value="">手动输入新 ID</option>' + state.sampleSpeakers.map((speaker) => {
         const speakerId = String(speaker?.speaker_id || "").trim();
         const count = Math.max(0, Number(speaker?.sample_count || 0));
         return speakerId
-          ? `<option value="${escapeHtml(speakerId)}" label="${count} 条样本"></option>`
+          ? `<option value="${escapeHtml(speakerId)}">${escapeHtml(speakerId)} · ${count} 条样本</option>`
           : "";
       }).join("");
+      select.value = state.sampleSpeakers.some((speaker) => String(speaker?.speaker_id || "").trim() === currentSpeakerId)
+        ? currentSpeakerId
+        : "";
     } catch (error) {
       if (!silent) toast("说话人列表读取失败", `${error.message}；仍可手动输入新的说话人 ID。`, "error", 6500);
     }
@@ -1323,13 +1341,17 @@
         const targetKind = sample.target_kind || sample.metadata?.target_kind || "positive";
         const originJobId = sample.origin_job_id || sample.metadata?.origin_job_id || "";
         const playing = state.inlineAudioId === sample.id && state.inlineAudio && !state.inlineAudio.paused;
+        const reviewStatus = canonicalReviewStatus(sample.quality_status);
+        const nextStatus = nextReviewStatus(sample.quality_status);
+        const reviewName = qualityNames[sample.quality_status] || qualityNames[reviewStatus];
+        const reviewClass = reviewStatus === "accepted" ? "completed" : reviewStatus === "rejected" ? "failed" : "queued";
         return `<tr data-sample-id="${escapeHtml(sample.id)}">
           <td class="check-cell"><input class="sample-check" type="checkbox" ${selected ? "checked" : ""} aria-label="选择样本" /></td>
           <td><div class="sample-title"><button class="play-button" data-action="play" aria-label="${playing ? "暂停" : "试听"}">${icon(playing ? "pause" : "play")}</button><div><strong title="${escapeHtml(sample.text)}">${escapeHtml(sample.text)}</strong><small>${escapeHtml(sample.id.slice(0, 16))}</small></div></div></td>
           <td><div class="cell-stack"><strong>${escapeHtml(sample.voice_name || sample.voice_id)}</strong><small>${escapeHtml(providerNames[sample.provider] || sample.provider)} · ${escapeHtml(sample.model || "—")}</small></div></td>
           <td><span class="tag target-kind ${escapeHtml(targetKind)}">${escapeHtml(targetKindNames[targetKind] || targetKind)}</span> <span class="tag">${escapeHtml(sampleType(sample))}</span><small class="cell-note">${escapeHtml(genderNames[gender] || "未知")} · ${escapeHtml(ageNames[age] || "未知")}${originJobId ? ` · 任务 ${escapeHtml(String(originJobId).slice(0, 8))}` : ""}</small></td>
           <td><div class="cell-stack"><strong>${formatDuration(sample.duration)}</strong><small>${Number(sample.sample_rate || 0) / 1000} kHz · ${sample.channels || 1} ch</small></div></td>
-          <td><span class="status-badge ${sample.quality_status === "accepted" || sample.quality_status === "pass" ? "completed" : sample.quality_status === "rejected" || sample.quality_status === "reject" ? "failed" : "queued"}">${escapeHtml(qualityNames[sample.quality_status] || sample.quality_status)}</span></td>
+          <td><button type="button" class="status-badge status-toggle ${reviewClass}" data-action="cycle-review" title="当前：${escapeHtml(reviewName)}；点击切换为：${escapeHtml(qualityNames[nextStatus])}" aria-label="审核状态${escapeHtml(reviewName)}，点击切换为${escapeHtml(qualityNames[nextStatus])}">${escapeHtml(reviewName)}</button></td>
           <td>${escapeHtml(formatDate(sample.created_at))}</td>
           <td><div class="row-actions"><button class="row-action" data-action="inspect" title="波形、频谱与元数据">${icon("wave")}</button><button class="row-action danger" data-action="delete" title="软删除">${icon("trash")}</button></div></td>
         </tr>`;
@@ -1561,6 +1583,23 @@
       toast("审核状态已更新", `${ids.length} 条样本标记为已通过`, "success");
     } catch (error) {
       toast("批量审核失败", error.message, "error");
+    }
+  }
+
+  async function cycleSampleReview(sampleId, button) {
+    const sample = state.samples.find((item) => item.id === sampleId);
+    if (!sample) return;
+    const currentStatus = canonicalReviewStatus(sample.quality_status);
+    const nextStatus = nextReviewStatus(currentStatus);
+    const currentName = qualityNames[sample.quality_status] || qualityNames[currentStatus];
+    button.disabled = true;
+    try {
+      await apiJson(`/api/samples/${encodeURIComponent(sampleId)}`, "PATCH", { quality_status: nextStatus });
+      await loadSamples();
+      toast("审核状态已切换", `${currentName} → ${qualityNames[nextStatus]}`, "success");
+    } catch (error) {
+      button.disabled = false;
+      toast("审核状态切换失败", error.message, "error");
     }
   }
 
@@ -2230,6 +2269,7 @@
       if (!button) return;
       const id = button.closest("tr").dataset.sampleId;
       if (button.dataset.action === "play") toggleSampleAudio(id);
+      if (button.dataset.action === "cycle-review") cycleSampleReview(id, button);
       if (button.dataset.action === "inspect") inspectSample(id);
       if (button.dataset.action === "delete") deleteSamples([id]);
     });
@@ -2244,6 +2284,16 @@
       loadSampleSpeakers();
     });
     $("uploadSampleForm").addEventListener("submit", uploadRealSamples);
+    $("sampleExistingSpeaker").addEventListener("change", () => {
+      const selectedSpeakerId = $("sampleExistingSpeaker").value;
+      if (selectedSpeakerId) $("sampleUploadSpeaker").value = selectedSpeakerId;
+    });
+    $("sampleUploadSpeaker").addEventListener("input", () => {
+      const speakerId = $("sampleUploadSpeaker").value.trim();
+      $("sampleExistingSpeaker").value = state.sampleSpeakers.some(
+        (speaker) => String(speaker?.speaker_id || "").trim() === speakerId,
+      ) ? speakerId : "";
+    });
     $("startRecording").addEventListener("click", startRecording);
     $("stopRecording").addEventListener("click", stopRecording);
     $("resetRecording").addEventListener("click", resetRecording);

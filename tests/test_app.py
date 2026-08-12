@@ -540,6 +540,12 @@ def test_mock_generate_analyze_augment_export_and_restore(client: TestClient) ->
     )
     assert review.status_code == 200
     assert review.json()["quality_status"] == "accepted"
+    for next_status in ("rejected", "pending", "accepted"):
+        cycled_review = client.patch(
+            f"/api/samples/{sample_id}", json={"quality_status": next_status}
+        )
+        assert cycled_review.status_code == 200
+        assert cycled_review.json()["quality_status"] == next_status
 
     noise_upload = client.post(
         "/api/noises/upload",
@@ -788,9 +794,17 @@ def test_import_real_recording(client: TestClient) -> None:
     assert speaker["sample_count"] == 1
     assert speaker["original_count"] == 1
     assert speaker["last_used_at"]
-    page_html = client.get("/").text
-    assert 'list="sampleSpeakerOptions"' in page_html
-    assert 'id="sampleSpeakerOptions"' in page_html
+    page_response = client.get("/")
+    page_html = page_response.text
+    assert page_response.headers["cache-control"] == "no-store, max-age=0"
+    assert 'id="sampleExistingSpeaker"' in page_html
+    assert "手动输入新 ID" in page_html
+    assert "/app.js?v=1.2.3" in page_html
+    script_response = client.get("/app.js?v=1.2.3")
+    assert script_response.headers["cache-control"] == "no-store, max-age=0"
+    assert '$("uploadSampleDialog").close()' not in script_response.text
+    assert 'data-action="cycle-review"' in script_response.text
+    assert "cycleSampleReview" in script_response.text
     original_page = client.get(
         "/api/samples", params={"provider": "real", "sample_type": "clean"}
     )

@@ -9,7 +9,7 @@
       content="面向中文唤醒词数据集的多厂商 TTS 生成、审核、增强与导出工具"
     />
     <title>语音数据集工坊</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=1.2.3" />
   </head>
   <body>
     <svg class="svg-sprite" aria-hidden="true">
@@ -476,7 +476,8 @@
         <label><span>标准标签</span><input id="sampleUploadLabel" type="text" value="你好小助手" /></label>
         <div class="inline-fields two-columns">
           <label><span>样本目标类型</span><select id="sampleUploadTargetKind"><option value="positive">正样本</option><option value="negative">负样本</option><option value="background">背景噪声</option></select></label>
-          <label><span>说话人 ID</span><input id="sampleUploadSpeaker" type="text" list="sampleSpeakerOptions" placeholder="选择现有 ID 或输入新 ID" autocomplete="off" required /><datalist id="sampleSpeakerOptions"></datalist><small class="field-note">可从现有说话人中选择，也可直接输入新的 ID。</small></label>
+          <label><span>已有说话人 ID</span><select id="sampleExistingSpeaker"><option value="">手动输入新 ID</option></select><small class="field-note">选择后会自动填入右侧说话人 ID。</small></label>
+          <label><span>说话人 ID</span><input id="sampleUploadSpeaker" type="text" placeholder="输入新 ID，或从已有 ID 中选择" autocomplete="off" required /><small class="field-note">可直接修改此处来新增说话人。</small></label>
           <label><span>数据划分</span><select id="sampleUploadSplit"><option value="unspecified">暂不划分</option><option value="train">Train</option><option value="dev">Dev</option><option value="test">Test</option></select></label>
           <label><span>性别</span><select id="sampleUploadGender"><option value="unknown">未知</option><option value="female">女声</option><option value="male">男声</option><option value="neutral">中性</option></select></label>
           <label><span>年龄</span><select id="sampleUploadAge"><option value="unknown">未知</option><option value="child">儿童</option><option value="teen">少年</option><option value="young">青年</option><option value="middle">中年</option><option value="senior">老年</option></select></label>
@@ -618,6 +619,6 @@
     </div>
     <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
 
-    <script src="/app.js" defer></script>
+    <script src="/app.js?v=1.2.3" defer></script>
   </body>
 </html>

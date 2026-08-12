@@ -154,7 +154,14 @@ async def optional_api_token(request: Request, call_next):
         if supplied != token and authorization != f"Bearer {token}":
             from fastapi.responses import JSONResponse
             return JSONResponse({"detail": "Invalid application token"}, status_code=401)
-    return await call_next(request)
+    response = await call_next(request)
+    if request.url.path == "/" or Path(request.url.path).suffix in {".html", ".js", ".css"}:
+        # The workshop is updated in place. Reusing an older app.js can restore
+        # removed form behavior, so browser-facing application assets must not
+        # outlive the currently deployed server version.
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 
 def _canonical_target_kind(value: Any) -> str:

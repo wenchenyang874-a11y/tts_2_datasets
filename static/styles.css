@@ -260,6 +260,10 @@ input[type="checkbox"], input[type="radio"] { width: 17px; height: 17px; accent-
 .status-badge.completed { color: var(--success); background: #e5f5ee; }
 .status-badge.failed { color: var(--danger); background: #ffebeb; }
 .status-badge.partial { color: #9a631f; background: var(--accent-soft); }
+.status-badge.status-toggle { border: 0; cursor: pointer; }
+.status-badge.status-toggle:hover { filter: brightness(.96); transform: translateY(-1px); }
+.status-badge.status-toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.status-badge.status-toggle:disabled { cursor: wait; opacity: .65; transform: none; }
 .task-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
 .compact-list .task-item { grid-template-columns: .8fr 1.3fr auto; padding: 13px 0; }
 .compact-list .task-errors { display: none; }
