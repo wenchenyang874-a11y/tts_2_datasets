@@ -27,6 +27,7 @@
     taskGroups: [],
     samples: [],
     sampleKeywords: [],
+    sampleSpeakers: [],
     sampleKeywordInitialized: false,
     samplesTotal: 0,
     samplePage: 1,
@@ -1200,6 +1201,22 @@
     state.sampleKeywordInitialized = true;
   }
 
+  async function loadSampleSpeakers(silent = false) {
+    try {
+      const payload = await api("/api/samples/speakers");
+      state.sampleSpeakers = Array.isArray(payload) ? payload : (payload?.items || payload?.speakers || []);
+      $("sampleSpeakerOptions").innerHTML = state.sampleSpeakers.map((speaker) => {
+        const speakerId = String(speaker?.speaker_id || "").trim();
+        const count = Math.max(0, Number(speaker?.sample_count || 0));
+        return speakerId
+          ? `<option value="${escapeHtml(speakerId)}" label="${count} 条样本"></option>`
+          : "";
+      }).join("");
+    } catch (error) {
+      if (!silent) toast("说话人列表读取失败", `${error.message}；仍可手动输入新的说话人 ID。`, "error", 6500);
+    }
+  }
+
   function sampleQuery({ paginate = true } = {}) {
     const params = new URLSearchParams();
     if (paginate) {
@@ -1734,7 +1751,7 @@
       const result = await api("/api/samples/upload", { method: "POST", body: form });
       $("sampleUploadFiles").value = "";
       resetRecording();
-      await Promise.all([loadSampleKeywords(), loadSamples(true), loadStatus()]);
+      await Promise.all([loadSampleKeywords(), loadSampleSpeakers(true), loadSamples(true), loadStatus()]);
       const extra = `${result.duplicates?.length || 0} 重复，${result.failures?.length || 0} 失败`;
       $("sampleUploadResult").textContent = `上次校验：${result.imported || 0} 成功，${extra}。参数已保留，可继续录音或选择文件。`;
       $("sampleUploadResult").classList.remove("hidden");
@@ -2224,6 +2241,7 @@
     $("openUploadSample").addEventListener("click", () => {
       initializeRecorderSupport();
       $("uploadSampleDialog").showModal();
+      loadSampleSpeakers();
     });
     $("uploadSampleForm").addEventListener("submit", uploadRealSamples);
     $("startRecording").addEventListener("click", startRecording);
@@ -2337,7 +2355,7 @@
     }
     try {
       await loadProviders();
-      await Promise.all([loadVoices(), loadTasks(), loadSampleKeywords(), loadNoises(), loadExports(), loadProviderSettings()]);
+      await Promise.all([loadVoices(), loadTasks(), loadSampleKeywords(), loadSampleSpeakers(true), loadNoises(), loadExports(), loadProviderSettings()]);
       await loadSamples();
     } catch (error) {
       toast("初始化失败", error.message, "error", 7500);

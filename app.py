@@ -1870,6 +1870,23 @@ def sample_keywords() -> list[dict[str, Any]]:
     return rows
 
 
+@app.get("/api/samples/speakers")
+def sample_speakers() -> list[dict[str, Any]]:
+    """List distinct speaker IDs already used by active real recordings."""
+    return db.all(
+        """
+        SELECT voice_id AS speaker_id,
+               COUNT(*) AS sample_count,
+               SUM(CASE WHEN parent_id IS NULL THEN 1 ELSE 0 END) AS original_count,
+               MAX(created_at) AS last_used_at
+        FROM samples
+        WHERE deleted_at IS NULL AND provider='real' AND TRIM(voice_id)!=''
+        GROUP BY voice_id
+        ORDER BY last_used_at DESC, voice_id
+        """
+    )
+
+
 @app.post("/api/samples/upload")
 async def upload_samples(
     files: list[UploadFile] = File(...), text: str | None = Form(None),

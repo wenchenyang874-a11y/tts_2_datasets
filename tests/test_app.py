@@ -780,6 +780,17 @@ def test_import_real_recording(client: TestClient) -> None:
     ).json()
     assert page["total"] == 1
     assert page["items"][0]["metadata"]["speaker_id"] == "spk_001"
+    speaker_catalog = client.get("/api/samples/speakers")
+    assert speaker_catalog.status_code == 200
+    speaker = next(
+        item for item in speaker_catalog.json() if item["speaker_id"] == "spk_001"
+    )
+    assert speaker["sample_count"] == 1
+    assert speaker["original_count"] == 1
+    assert speaker["last_used_at"]
+    page_html = client.get("/").text
+    assert 'list="sampleSpeakerOptions"' in page_html
+    assert 'id="sampleSpeakerOptions"' in page_html
     original_page = client.get(
         "/api/samples", params={"provider": "real", "sample_type": "clean"}
     )
@@ -815,6 +826,12 @@ def test_import_real_recording(client: TestClient) -> None:
     )
     assert conflicting.status_code == 200
     conflict_id = conflicting.json()["sample_ids"][0]
+    updated_speaker = next(
+        item for item in client.get("/api/samples/speakers").json()
+        if item["speaker_id"] == "spk_001"
+    )
+    assert updated_speaker["sample_count"] == 2
+    assert updated_speaker["original_count"] == 2
     conflict_export = client.post("/api/exports", json={
         "sample_ids": [sample_id, conflict_id], "name": "conflicting_real_split",
         "format": "generic", "include_audio": False,
