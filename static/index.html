@@ -263,7 +263,7 @@
             <div class="filter-tabs" id="taskStatusTabs">
               <button class="active" data-status="">全部</button><button data-status="running">运行中</button><button data-status="completed">已完成</button><button data-status="failed">失败</button>
             </div>
-            <div class="contract-note task-cost-note"><svg><use href="#i-info"></use></svg><p>生成批次按“总任务 → 每条文本子任务”展示；排队、执行和总耗时分开计算。金额均为<strong>预估费用，以厂商账单为准</strong>。</p></div>
+            <div class="contract-note task-cost-note"><svg><use href="#i-info"></use></svg><p>批量生成按“总任务 → 每条文本子任务”展示，噪声增强按“总任务 → 每条源音频子任务”展示；排队、执行和总耗时分开计算。金额均为<strong>预估费用，以厂商账单为准</strong>。</p></div>
             <article class="panel no-padding"><div id="taskList" class="task-list"><div class="empty-state"><span class="loader"></span><p>正在加载任务…</p></div></div></article>
           </section>
 
@@ -282,8 +282,8 @@
                 <label><span>厂商 / 来源</span><select id="sampleProviderFilter"><option value="">全部</option><option value="volcengine">火山引擎</option><option value="aliyun">阿里云</option><option value="real">真人录音</option></select></label>
                 <label><span>性别</span><select id="sampleGenderFilter"><option value="">全部</option><option value="female">女声</option><option value="male">男声</option><option value="neutral">中性</option><option value="unknown">未知</option></select></label>
                 <label><span>年龄</span><select id="sampleAgeFilter"><option value="">全部</option><option value="child">儿童</option><option value="teen">少年</option><option value="young">青年</option><option value="middle">中年</option><option value="senior">老年</option><option value="unknown">未知</option></select></label>
-                <label><span>类型</span><select id="sampleTypeFilter"><option value="">全部</option><option value="clean">干净原音</option><option value="augmented">增强样本</option><option value="real">真人样本</option></select></label>
-                <label><span>审核</span><select id="sampleReviewFilter"><option value="">全部</option><option value="pending">待人工审核</option><option value="review">自动检查待复核</option><option value="pass">自动检查通过</option><option value="accepted">人工审核通过</option><option value="rejected">已拒绝</option></select></label>
+                <label><span>类型</span><select id="sampleTypeFilter"><option value="">全部</option><option value="clean">原音</option><option value="augmented">增强样本</option></select></label>
+                <label><span>审核</span><select id="sampleReviewFilter"><option value="">全部</option><option value="pending">未审核</option><option value="review">自动检查待复核</option><option value="pass">自动检查通过</option><option value="accepted">人工审核通过</option><option value="rejected">已拒绝</option></select></label>
               </div>
 
               <div class="bulk-toolbar">
@@ -443,7 +443,7 @@
           <label><span>标准标签</span><input id="sampleEditLabel" type="text" value="你好小助手" /></label>
           <div class="inline-fields two-columns">
             <label><span>说话人 / 音色 ID</span><input id="sampleEditSpeaker" type="text" /></label>
-            <label><span>审核状态</span><select id="sampleEditReview"><option value="pending">待审核</option><option value="accepted">已通过</option><option value="rejected">已拒绝</option></select></label>
+            <label><span>审核状态</span><select id="sampleEditReview"><option value="pending">未审核</option><option value="accepted">已通过</option><option value="rejected">已拒绝</option></select></label>
             <label><span>性别</span><select id="sampleEditGender"><option value="unknown">未知</option><option value="female">女声</option><option value="male">男声</option><option value="neutral">中性</option></select></label>
             <label><span>年龄</span><select id="sampleEditAge"><option value="unknown">未知</option><option value="child">儿童</option><option value="teen">少年</option><option value="young">青年</option><option value="middle">中年</option><option value="senior">老年</option></select></label>
           </div>
@@ -481,7 +481,8 @@
           <label><span>性别</span><select id="sampleUploadGender"><option value="unknown">未知</option><option value="female">女声</option><option value="male">男声</option><option value="neutral">中性</option></select></label>
           <label><span>年龄</span><select id="sampleUploadAge"><option value="unknown">未知</option><option value="child">儿童</option><option value="teen">少年</option><option value="young">青年</option><option value="middle">中年</option><option value="senior">老年</option></select></label>
         </div>
-        <button type="submit" class="button primary full-button"><svg><use href="#i-upload"></use></svg>上传并校验</button>
+        <button type="submit" class="button primary full-button"><svg><use href="#i-upload"></use></svg>上传并校验，继续导入</button>
+        <p id="sampleUploadResult" class="field-note hidden" role="status"></p>
       </form>
     </dialog>
 

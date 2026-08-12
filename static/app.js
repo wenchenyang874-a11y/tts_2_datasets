@@ -7,7 +7,7 @@
   const RECORDING_MAX_MS = 30000;
   const ACTIVE_TASK_STATES = new Set(["queued", "running"]);
   const TERMINAL_TASK_STATES = new Set(["completed", "partial", "failed"]);
-  const RETRYABLE_TASK_TYPES = new Set(["generate", "generate_batch", "augment", "export"]);
+  const RETRYABLE_TASK_TYPES = new Set(["generate", "generate_batch", "augment", "augment_batch", "export"]);
   const DEFAULT_PROJECT_SETTINGS = Object.freeze({
     display_text: "你好，小助手",
     label: "你好小助手",
@@ -80,12 +80,12 @@
   };
   const genderNames = { female: "女声", male: "男声", neutral: "中性", unknown: "未知" };
   const ageNames = { child: "儿童", teen: "少年", young: "青年", middle: "中年", senior: "老年", unknown: "未知" };
-  const taskNames = { generate: "TTS 生成", generate_batch: "TTS 批量生成", augment: "噪声增强", materialize_noise: "背景噪声入库", export: "数据导出" };
+  const taskNames = { generate: "TTS 生成", generate_batch: "TTS 批量生成", augment: "噪声增强", augment_batch: "批量噪声增强", materialize_noise: "背景噪声入库", export: "数据导出" };
   const statusNames = { queued: "排队中", running: "运行中", completed: "已完成", partial: "部分完成", failed: "失败" };
   const targetKindNames = { positive: "正样本", negative: "负样本", background: "背景噪声" };
   const qualityNames = {
     unchecked: "未检查", review: "待复核", pass: "已通过", reject: "已拒绝",
-    pending: "待审核", accepted: "已通过", rejected: "已拒绝",
+    pending: "未审核", accepted: "已通过", rejected: "已拒绝",
   };
 
   function token() {
@@ -975,7 +975,7 @@
     const childIds = new Set();
 
     rows.forEach((task) => {
-      if (Array.isArray(task.children) || task.type === "generate_batch" || task.is_parent) {
+      if (Array.isArray(task.children) || ["generate_batch", "augment_batch"].includes(task.type) || task.is_parent) {
         parentMap.set(String(task.id), task);
       }
     });
@@ -983,12 +983,13 @@
       if (!task.parent_id) return;
       const parentId = String(task.parent_id);
       if (!parentMap.has(parentId)) {
+        const parentType = task.type === "augment" ? "augment_batch" : "generate_batch";
         parentMap.set(parentId, byId.get(parentId) || {
           id: parentId,
-          type: "generate_batch",
+          type: parentType,
           status: "queued",
           created_at: task.created_at,
-          message: "批量生成任务",
+          message: parentType === "augment_batch" ? "批量噪声增强任务" : "批量生成任务",
           synthetic_parent: true,
         });
       }
@@ -1063,9 +1064,16 @@
   }
 
   function taskTitle(task, isParent = false) {
-    if (isParent) return `批量生成 · ${task._children?.length || 0} 个文本子任务`;
+    if (isParent) {
+      const childCount = task._children?.length || 0;
+      return task.type === "augment_batch"
+        ? `批量噪声增强 · ${childCount} 个源音频子任务`
+        : `批量生成 · ${childCount} 个文本子任务`;
+    }
     const text = task.text || task.request?.text || task.payload?.text;
-    return text ? `${taskNames[task.type] || task.type} · ${text}` : (taskNames[task.type] || task.type || "任务");
+    const sourceId = task.payload?.source_sample_id || task.source_sample_id || "";
+    const suffix = task.type === "augment" && sourceId ? ` · ${String(sourceId).slice(0, 12)}` : "";
+    return text ? `${taskNames[task.type] || task.type} · ${text}${suffix}` : (taskNames[task.type] || task.type || "任务");
   }
 
   function taskHtml(task, { child = false, parent = false } = {}) {
@@ -1101,7 +1109,8 @@
   function taskGroupHtml(task, compact = false) {
     const children = task._children || [];
     if (!children.length || compact) return taskHtml(task, { parent: Boolean(children) });
-    return `<article class="task-group">${taskHtml(task, { parent: true })}<details ${ACTIVE_TASK_STATES.has(task.status) ? "open" : ""}><summary>查看 ${children.length} 个文本子任务</summary><div class="task-children">${children.map((child) => taskHtml(child, { child: true })).join("")}</div></details></article>`;
+    const childKind = task.type === "augment_batch" ? "源音频子任务" : "文本子任务";
+    return `<article class="task-group">${taskHtml(task, { parent: true })}<details ${ACTIVE_TASK_STATES.has(task.status) ? "open" : ""}><summary>查看 ${children.length} 个${childKind}</summary><div class="task-children">${children.map((child) => taskHtml(child, { child: true })).join("")}</div></details></article>`;
   }
 
   function renderTasks() {
@@ -1281,8 +1290,8 @@
   }
 
   function sampleType(sample) {
-    if (sample.provider === "real") return "真人";
-    return sample.parent_id ? "增强" : "干净";
+    if (sample.variant_kind === "augmented" || sample.parent_id) return "增强";
+    return "原音";
   }
 
   function renderSamples() {
@@ -1723,19 +1732,18 @@
     button.textContent = `正在上传 ${files.length} 个文件…`;
     try {
       const result = await api("/api/samples/upload", { method: "POST", body: form });
-      $("uploadSampleDialog").close();
-      event.target.reset();
-      $("sampleUploadText").value = state.projectSettings.display_text;
-      $("sampleUploadLabel").value = state.projectSettings.label;
+      $("sampleUploadFiles").value = "";
       resetRecording();
       await Promise.all([loadSampleKeywords(), loadSamples(true), loadStatus()]);
       const extra = `${result.duplicates?.length || 0} 重复，${result.failures?.length || 0} 失败`;
+      $("sampleUploadResult").textContent = `上次校验：${result.imported || 0} 成功，${extra}。参数已保留，可继续录音或选择文件。`;
+      $("sampleUploadResult").classList.remove("hidden");
       toast("真人样本导入完成", `${result.imported || 0} 成功，${extra}`, result.failures?.length ? "info" : "success", 6500);
     } catch (error) {
       toast("导入失败", error.message, "error", 7000);
     } finally {
       button.disabled = false;
-      button.innerHTML = `${icon("upload")}上传并校验`;
+      button.innerHTML = `${icon("upload")}上传并校验，继续导入`;
     }
   }
 
@@ -1909,7 +1917,7 @@
     button.textContent = "正在创建任务…";
     try {
       await runWithLimit(chosen, 5, (noise) => apiJson(`/api/noises/${encodeURIComponent(noise.id)}`, "PATCH", { min_snr: minSnr, max_snr: maxSnr }));
-      await apiJson("/api/augment", "POST", {
+      const result = await apiJson("/api/augment", "POST", {
         sample_ids: [...state.selectedSamples],
         noise_ids: state.selectedNoises.size ? [...state.selectedNoises] : [],
         keyword_id: currentSampleKeywordId(),
@@ -1917,7 +1925,8 @@
         seed: Number($("augmentSeed").value || 20260804),
       });
       await Promise.all([loadTasks(), loadStatus()]);
-      toast("增强任务已创建", "可在任务中心查看混音进度。", "success");
+      const childCount = Array.isArray(result?.child_ids) ? result.child_ids.length : state.selectedSamples.size;
+      toast("增强总任务已创建", `${childCount || "多"} 个源音频子任务已进入后端调度，可在任务中心展开查看。`, "success");
       navigate("tasks");
     } catch (error) {
       toast("增强任务创建失败", error.message, "error", 7000);

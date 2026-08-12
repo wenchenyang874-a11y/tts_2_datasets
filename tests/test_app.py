@@ -559,13 +559,24 @@ def test_mock_generate_analyze_augment_export_and_restore(client: TestClient) ->
         "sample_ids": [sample_id], "noise_ids": [noise_id], "count": 1, "seed": 99,
     })
     assert augmented.status_code == 200
-    augmented_task = _wait_for_task(client, augmented.json()["task_id"])
+    augmented_result = augmented.json()
+    assert len(augmented_result["child_ids"]) == 1
+    augmented_task = _wait_for_task(client, augmented_result["task_id"])
     assert augmented_task["status"] == "completed"
+    assert augmented_task["type"] == "augment_batch"
+    assert len(augmented_task["children"]) == 1
+    assert augmented_task["children"][0]["type"] == "augment"
+    assert augmented_task["children"][0]["parent_id"] == augmented_task["id"]
     assert augmented_task["cost_available"] is True
     assert augmented_task["estimated_cost"] == 0
     assert "本地操作" in augmented_task["cost_disclaimer"]
     augmented_rows = client.get("/api/samples", params={"sample_type": "augmented"}).json()["items"]
     augmented_sample = next(item for item in augmented_rows if item["parent_id"] == sample_id)
+    assert augmented_sample["variant_kind"] == "augmented"
+    assert augmented_sample["quality_status"] == "pending"
+    assert augmented_sample["metadata"]["source_quality_status"] == "accepted"
+    assert augmented_sample["origin_job_id"] == augmented_task["id"]
+    assert augmented_sample["origin_task_id"] == augmented_task["children"][0]["id"]
     assert isinstance(augmented_sample["metadata"]["noise_offset"], int)
 
     deleted_noise = client.delete(f"/api/noises/{noise_id}")
@@ -769,6 +780,14 @@ def test_import_real_recording(client: TestClient) -> None:
     ).json()
     assert page["total"] == 1
     assert page["items"][0]["metadata"]["speaker_id"] == "spk_001"
+    original_page = client.get(
+        "/api/samples", params={"provider": "real", "sample_type": "clean"}
+    )
+    assert original_page.status_code == 200
+    assert original_page.json()["total"] == 1
+    ambiguous_type = client.get("/api/samples", params={"sample_type": "real"})
+    assert ambiguous_type.status_code == 400
+    assert "provider=real" in ambiguous_type.json()["detail"]
 
     explicit_export = client.post("/api/exports", json={
         "sample_ids": [sample_id], "name": "explicit_real_split", "format": "generic",
@@ -803,6 +822,97 @@ def test_import_real_recording(client: TestClient) -> None:
     })
     assert conflict_export.status_code == 400
     assert "spk_001" in conflict_export.json()["detail"]
+
+
+def test_augmentation_uses_parent_children_and_resets_review_status(
+    client: TestClient,
+) -> None:
+    source_ids: list[str] = []
+    for index, frequency in enumerate((731.0, 733.0), start=1):
+        uploaded = client.post(
+            "/api/samples/upload",
+            files={
+                "files": (
+                    f"augment-source-{index}.wav",
+                    _wav_bytes(0.7, frequency),
+                    "audio/wav",
+                )
+            },
+            data={
+                "text": "增强批次测试",
+                "label": "增强批次测试",
+                "keyword_id": "augment_batch_keyword",
+                "speaker_id": f"augment_speaker_{index}",
+                "target_kind": "positive",
+            },
+        )
+        assert uploaded.status_code == 200
+        sample_id = uploaded.json()["sample_ids"][0]
+        source_ids.append(sample_id)
+        accepted = client.patch(
+            f"/api/samples/{sample_id}", json={"quality_status": "accepted"}
+        )
+        assert accepted.status_code == 200
+
+    noise_upload = client.post(
+        "/api/noises/upload",
+        files={
+            "file": (
+                "augment-batch-noise.wav",
+                _wav_bytes(0.9, 89.0),
+                "audio/wav",
+            )
+        },
+        data={"name": "增强批次测试噪声", "category": "test"},
+    )
+    assert noise_upload.status_code == 200
+
+    created = client.post(
+        "/api/augment",
+        json={
+            "sample_ids": source_ids,
+            "keyword_id": "augment_batch_keyword",
+            "noise_ids": [noise_upload.json()["id"]],
+            "count": 2,
+            "seed": 20261004,
+        },
+    )
+    assert created.status_code == 200
+    created_json = created.json()
+    assert len(created_json["child_ids"]) == 2
+
+    parent = _wait_for_task(client, created_json["parent_id"])
+    assert parent["type"] == "augment_batch"
+    assert parent["status"] == "completed"
+    assert parent["total"] == 4
+    assert parent["completed"] == 4
+    assert len(parent["children"]) == 2
+    assert [child["item_index"] for child in parent["children"]] == [0, 1]
+    assert all(child["type"] == "augment" for child in parent["children"])
+    assert all(child["total"] == 2 and child["completed"] == 2 for child in parent["children"])
+    assert {
+        child["payload"]["source_sample_id"] for child in parent["children"]
+    } == set(source_ids)
+
+    rows = client.get(
+        "/api/samples",
+        params={
+            "keyword_id": "augment_batch_keyword",
+            "sample_type": "augmented",
+            "origin_job_id": parent["id"],
+            "page_size": 20,
+        },
+    ).json()
+    assert rows["total"] == 4
+    assert all(sample["variant_kind"] == "augmented" for sample in rows["items"])
+    assert all(sample["quality_status"] == "pending" for sample in rows["items"])
+    assert all(
+        sample["metadata"]["source_quality_status"] == "accepted"
+        for sample in rows["items"]
+    )
+    assert {sample["origin_task_id"] for sample in rows["items"]} == set(
+        created_json["child_ids"]
+    )
 
 
 def test_omitted_kws_fields_follow_project_and_explicit_values_are_preserved(
@@ -1308,6 +1418,8 @@ def test_sample_isolation_semantics_materialization_and_wekws_export(
     assert augmented.status_code == 200
     augmented_task = _wait_for_task(client, augmented.json()["task_id"])
     assert augmented_task["status"] == "completed"
+    assert augmented_task["type"] == "augment_batch"
+    assert len(augmented_task["children"]) == 1
     augmented_sample = next(
         item for item in client.get("/api/samples", params={
             "keyword_id": "keyword_b", "sample_type": "augmented",
@@ -1317,7 +1429,8 @@ def test_sample_isolation_semantics_materialization_and_wekws_export(
     assert augmented_sample["target_kind"] == "negative"
     assert augmented_sample["source_kind"] == "human"
     assert augmented_sample["variant_kind"] == "augmented"
-    assert augmented_sample["origin_task_id"] == augmented_task["id"]
+    assert augmented_sample["quality_status"] == "pending"
+    assert augmented_sample["origin_task_id"] == augmented_task["children"][0]["id"]
     assert augmented_sample["origin_job_id"] == augmented_task["id"]
 
     exported = client.post("/api/exports", json={

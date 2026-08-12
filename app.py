@@ -430,6 +430,7 @@ def _validate_duration(info: dict[str, Any], minimum: float, maximum: float, kin
 
 
 TERMINAL_TASK_STATES = {"completed", "partial", "failed"}
+PARENT_TASK_TYPES = {"generate_batch", "augment_batch"}
 
 
 def _create_task(
@@ -874,6 +875,7 @@ def _augment_task(task_id: str, request: dict[str, Any], samples: list[dict[str,
     weights = [max(0.001, float(item["weight"])) for item in noises]
     rng = random.Random(request["seed"])
     completed = failed = duplicates = 0
+    errors: list[str] = []
     for sample_index, sample in enumerate(samples):
         source_metadata = db.decode_json_fields(dict(sample)).get("metadata", {})
         for copy_index in range(request["count"]):
@@ -909,27 +911,36 @@ def _augment_task(task_id: str, request: dict[str, Any], samples: list[dict[str,
                     "duration": info["duration"], "sample_rate": info["sample_rate"],
                     "parent_id": sample.get("parent_id") or sample["id"], "noise_id": noise["id"],
                     "snr_db": snr, "seed": item_seed,
+                    "quality_status": "pending",
                     "target_kind": sample.get("target_kind", "positive"),
                     "source_kind": sample.get("source_kind") or (
                         "human" if sample.get("provider") == "real" else "tts"
                     ),
                     "variant_kind": "augmented", "origin_task_id": task_id,
-                    "origin_job_id": sample.get("origin_job_id") or task_id,
+                    "origin_job_id": request.get("origin_job_id") or task_id,
                     "metadata": {
                         **source_metadata,
                         "augmentation": "additive_noise", "noise_name": noise["name"],
                         "noise_offset": int(info.get("noise_offset", 0)),
                         "augmentation_task_id": task_id,
+                        "source_sample_id": sample["id"],
+                        "source_quality_status": sample.get("quality_status", "unchecked"),
                     },
                 })
                 completed += 1
             except Exception as exc:
                 failed += 1
-                _update_task(task_id, message=str(exc)[:500])
+                detail = f"{sample['id'][:12]}: {str(exc)[:500]}"
+                if detail not in errors and len(errors) < 10:
+                    errors.append(detail)
+                _update_task(task_id, message=detail)
             _update_task(task_id, completed=completed, failed=failed)
     status = "completed" if failed == 0 else ("partial" if completed else "failed")
+    result = _task_result(task_id)
+    result.update({"errors": errors, "duplicates": duplicates})
     _update_task(task_id, status=status, completed=completed, failed=failed,
-                 message=f"增强完成 {completed}，失败 {failed}，重复 {duplicates}")
+                 message=f"增强完成 {completed}，失败 {failed}，重复 {duplicates}",
+                 result_json=result)
 
 
 def _speaker_for(sample: dict[str, Any]) -> str:
@@ -1420,6 +1431,11 @@ def _aggregate_parent_task(parent_id: str) -> None:
     currency = next(iter(currencies)) if len(currencies) == 1 else ("MIXED" if currencies else "")
     parent_result = _task_result(parent_id)
     child_results = [db.decode_json_fields(dict(child)).get("result", {}) for child in children]
+    disclaimers = {
+        str(result.get("cost_disclaimer") or "").strip()
+        for result in child_results
+        if str(result.get("cost_disclaimer") or "").strip()
+    }
     cost_by_currency: dict[str, float] = {}
     for result in child_results:
         for key, value in (result.get("cost_by_currency") or {}).items():
@@ -1436,7 +1452,11 @@ def _aggregate_parent_task(parent_id: str) -> None:
         "cost_by_currency": {
             key: round(value, 8) for key, value in sorted(cost_by_currency.items())
         },
-        "cost_disclaimer": "预估费用，最终费用以供应商账单为准",
+        "cost_disclaimer": (
+            next(iter(disclaimers))
+            if len(disclaimers) == 1
+            else "预估费用，最终费用以供应商账单为准"
+        ),
     })
     message = (
         f"子任务 {sum(status in TERMINAL_TASK_STATES for status in statuses)}/{len(children)}；"
@@ -1470,6 +1490,43 @@ def _run_generate_batch(
         except StopIteration:
             return False
         active.add(_submit(child_id, _generate_task, payload, voices))
+        return True
+
+    try:
+        for _ in range(applied_concurrency):
+            if not submit_next():
+                break
+        while active:
+            done, _ = wait(active, return_when=FIRST_COMPLETED)
+            active.difference_update(done)
+            _aggregate_parent_task(parent_id)
+            for _ in done:
+                submit_next()
+        _aggregate_parent_task(parent_id)
+    except Exception as exc:
+        result = _task_result(parent_id)
+        result["internal_error"] = type(exc).__name__
+        _update_task(
+            parent_id, status="failed", message=str(exc)[:1000], result_json=result
+        )
+
+
+def _run_augment_batch(
+    parent_id: str,
+    child_specs: list[tuple[str, dict[str, Any], list[dict[str, Any]]]],
+    applied_concurrency: int,
+) -> None:
+    """Run one augmentation child per source sample and aggregate the parent."""
+    _update_task(parent_id, status="running")
+    pending = iter(child_specs)
+    active: set[Future[Any]] = set()
+
+    def submit_next() -> bool:
+        try:
+            child_id, payload, samples = next(pending)
+        except StopIteration:
+            return False
+        active.add(_submit(child_id, _augment_task, payload, samples))
         return True
 
     try:
@@ -1641,7 +1698,7 @@ def tasks(
     result = [_json_row(row) for row in rows]
     if parent_id is None:
         for item, row in zip(result, rows):
-            if row.get("type") == "generate_batch":
+            if row.get("type") in PARENT_TASK_TYPES:
                 item["children"] = [
                     _json_row(child)
                     for child in db.all(
@@ -1659,7 +1716,7 @@ def task(task_id: str) -> dict[str, Any]:
     if not row:
         raise HTTPException(404, "任务不存在")
     result = _json_row(row)
-    if row.get("type") == "generate_batch":
+    if row.get("type") in PARENT_TASK_TYPES:
         result["children"] = [
             _json_row(child)
             for child in db.all(
@@ -1685,6 +1742,9 @@ def retry_task(
         if previous["type"] == "generate_batch":
             payload.pop("applied_concurrency", None)
             return create_generate_batch(GenerateBatchRequest(**payload))
+        if previous["type"] == "augment_batch":
+            payload.pop("applied_concurrency", None)
+            return augment(AugmentRequest(**payload))
         if previous["type"] == "generate":
             if previous.get("parent_id"):
                 child_payload = dict(payload)
@@ -1726,12 +1786,16 @@ def _sample_filter(
         clauses.append("json_extract(metadata_json, '$.gender')=?"); params.append(gender)
     if age_group:
         clauses.append("json_extract(metadata_json, '$.age_group')=?"); params.append(age_group)
-    if sample_type == "real":
-        clauses.append("provider='real'")
-    elif sample_type == "augmented":
+    if sample_type == "augmented":
         clauses.append("parent_id IS NOT NULL")
     elif sample_type == "clean":
-        clauses.append("provider!='real' AND parent_id IS NULL")
+        clauses.append("parent_id IS NULL")
+    elif sample_type:
+        raise HTTPException(
+            400,
+            "sample_type 只支持 clean（原音）或 augmented（增强样本）；"
+            "真人录音请使用 provider=real 筛选来源",
+        )
     if search:
         clauses.append("(text LIKE ? OR voice_name LIKE ? OR id LIKE ? OR keyword_id LIKE ?)")
         params.extend((f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"))
@@ -2339,7 +2403,7 @@ def _export_project_metadata(
 
 
 @app.post("/api/augment")
-def augment(request: AugmentRequest) -> dict[str, str]:
+def augment(request: AugmentRequest) -> dict[str, Any]:
     if request.sample_ids:
         selected = _select_explicit_samples(
             request.sample_ids, request.keyword_id, "增强"
@@ -2361,13 +2425,52 @@ def augment(request: AugmentRequest) -> dict[str, str]:
         raise HTTPException(400, "背景噪声样本不能再次执行噪声增强")
     if len(selected) * request.count > MAX_TASK_ITEMS:
         raise HTTPException(400, f"单个任务最多 {MAX_TASK_ITEMS} 个增强项，请拆分任务")
+    selected = sorted(selected, key=lambda sample: sample["id"])
     payload = request.model_dump()
-    task_id = _create_task(
-        "augment", len(selected) * request.count, payload,
-        result=_local_cost_result(),
+    applied_concurrency = min(WORKER_LIMIT, len(selected))
+    parent_result = {
+        **_local_cost_result(),
+        "applied_concurrency": applied_concurrency,
+    }
+    parent_id = _create_task(
+        "augment_batch", len(selected) * request.count,
+        {**payload, "applied_concurrency": applied_concurrency},
+        result=parent_result,
     )
-    _submit(task_id, _augment_task, payload, selected)
-    return {"id": task_id, "task_id": task_id}
+    child_specs: list[tuple[str, dict[str, Any], list[dict[str, Any]]]] = []
+    child_ids: list[str] = []
+    for item_index, sample in enumerate(selected):
+        child_payload = {
+            **payload,
+            "sample_ids": [sample["id"]],
+            "seed": (request.seed + item_index * request.count) % (2**31),
+            "item_index": item_index,
+            "source_sample_id": sample["id"],
+            "text": sample.get("text") or sample["id"],
+            "origin_job_id": parent_id,
+        }
+        child_id = _create_task(
+            "augment", request.count, child_payload,
+            parent_id=parent_id, item_index=item_index,
+            result=_local_cost_result(),
+        )
+        child_ids.append(child_id)
+        child_specs.append((child_id, child_payload, [sample]))
+    parent_result["child_ids"] = child_ids
+    _update_task(parent_id, result_json=parent_result)
+    threading.Thread(
+        target=_run_augment_batch,
+        args=(parent_id, child_specs, applied_concurrency),
+        name=f"augment-batch-{parent_id[:8]}",
+        daemon=True,
+    ).start()
+    return {
+        "id": parent_id,
+        "task_id": parent_id,
+        "parent_id": parent_id,
+        "child_ids": child_ids,
+        "applied_concurrency": applied_concurrency,
+    }
 
 
 @app.post("/api/exports")
