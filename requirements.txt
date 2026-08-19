@@ -1,6 +1,6 @@
 # Runtime dependencies only. Test tools live in requirements-dev.txt.
 fastapi>=0.116,<1
-uvicorn[standard]>=0.35,<1
+uvicorn[standard]>=0.52.3,<1
 python-multipart>=0.0.20,<1
 httpx>=0.28,<1
 numpy>=1.26,<3
