@@ -1784,11 +1784,25 @@ def _sample_filter(
             raise HTTPException(400, str(exc)) from exc
     clauses, params = ["deleted_at IS NULL"], []
     for column, value in (("provider", provider), ("voice_id", voice_id),
-                          ("quality_status", quality), ("split", split),
+                          ("split", split),
                           ("keyword_id", keyword_id), ("target_kind", target_kind),
                           ("origin_job_id", origin_job_id)):
         if value:
             clauses.append(f"{column}=?"); params.append(value)
+    if quality:
+        # Generation historically writes pass/reject while interactive review
+        # writes accepted/rejected/pending. Filtering the UI's canonical value
+        # literally hid otherwise identical existing samples. Match aliases
+        # without rewriting provenance or the stored review decision.
+        review_groups = {
+            "pending": ("pending", "unchecked", "review"),
+            "accepted": ("accepted", "pass"),
+            "rejected": ("rejected", "reject"),
+        }
+        canonical = {"pass": "accepted", "reject": "rejected", "unchecked": "pending", "review": "pending"}.get(quality, quality)
+        aliases = review_groups.get(canonical, (quality,))
+        clauses.append("quality_status IN (" + ",".join("?" for _ in aliases) + ")")
+        params.extend(aliases)
     if gender:
         clauses.append("json_extract(metadata_json, '$.gender')=?"); params.append(gender)
     if age_group:

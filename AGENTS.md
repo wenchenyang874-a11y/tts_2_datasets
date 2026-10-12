@@ -4,10 +4,10 @@
 
 ## 项目与边界
 
-- 目标与范围：将 `tts_2_datasets` 的现有 Web 工具迁移为 Windows 原生桌面应用，支持 Windows 10 和 Windows 11。本轮只完成克隆、Web 分支备份、Windows 开发分支和项目文档；后续再实现、验证和合入。
+- 目标与范围：将 `tts_2_datasets` 的现有 Web 工具迁移为 Windows 原生桌面应用，支持 Windows 10 和 Windows 11。初始化阶段已完成；当前阶段开发、验证 Windows 原生版，满足验收门槛后合入 main。
 - 代码位置：本文件所在 Git 仓库，远程仓库为 `https://github.com/wenchenyang874-a11y/tts_2_datasets`。业务代码和项目文档在本仓库内修改，不依赖仓外文件。
 - 需求入口：`docs/product/windows-app-requirements.md`。
-- 硬约束：使用原生桌面界面，不以嵌入网页或自动打开浏览器代替原生迁移；保留现有业务语义、数据安全和音频/导出契约。具体桌面框架与最低 Windows 10 构建号需在开发前查证并记录，不预填为已确定结论。
+- 硬约束：使用原生桌面界面，不以嵌入网页或自动打开浏览器代替原生迁移；保留现有业务语义、数据安全和音频/导出契约。已确认 x64、Windows 10 1809 及以上/Windows 11、PySide6 6.8.3 原生控件和包含依赖的便携包；框架兼容与项目实测结论分开记录。
 - 文档根目录：`docs/`，随代码仓库跟踪；不在工作区另建一套重复的项目文档。
 
 所有相对路径均相对于本文件。只读参考代码、第三方源码和生成物不属于默认修改范围。
@@ -82,7 +82,7 @@
 - 推送、Tag、Release 和部署按用户明确授权执行，沿用会话中已获得的授权；本地提交、打包不等于发布。
 - 提交信息、共同作者行及交付材料不添加 AI 署名或 AI 辅助编程声明；提交前核对 Git 身份，推送前核对远程仓库和目标分支。
 - 改写已推送历史、移动已发布 Tag 或强制推送，须有针对该操作的明确授权。
-- 本次已授权创建并推送 Web 备份分支和 Windows 开发分支；用户也已授权后续在 Windows 验收通过后合入 `main`。本轮不合入。合入采用保留历史的正常合并，不把“覆盖”解释成重写主分支或强制推送。
+- 本次已授权创建并推送 Web 备份分支和 Windows 开发分支；用户也已授权后续在 Windows 验收通过后合入 `main`。全部验收前不合入。合入采用保留历史的正常合并，不把“覆盖”解释成重写主分支或强制推送。
 - 不自动提高版本号、创建 Tag 或发布 Release；上述发布行为需单独授权。验收、回滚基线和合入步骤见仓内发布文档。
 
 ## 可用的代理
@@ -112,7 +112,7 @@
 
 ## 常用命令
 
-以下命令已核对仓库入口；是否在本机执行通过以测试记录为准。Windows app 尚未实现，不能把 Web 启动或构建命令当作桌面版命令。
+以下命令已核对仓库入口；是否在本机执行通过以测试记录为准。桌面入口和构建命令见产品/测试文档，不能把 Web 启动或构建命令当作桌面版命令。
 
 | 操作 | 工作目录 | Shell | 命令 | 产物或通过标准 |
 | --- | --- | --- | --- | --- |
@@ -121,3 +121,6 @@
 | Web JavaScript 语法 | 仓库根目录 | PowerShell | `node --check static/app.js` | 无语法错误；仅 Web 基线检查 |
 | 离线业务测试 | 仓库根目录 | PowerShell | `python -m pytest -q` | 安装 `requirements-dev.txt` 和 ffmpeg 后执行；测试用临时数据和 Mock |
 | 公开提交检查 | 仓库根目录 | Git Bash | `bash scripts/check_public_release.sh` | 检查暂存内容，无运行数据、隐私和凭据 |
+| 桌面启动 | 仓库根目录 | PowerShell | `.venv/Scripts/python.exe desktop_main.py` | 原生窗口启动；先安装 requirements-desktop.txt |
+| 桌面离线自检 | 仓库根目录 | PowerShell | `.venv/Scripts/python.exe desktop_main.py --smoke-test artifacts/new-smoke` | 输出目录必须不存在；结果 JSON ok=true，限于 Mock 与本机 |
+| 桌面便携构建 | 仓库根目录 | PowerShell | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1` | dist/TTS Dataset Studio/，须继续验证实际 exe |

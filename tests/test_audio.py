@@ -14,6 +14,7 @@ import pytest
 try:
     from audio_utils import (
         AudioError, audio_metrics,
+        ffmpeg_executable,
         mix_noise,
         normalize_wav,
         probe_wav,
@@ -25,6 +26,7 @@ except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from audio_utils import (  # type: ignore[no-redef]
         AudioError, audio_metrics,
+        ffmpeg_executable,
         mix_noise,
         normalize_wav,
         probe_wav,
@@ -104,7 +106,15 @@ def test_spectrum_points_find_tone_frequency(tone_wav: Path) -> None:
     assert frequencies[np.argmax(magnitude_db)] == pytest.approx(440.0, abs=40.0)
 
 
-@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+def _ffmpeg_available():
+    try:
+        ffmpeg_executable()
+        return True
+    except AudioError:
+        return False
+
+
+@pytest.mark.skipif(not _ffmpeg_available(), reason="ffmpeg is not installed or bundled")
 def test_normalize_wav_writes_kws_audio_contract(tmp_path: Path) -> None:
     source_rate = 22_050
     time = np.arange(source_rate, dtype=np.float64) / source_rate

@@ -6,6 +6,8 @@
 
 ## 开发环境
 
+Windows 原生桌面开发使用 `requirements-build.txt`、`desktop_main.py` 和 `scripts/build_windows.ps1`。完整入口见 [Windows 桌面版使用](docs/product/windows-quickstart.md)；测试用隔离目录和 Mock，不录制用户真实音频或调用未授权云服务。
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -33,6 +35,7 @@ docker build -t tts-2-datasets:check .
 - 修改接口、数据格式、导出结构或部署方式时，同步更新文档和测试。
 - 对文件移动、软删除和恢复路径增加失败与路径越界测试。
 - 不在前端、日志、测试夹具或错误响应中暴露真实凭据。
+- Windows 凭据验证以用户绑定的 DPAPI 读写为准，不能把 POSIX 文件模式检查替代为 Windows ACL 结论。录音、播放和业务进程的资源由桌面入口显式拥有，后台线程不操作 Qt 控件。
 - 不提交生成数据、数据库、个人路径和仅适用于某台服务器的配置。
 
 ## Pull Request

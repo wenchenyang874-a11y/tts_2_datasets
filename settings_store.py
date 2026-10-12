@@ -17,6 +17,11 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping
 
+try:
+    from .private_settings import decode_settings, encode_settings
+except ImportError:
+    from private_settings import decode_settings, encode_settings
+
 
 PRICING_UNITS = frozenset({"per_call", "per_1k_chars"})
 PRICING_FIELDS = frozenset({"pricing_unit", "pricing_rate", "pricing_currency"})
@@ -100,6 +105,11 @@ class ProviderSettingsStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._data = self._load()
+        # Imported Web credentials may be plaintext. The desktop owns startup
+        # and opts into DPAPI before this store is constructed; seal an existing
+        # file immediately, without waiting for the first settings edit.
+        if self.path.exists() and os.getenv("TTS_DESKTOP_PROTECT_SETTINGS") == "1":
+            self._write_locked()
 
     @staticmethod
     def _empty() -> dict[str, Any]:
@@ -110,6 +120,8 @@ class ProviderSettingsStore:
             return self._empty()
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                raw = decode_settings(raw)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"供应商配置文件无法读取：{self.path.name}") from exc
         if not isinstance(raw, dict) or not isinstance(raw.get("providers", {}), dict):
@@ -136,13 +148,20 @@ class ProviderSettingsStore:
     def _write_locked(self) -> None:
         self._data["updated_at"] = _utc_now()
         payload = json.dumps(self._data, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
+        payload = encode_settings(payload)
         descriptor = -1
         temporary_path = ""
         try:
             descriptor, temporary_path = tempfile.mkstemp(
                 prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent
             )
-            os.fchmod(descriptor, 0o600)
+            # fchmod does not exist on Windows. Its chmod fallback only sets
+            # file flags there; credential confidentiality comes from DPAPI,
+            # not from pretending POSIX mode bits are Windows ACLs.
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o600)
+            else:
+                os.chmod(temporary_path, 0o600)
             with os.fdopen(descriptor, "wb") as output:
                 descriptor = -1
                 output.write(payload)

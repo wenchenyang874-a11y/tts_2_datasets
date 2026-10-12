@@ -222,7 +222,8 @@ def test_provider_settings_api_masks_secrets_and_separates_volc_credentials(
     assert all_settings.status_code == 200
     assert aliyun_secret not in all_settings.text
     settings_path = TEST_DATA_DIR / "provider_settings.json"
-    assert stat.S_IMODE(settings_path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(settings_path.stat().st_mode) == 0o600
 
     preserved = client.put("/api/settings/providers/aliyun", json={
         "api_key": "", "workspace_id": "workspace-changed",
@@ -304,7 +305,8 @@ def test_project_settings_api_derives_metadata_and_requires_app_token(
     assert project["keyword_id"].startswith("kws_")
     assert len(project["keyword_id"]) == 16
     assert project["updated_at"]
-    assert stat.S_IMODE((TEST_DATA_DIR / "project_settings.json").stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE((TEST_DATA_DIR / "project_settings.json").stat().st_mode) == 0o600
 
     status = client.get("/api/status")
     assert status.status_code == 200

@@ -124,7 +124,13 @@ class ProjectSettingsStore:
             descriptor, temporary_path = tempfile.mkstemp(
                 prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent
             )
-            os.fchmod(descriptor, 0o600)
+            # Windows has no fchmod; do not fail every project-settings save.
+            # Unlike cloud credentials this file holds no secret. The desktop
+            # stores it in the current user's data directory, outside the app.
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o600)
+            else:
+                os.chmod(temporary_path, 0o600)
             with os.fdopen(descriptor, "wb") as output:
                 descriptor = -1
                 output.write(payload)

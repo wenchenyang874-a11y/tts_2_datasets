@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -24,7 +25,8 @@ def test_settings_file_is_atomic_private_and_secrets_are_masked(tmp_path: Path) 
         "region": "cn-beijing",
     })
 
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
     persisted = json.loads(path.read_text(encoding="utf-8"))
     assert persisted["providers"]["aliyun"]["api_key"] == "unit-test-server-side-only-1234"
     public = store.public_provider("aliyun")
@@ -155,4 +157,5 @@ def test_concurrent_updates_always_leave_valid_json(tmp_path: Path) -> None:
     persisted = json.loads(path.read_text(encoding="utf-8"))
     assert persisted["version"] == 1
     assert persisted["providers"]["aliyun"]["api_key"].startswith("secret-")
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600

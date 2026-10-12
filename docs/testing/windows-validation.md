@@ -1,6 +1,6 @@
 # Windows 验证与合入门槛
 
-## 本轮范围
+## 初始化检查（历史）
 
 本轮为克隆、分支和文档初始化，没有修改业务代码，没有实现 Windows app。检查文档路径、索引、占位符、分支基线和 diff；语法检查仅作为现有 Web 基线检查。尚未执行 Windows 10/11 应用验收或安装包验证。
 
@@ -11,6 +11,43 @@
 - 暂存内容的 `git diff --cached --check` 和公开提交扫描通过，仅规则与文档变化。
 - 本地 main、origin/main 和 Web 备份均指向原始基线提交。
 - 没有安装额外依赖或执行 pytest、Web 实际运行、Docker、真实云、Windows 10/11 或安装包验收；本轮验证结论限于分支、文档与语法。
+
+## 2026-10-12 Windows 开发阶段实测
+
+环境：Windows 11 Enterprise x64，10.0.26200；Python 3.13.14、PySide6/Qt 6.8.3、PyInstaller 6.16.0、FFmpeg 7.1（imageio-ffmpeg 0.6.0 的 Windows 二进制）。这些为本次环境记录，不作为未经实测的其他系统结论。
+
+- `python -m pytest -q`：119 项通过，包含原有离线业务回归、业务子进程启停、凭据保护、路径保护、NTFS Junction 拒绝、数据复制失败清理、生成中途退出与重新启动中断标记，以及真实 Windows 进程树退出检查。
+- 测试有 1 条上游 Starlette TestClient/HTTPX 兼容弃用提示，来自原有接口测试入口；桌面运行时已改用公开 HTTPX ASGITransport，不依赖 TestClient。
+- 原生窗口源码自检通过：七页面、实际 Tooltip 事件、供应商表单保存与 DPAPI 密文/不回显、2 文本 × 2 音色 × 2 份的 8 个 WAV、审核/分析、重复试听资源加载、跨页选择、48 kHz 真人文件归一化与重复导入、8 个未审核增强样本、四种 ZIP 导出、分组隔离、软删除/恢复、旧数据重定位、再次冷启动与关闭。
+- 验证直接运行普通入口的 `QApplication.exec`、数据目录锁和自动退出后的业务子进程释放；并非仅验证自检入口。
+- 便携 exe 的完整流程与缩放检查结果、产物路径记录于下方交付项；所有测试均使用应用自有临时目录、Mock 和合成的本地测试音频，未打开默认真实数据目录。
+
+### 本地产物与最终验证
+
+| 入口/产物 | 实际结果 |
+| --- | --- |
+| `artifacts/windows-final/source/result.json` | 源码原生流程 13 项检查通过，含 Tooltip 行为与热试听 |
+| `artifacts/windows-verified/package/result.json` | 最终 exe 流程 13 项检查通过，退出码 0 |
+| `artifacts/windows-verified/dpi150/result.json` | 最终 exe 在 `QT_SCALE_FACTOR=1.5` 下同样 13 项检查通过，退出码 0；合成主操作放在标题行 |
+| `artifacts/windows-verified/normal/result.json` | 普通加锁入口/Qt 主事件循环启动、截图、关闭验证通过，无业务子进程残留 |
+| `artifacts/windows-verified/relocated/result.json` | 解压到独立中文/空格目录，工作目录移出仓库，PATH 仅保留 System32、去除 Python/Qt/FFmpeg 开发环境覆盖后，同样 13 项通过 |
+| `dist/TTS Dataset Studio/TTS Dataset Studio.exe` | 便携程序入口，必须保留同目录依赖 |
+| `dist/TTS-Dataset-Studio-windows-x64-preview.zip`、同名 `.zip.sha256` | ZIP CRC 检查、解压实际运行通过；107646138 bytes，SHA-256 `d2bbdd1127c2e246c7f4469df7a22e4704d5fc2a0b3c79a7e95386c8fc53efc5` |
+| `dist/TTS Dataset Studio/licenses/`、`dependencies.json` | 实际依赖版本、许可文件、FFmpeg version/buildconf/license 输出与上游源码入口 |
+
+`artifacts/`、`build/`、`dist/` 为本轮本地产物，已忽略，不提交运行数据、截图或二进制；上方结论和复现命令自包含于仓内文档，读者不需依赖这些本地文件才能理解验证范围。
+
+### 实测发现与修复
+
+1. `os.fchmod` 在 Windows 不存在：保存采用可用的文件标志操作，云凭据保密由 DPAPI 提供，不假装 chmod 是 Windows ACL。
+2. SQLite Connection 的 `with` 只结束事务，不关闭句柄：导入显式 closing 后才移动 staging 目录，失败路径同样释放连接，Windows 文件占用回归通过。
+3. 生成样本旧状态 pass/reject 与交互审核 accepted/rejected 不同：查询按同义状态分组，既有记录不重写；两种状态的筛选回归通过。
+4. 自检嵌套 `QTest.qWait` 在反复切页时停滞：验收驱动使用普通事件队列及短时间 Python yield，使超时可检查。UI 后台不操作 Qt 对象，主线程处理已完成 Future。
+5. 热试听可能与媒体后端仍持有的缓存文件冲突：每次使用新快照，重复播放加载及退出清理通过。声音效果仍需人实际听辨。
+
+### 验证边界
+
+Windows 10、真实麦克风录音/拒绝权限/设备拔插、真实云账号与人耳播放质量未实测；检测到设备不等于录音成功。用户确认暂无 Windows 10 环境，先保留开发分支，不合入 main。不宣称公开安装包发布、代码签名、其他 CPU 架构、长期压力运行或完整发布许可审计已完成。
 
 ## 现有回归入口
 

@@ -32,7 +32,7 @@ jobs:
         run: bash scripts/check_public_release.sh
 
       - name: Compile Python
-        run: python -m compileall -q app.py audio_utils.py db.py project_settings.py providers.py settings_store.py voice_catalog.py tests
+        run: python -m compileall -q app.py audio_utils.py db.py project_settings.py providers.py settings_store.py voice_catalog.py private_settings.py desktop desktop_main.py scripts tests
 
       - name: Check JavaScript
         run: node --check static/app.js
