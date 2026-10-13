@@ -47,6 +47,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_release.ps1 -I
 
 新增版本必须同步 CHANGELOG、版本说明和验证记录。发布后记录实际链接/提交与校验结果；记录文档可后续提交，不改变已发布 Tag 指向的构建提交。维护脚本是当前的正式发布入口，不声称任意 push 都自动通过验收并发版。
 
+## 版本结尾的交付回复
+
+每个版本的最终交付回复必须列出本地已打好的安装包：版本、完整文件名和可点击的绝对路径。GitHub Release 链接同时提供，不能替代本地安装包链接。回复前检查实际文件存在，并核对其字节数和 SHA-256 与该版本 `release-manifest.json` 一致；如有多个安装包，逐一列出。
+
+仓内文档仍使用相对产物路径，例如 `dist/releases/2.0.0-beta.1/TTS-Dataset-Studio-2.0.0-beta.1-windows-x64-setup.exe`；本机绝对路径只在当前会话的交付回复中按实际工作区生成，不能写死到公开仓库。
+
 ## 工具与第三方来源
 
 Inno Setup [官方 6.7.3](https://github.com/jrsoftware/issrc/releases/tag/is-6_7_3)，安装器 SHA-256 `9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732`。简体中文译文取自同一标签 `Files/Languages/Unofficial/ChineseSimplified.isl`，保留上游署名，仅规范化尾随空格，随项目存于 `installer/`；属于社区译文。安装器 API 根据[官方文档](https://jrsoftware.org/ishelp/)实现。
