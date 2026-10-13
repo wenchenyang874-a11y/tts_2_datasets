@@ -108,3 +108,9 @@ beta.5 仅收窄默认 checkbox 单元格，仍使用 Qt 委托的绘制／命�
 `desktop/sample_table.py` 的 SampleTable 将 checkbox 与文本合并为第一列，保留六个信息列。SampleDelegate 明确绘制 checkbox，去掉默认 HasCheckIndicator／HasFocus 面板，文本用同一 QTextLayout 计算行高与绘制。其他列按首列 checkbox 状态着色，窗口／列宽变化重新计算行高；当前格与业务选择不混用。
 
 鼠标 press 保存样本稳定 ID，release 在同一 ID 的行内才切换一次，不把同一事件继续传给 Qt checkbox 编辑器；双击确保 Checked 并触发已有播放入口，第二次 release 不反转。刷新可能重新排序／替换行，不能缓存行号或原 item 指针作为一次点击的身份。空格键在表格层统一切换，跨页 selected 仍由 SamplesPage 维护，后端音频／导出契约未改变。验收需要点击实际画出的框边／中心、间隙和其他列，并校验渲染像素与业务选择集合。
+
+### 样本整行即时重绘
+
+样本其他列的背景依赖第 0 列的 CheckStateRole，但 Qt 默认只使发生 dataChanged 的单元格失效，导致点击后第 0 列变色，其余列要等到其他事件才重绘。修复在模型 dataChanged 层识别该共享状态，向 viewport 排队更新相应可见行区域，覆盖全部六列；不使用计时器、网络刷新、同步 repaint 或整表刷新。空格、双击、程序修改以及页面暂时阻止 itemChanged 的更新都走同一入口。
+
+QWidget.grab() 会主动完整绘制，可能把真实窗口的局部失效问题藏起来。验收新增隔离原生表格捕获实际 QPaintEvent.region，在点击、取消、空格、双击与程序更新后的首次绘制检查全部列命中，并确认相邻行未被无谓重绘。QScreen.grabWindow() 保存已呈现窗口，普通完整截图继续用于布局检查，不能替代本项首帧证据。

@@ -96,6 +96,23 @@ class SampleTable(QTableWidget):
         self.setShowGrid(False)
         self.pressed_identifier = None
         self.horizontalHeader().sectionResized.connect(lambda *args: self.resizeRowsToContents())
+        self.model().dataChanged.connect(self.refresh_checked_rows)
+
+    def refresh_checked_rows(self, top_left, bottom_right, roles):
+        if top_left.column() != 0 or (roles and Qt.ItemDataRole.CheckStateRole not in roles):
+            return
+        # Every cell derives its background from column 0, but Qt invalidates
+        # only the changed cell. Without this dependency invalidation the text
+        # cell turns purple first, and the other columns wait for an unrelated
+        # paint seconds later. Queue the visible row region for the same next
+        # paint; do not use repaint(), timers, network refresh or a whole-table
+        # redraw. Model-level handling also covers space/double-click/API updates
+        # and remains active while SamplesPage blocks itemChanged on refresh.
+        first = self.rowViewportPosition(top_left.row())
+        last = self.rowViewportPosition(bottom_right.row()) + self.rowHeight(bottom_right.row())
+        region = QRect(0, first, self.viewport().width(), last - first).intersected(self.viewport().rect())
+        if not region.isEmpty():
+            self.viewport().update(region)
 
     def mousePressEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:

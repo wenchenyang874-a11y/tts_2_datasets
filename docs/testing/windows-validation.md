@@ -162,3 +162,11 @@ Windows 11 x64 / 10.0.26200。源码 `artifacts/beta5-source-final-150-3/result.
 最终 `artifacts/beta5-selection-source-100/result.json`、`artifacts/beta5-selection-frozen-150/result.json` 均 ok=true，各 26 项流程通过；安装后的 checkbox／整行点击、长文本换行截图已核对。`artifacts/installer-beta5-selection-final/result.json` 为 ok=true，9 项隔离安装检查及安装后的 26 项原生流程通过。源 `1cc84c91e5b66d734bff6c87dfc52f0e0c32026d`，manifest SHA-256 `09754504fd250d6d50490f101d8524667aee8f7192e21c26435ba3d4942904a0`；所有资产字节数和哈希与清单一致。
 
 同版本重装夹具保留当前登记版本，损坏本轮 exe 后重新安装，完整文件逐项恢复到便携包哈希且用户文件／数据保留；不是用户生产程序原位升级实测。其余版本／运行保护、两个降级边界、模拟旧版本修复、正常与偏好目录冷启动、卸载保留数据均通过。生产安装仍为 beta.5，测试登记已移除；未关闭或替换用户程序，未调用真实云。本次继续 beta.5，不创建新版本 Tag、推送或 Release。
+
+## 2026-10-13 / beta.5 整行首帧重绘修正
+
+用户验收发现勾选后仅前部立即有背景，其余列几秒后才更新。`artifacts/beta5-rowpaint-before/result.json` 为修改前原生最小复现，唯一首帧 paint 区域为 [0,0,279,44]，六列覆盖为 [true,false,false,false,false,false]；常规 QWidget.grab() 完整截图会主动绘制而掩盖该缺陷，此前检查未覆盖实际增量首帧。
+
+`artifacts/beta5-rowpaint-fixed-probe/result.json` 的首帧区域为 [0,0,848,44]，六列覆盖均 true。源码 `artifacts/beta5-rowpaint-source-150/result.json` 为 ok=true、27 项原生流程通过；`sample-first-paint.json` 包含鼠标勾选／取消、空格勾选／取消、双击选中、程序取消六种入口的首帧记录，全部六列在同一次绘制覆盖，相邻行不被重绘。实际窗口由 QScreen 捕获，未用 QWidget.grab() 作为本项通过依据。最终普通缩放、冻结和安装结果在本节继续补齐，仍使用 beta.5。
+
+普通缩放 `artifacts/beta5-rowpaint-source-100/result.json` 同样 ok=true、27 项流程通过；200 项离线测试通过，1 条既有 Starlette 提示。前一份 1cc84c9 产物完整核验后归档到 `dist/releases/archive/2.0.0-beta.5/1cc84c91e5b6/`；仍保持 beta.5，安装与发布需绑定新构建。

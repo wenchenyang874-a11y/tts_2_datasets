@@ -15,6 +15,73 @@ import zipfile
 from pathlib import Path
 
 
+def verify_sample_row_first_paint(application, destination):
+    """Inspect incremental paint events, not a grab() that forces a full render."""
+    from PySide6.QtCore import Qt, QObject, QEvent
+    from PySide6.QtGui import QRegion
+    from PySide6.QtWidgets import QTableWidgetItem
+    from PySide6.QtTest import QTest
+    from .sample_table import SampleTable
+    from .widgets import STYLE
+    paints = []
+
+    class PaintTracker(QObject):
+        def eventFilter(self, watched, event):
+            if event.type() == QEvent.Type.Paint:
+                paints.append(QRegion(event.region()))
+            return False
+
+    table = SampleTable()
+    table.setStyleSheet(STYLE)
+    table.setWindowTitle("样本即时重绘验收")
+    table.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    table.resize(850, 240)
+    table.move(application.primaryScreen().availableGeometry().topLeft())
+    table.setRowCount(2)
+    for row in range(2):
+        for column, text in enumerate(("样本即时重绘", "离线测试 / Mock", "原音", "已通过", "1.0s", "未分配")):
+            item = QTableWidgetItem(text)
+            table.setItem(row, column, item)
+            if column == 0:
+                item.setData(Qt.ItemDataRole.UserRole, str(row))
+                item.setCheckState(Qt.CheckState.Unchecked)
+    evidence = []
+    try:
+        table.show()
+        table.setFocus()
+        table.setCurrentCell(0, 0)
+        # Settle initial show/focus/layout paints before observing the click.
+        application.processEvents()
+        application.processEvents()
+        tracker = PaintTracker(table)
+        table.viewport().installEventFilter(tracker)
+        centers = [table.visualItemRect(table.item(0, column)).center() for column in range(6)]
+        other_row = table.visualItemRect(table.item(1, 0)).center()
+        click = lambda: QTest.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=centers[0])
+        actions = [("mouse-check", click, True), ("mouse-uncheck", click, False),
+                   ("space-check", lambda: QTest.keyClick(table, Qt.Key.Key_Space), True),
+                   ("space-uncheck", lambda: QTest.keyClick(table, Qt.Key.Key_Space), False),
+                   ("double-click-check", lambda: QTest.mouseDClick(table.viewport(), Qt.MouseButton.LeftButton, pos=centers[0]), True),
+                   ("programmatic-uncheck", lambda: table.item(0, 0).setCheckState(Qt.CheckState.Unchecked), False)]
+        for name, action, checked in actions:
+            paints.clear()
+            action()
+            application.processEvents()
+            assert (table.item(0, 0).checkState() == Qt.CheckState.Checked) == checked
+            assert paints and all(paints[0].contains(point) for point in centers), name
+            assert not paints[0].contains(other_row), name
+            rect = paints[0].boundingRect()
+            evidence.append({"action": name, "checked": checked, "first_paint_all_columns": True,
+                             "unrelated_row_repainted": False, "region": [rect.x(), rect.y(), rect.width(), rect.height()]})
+            # QScreen captures the presented window, unlike QWidget.grab(),
+            # which would repaint stale cells and falsely pass this regression.
+            if name == "mouse-check":
+                table.screen().grabWindow(table.winId()).save(str(destination / "sample-first-frame.png"))
+        (destination / "sample-first-paint.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
+    finally:
+        table.close()
+
+
 def run_smoke(application, destination: Path) -> int:
     from PySide6.QtCore import Qt, QTimer, QPoint
     from PySide6.QtWidgets import QPushButton
@@ -376,6 +443,8 @@ def run_smoke(application, destination: Path) -> int:
         window.navigate(1)
         idle(window)
         library = window.pages[1]
+        verify_sample_row_first_paint(application, destination)
+        check("sample-check-uncheck-six-columns-first-paint-no-forced-render")
         window.stack.currentWidget().ensureWidgetVisible(library.grid)
         application.processEvents()
         from .sample_table import SampleDelegate
