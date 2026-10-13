@@ -1865,6 +1865,13 @@ def _sample_filter(
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
     clauses, params = ["deleted_at IS NULL"], []
+    if provider in {"volcengine_v1", "volcengine_v2"}:
+        # Keep the model boundary in this shared filter so pagination and
+        # selecting all filtered IDs cannot disagree about which service a
+        # sample belongs to. Augmented rows retain their source model too.
+        clauses.append("model=?" if provider == "volcengine_v2" else "model!=?")
+        params.append("seed-tts-2.0")
+        provider = "volcengine"
     for column, value in (("provider", provider), ("voice_id", voice_id),
                           ("split", split),
                           ("keyword_id", keyword_id), ("target_kind", target_kind),

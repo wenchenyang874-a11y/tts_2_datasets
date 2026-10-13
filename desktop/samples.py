@@ -3,7 +3,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QHBoxLayout, QLineEdit, QLabel, QTableWidgetItem,
                                QDialog, QVBoxLayout, QDialogButtonBox, QFormLayout)
 from .base import Page
-from .widgets import combo, spin, button, Plot, field
+from .widgets import combo, spin, button, Plot, field, Disclosure
+from .services import SERVICES
 from .generate import TARGETS, AGES
 
 QUALITY = {"pending": "未审核", "accepted": "已通过", "rejected": "已拒绝",
@@ -21,7 +22,7 @@ class SamplesPage(Page):
         self.search = QLineEdit()
         self.search.setPlaceholderText("搜索文本、音色或说话人")
         self.quality = combo([("全部审核", ""), ("未审核", "pending"), ("已通过", "accepted"), ("已拒绝", "rejected")])
-        self.provider = combo([("全部来源", ""), ("火山引擎", "volcengine"), ("阿里云", "aliyun"), ("真人", "real"), ("Mock", "mock")])
+        self.provider = combo([("全部来源", "")] + SERVICES + [("真人", "real")])
         self.kind = combo([("全部目标", "")] + TARGETS)
         self.variant = combo([("全部类型", ""), ("原音", "clean"), ("增强", "augmented")])
         self.split = combo([("全部划分", ""), ("未分配", "unassigned"), ("Train", "train"), ("Dev", "dev"), ("Test", "test")])
@@ -29,12 +30,16 @@ class SamplesPage(Page):
         self.task_filter = combo([("全部来源任务", "")])
         self.gender = combo([("全部性别", ""), ("女", "female"), ("男", "male"), ("未知", "unknown")])
         self.age = combo([("全部年龄", "")] + AGES)
-        for widgets in ([self.search, self.provider, self.quality, self.kind, self.variant],
-                        [self.keyword, self.task_filter, self.split, self.gender, self.age]):
+        more = Disclosure("更多筛选")
+        for index, widgets in enumerate(([self.search, self.provider, self.quality, self.kind, self.variant],
+                        [self.keyword, self.task_filter, self.split, self.gender, self.age])):
             row = QHBoxLayout()
             for widget in widgets:
                 row.addWidget(widget)
-            self.layout.addLayout(row)
+            (self.layout if index == 0 else more.body).addLayout(row)
+        self.layout.addWidget(more)
+        for widget in [self.provider, self.quality, self.kind, self.variant, self.split, self.gender, self.age, self.keyword, self.task_filter]:
+            widget.currentIndexChanged.connect(self.search_first)
         self.search.returnPressed.connect(self.search_first)
         self.actions(("筛选", self.search_first, True), ("全选筛选结果", self.select_filtered, False),
                      ("清空选择", self.clear_selection, False), ("导出所选", lambda: shell.navigate(5), False))
@@ -109,7 +114,9 @@ class SamplesPage(Page):
             check.setCheckState(Qt.CheckState.Checked if row["id"] in self.selected else Qt.CheckState.Unchecked)
             check.setData(Qt.ItemDataRole.UserRole, row["id"])
             self.grid.setItem(index, 0, check)
-            values = [row["text"], f"{row['provider']} / {row['voice_name']}",
+            provider = "volcengine_v2" if row["provider"] == "volcengine" and row.get("model") == "seed-tts-2.0" else "volcengine_v1" if row["provider"] == "volcengine" else row["provider"]
+            source_name = dict((value, label) for label, value in SERVICES + [("真人", "real"), ("噪声", "noise")]).get(provider, provider)
+            values = [row["text"], f"{source_name} / {row['voice_name']}",
                       "增强" if row.get("variant_kind") == "augmented" else "原音",
                       QUALITY.get(row.get("quality_status"), row.get("quality_status", "")),
                       f"{row['duration']:.2f}s", row.get("split", "")]

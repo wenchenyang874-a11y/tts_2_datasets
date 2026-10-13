@@ -1623,3 +1623,20 @@ def test_scoped_catalog_refresh_does_not_disable_other_doubao_version(client):
     assert result.status_code == 200 and result.json()["count"] >= 2
     after = client.get("/api/voices", params={"provider":"volcengine_v1"}).json()
     assert {row["id"] for row in rows} == {row["id"] for row in after}
+
+
+def test_sample_pages_and_bulk_selection_follow_doubao_service_boundary(client, tmp_path):
+    ids = ["owned-service-v1-filter", "owned-service-v2-filter", "owned-service-mimo-filter"]
+    try:
+        for identifier, provider, model in zip(ids, ["volcengine", "volcengine", "xiaomi"], ["seed-tts-1.0", "seed-tts-2.0", "mimo-v2.5-tts"]):
+            app_module.db.execute("INSERT INTO samples(id,provider,voice_id,model,text,file_path,sha256,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                                  (identifier,provider,"owned-service-filter-voice",model,"filter fixture",str(tmp_path/(identifier+".wav")),identifier,"2026-10-13"))
+        for provider, expected in zip(["volcengine_v1", "volcengine_v2", "xiaomi"], ids):
+            params = {"provider":provider,"voice_id":"owned-service-filter-voice"}
+            rows = client.get("/api/samples",params=params).json()
+            selected = client.get("/api/samples/ids",params=params).json()
+            assert rows["total"] == selected["total"] == 1
+            assert rows["items"][0]["id"] == selected["ids"][0] == expected
+    finally:
+        for identifier in ids:
+            app_module.db.execute("DELETE FROM samples WHERE id=?", (identifier,))
