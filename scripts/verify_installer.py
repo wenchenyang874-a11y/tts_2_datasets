@@ -116,6 +116,19 @@ def main():
             raise RuntimeError("Incorrect installed version metadata")
         same_runtime()
         report["checks"].append("production_install_all_files_match_portable")
+        # Unpublished builds keep the same version. Inno must replace changed
+        # runtime bytes even when both the registered and PE versions match;
+        # a newer-version-only upgrade test would miss this delivery contract.
+        # Only damage this owned fixture, never the user's real installed app.
+        unchanged_version = values["DisplayVersion"]
+        (install / "TTS Dataset Studio.exe").write_bytes(b"owned changed same-version runtime fixture")
+        run([*command, f"/LOG={evidence / 'same-version-reinstall.log'}"])
+        if owned_registration()["DisplayVersion"] != unchanged_version:
+            raise RuntimeError("Same-version reinstall changed the registered version")
+        same_runtime()
+        if not sentinel.is_file() or not user_file.is_file():
+            raise RuntimeError("Same-version reinstall removed user data")
+        report["checks"].append("same_version_reinstall_repairs_runtime_preserves_data")
         # Presence of this same Win32 mutex is the app/installer contract. It
         # must reject both operations instead of silently terminating writers.
         sys.path.insert(0, str(ROOT))

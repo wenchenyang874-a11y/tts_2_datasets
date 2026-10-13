@@ -1,11 +1,12 @@
 """Sample review with stable cross-page selections and API-owned provenance."""
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QHBoxLayout, QLineEdit, QLabel, QTableWidgetItem,
-                               QDialog, QVBoxLayout, QDialogButtonBox, QFormLayout, QHeaderView)
+                               QDialog, QVBoxLayout, QDialogButtonBox, QFormLayout)
 from .base import Page
 from .widgets import combo, spin, button, Plot, field, Disclosure
 from .services import SERVICES
 from .generate import TARGETS, AGES
+from .sample_table import SampleTable
 
 QUALITY = {"pending": "未审核", "accepted": "已通过", "rejected": "已拒绝",
            "unchecked": "未审核", "pass": "已通过", "reject": "已拒绝", "review": "未审核"}
@@ -14,7 +15,6 @@ QUALITY = {"pending": "未审核", "accepted": "已通过", "rejected": "已拒�
 class SamplesPage(Page):
     def __init__(self, shell):
         super().__init__(shell, "样本库")
-        from .widgets import table
         self.page = 1
         self.selected = shell.selected_samples
         self.rows = []
@@ -45,12 +45,7 @@ class SamplesPage(Page):
         self.search.returnPressed.connect(self.search_first)
         self.actions(("筛选", self.search_first, True), ("全选筛选结果", self.select_filtered, False),
                      ("清空选择", self.clear_selection, False), ("导出所选", lambda: shell.navigate(5), False))
-        self.grid = table(["选择", "文本", "来源 / 音色", "类型", "审核", "时长", "划分"])
-        header = self.grid.horizontalHeader()
-        for column, width in ((0, 44), (3, 60), (4, 80), (5, 70), (6, 80)):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
-            self.grid.setColumnWidth(column, width)
-        self.grid.setWordWrap(True)
+        self.grid = SampleTable()
         self.grid.setMinimumHeight(270)
         self.grid.itemChanged.connect(self.selection_changed)
         self.grid.cellDoubleClicked.connect(lambda row, column: self.play_row(row))
@@ -117,14 +112,15 @@ class SamplesPage(Page):
         self.grid.blockSignals(True)
         self.grid.setRowCount(len(self.rows))
         for index, row in enumerate(self.rows):
-            check = QTableWidgetItem()
-            check.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+            check = QTableWidgetItem(row["text"])
+            check.setToolTip(row["text"])
+            check.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsUserCheckable)
             check.setCheckState(Qt.CheckState.Checked if row["id"] in self.selected else Qt.CheckState.Unchecked)
             check.setData(Qt.ItemDataRole.UserRole, row["id"])
             self.grid.setItem(index, 0, check)
             provider = "volcengine_v2" if row["provider"] == "volcengine" and row.get("model") == "seed-tts-2.0" else "volcengine_v1" if row["provider"] == "volcengine" else row["provider"]
             source_name = dict((value, label) for label, value in SERVICES + [("真人", "real"), ("噪声", "noise")]).get(provider, provider)
-            values = [row["text"], f"{source_name} / {row['voice_name']}",
+            values = [f"{source_name} / {row['voice_name']}",
                       "增强" if row.get("variant_kind") == "augmented" else "原音",
                       QUALITY.get(row.get("quality_status"), row.get("quality_status", "")),
                       f"{row['duration']:.2f}s", {"unassigned": "未分配"}.get(row.get("split"), row.get("split", ""))]

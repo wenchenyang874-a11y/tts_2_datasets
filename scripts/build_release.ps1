@@ -19,7 +19,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Version preparation failed." }
     $info = $infoText | ConvertFrom-Json
     $output = Join-Path (Get-Location) "dist/releases/$($info.version)"
-    if (Test-Path -LiteralPath $output) { throw "Version output already exists; preserve it or choose a new version." }
+    if (Test-Path -LiteralPath $output) { throw "Version output already exists; archive the unpublished build before rebuilding the same version. Published assets must remain immutable." }
     & ./scripts/build_windows.ps1 -Python $Python
     New-Item -ItemType Directory -Path $output | Out-Null
     & $Iscc "/DAppVersion=$($info.version)" "/DNumericVersion=$($info.numeric)" "/DOutputDir=$output" "/DBundleDir=$((Resolve-Path -LiteralPath 'dist/TTS Dataset Studio').Path)" installer/windows.iss

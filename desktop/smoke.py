@@ -376,7 +376,56 @@ def run_smoke(application, destination: Path) -> int:
         window.navigate(1)
         idle(window)
         library = window.pages[1]
-        library.grid.setCurrentCell(0, 1)
+        window.stack.currentWidget().ensureWidgetVisible(library.grid)
+        application.processEvents()
+        from .sample_table import SampleDelegate
+        assert library.grid.columnCount() == 6 and library.grid.horizontalHeaderItem(0).text() == "文本"
+        first_item = library.grid.item(0, 0)
+        first_id = first_item.data(Qt.ItemDataRole.UserRole)
+        first_rect = library.grid.visualItemRect(first_item)
+        indicator = SampleDelegate.checkbox_rect(first_rect)
+        # Hit the actual painted checkbox's edges and center, the adjacent
+        # gap, text, other information columns and their empty side. Every
+        # target is the same row selection, with no native second hit rectangle.
+        points = [indicator.topLeft() + QPoint(1, 1), indicator.center(), indicator.bottomRight() - QPoint(1, 1),
+                  QPoint(indicator.right() + 5, indicator.center().y()), first_rect.center(),
+                  library.grid.visualItemRect(library.grid.item(0, 1)).center(),
+                  library.grid.visualItemRect(library.grid.item(0, 5)).bottomRight() - QPoint(5, 5)]
+        for point in points:
+            before = first_item.checkState()
+            QTest.mouseClick(library.grid.viewport(), Qt.MouseButton.LeftButton, pos=point)
+            assert first_item.checkState() != before
+            assert (first_id in library.selected) == (first_item.checkState() == Qt.CheckState.Checked)
+            assert library.grid.visualItemRect(first_item) == first_rect
+        first_item.setCheckState(Qt.CheckState.Checked)
+        application.processEvents()
+        rendered = library.grid.viewport().grab().toImage()
+        ratio = rendered.devicePixelRatio()
+        pixel = indicator.topLeft() + QPoint(4, 3)
+        assert rendered.pixelColor(int(pixel.x() * ratio), int(pixel.y() * ratio)).name() == "#6563df"
+        library.grid.setFocus()
+        QTest.keyClick(library.grid, Qt.Key.Key_Space)
+        assert first_id not in library.selected
+        # Press on one row and release on another/empty space is not a click.
+        QTest.mousePress(library.grid.viewport(), Qt.MouseButton.LeftButton, pos=first_rect.center())
+        QTest.mouseRelease(library.grid.viewport(), Qt.MouseButton.LeftButton, pos=library.grid.visualItemRect(library.grid.item(1, 0)).center())
+        assert first_id not in library.selected
+        original_rows = list(library.rows)
+        selection_before = set(library.selected)
+        QTest.mousePress(library.grid.viewport(), Qt.MouseButton.LeftButton, pos=first_rect.center())
+        library.show_rows({"items": [original_rows[1], original_rows[0], *original_rows[2:]], "page": 1, "total": 8})
+        QTest.mouseRelease(library.grid.viewport(), Qt.MouseButton.LeftButton, pos=first_rect.center())
+        assert library.selected == selection_before
+        library.show_rows({"items": original_rows[:1], "page": 1, "total": 8})
+        application.processEvents()
+        blank = QPoint(20, library.grid.viewport().height() - 5)
+        assert not library.grid.indexAt(blank).isValid()
+        QTest.mouseClick(library.grid.viewport(), Qt.MouseButton.LeftButton, pos=blank)
+        assert library.selected == selection_before
+        library.show_rows({"items": original_rows, "page": 1, "total": 8})
+        window.grab().save(str(destination / "sample-row-selection.png"))
+        check("sample-integrated-checkbox-painted-pixels-full-row-hit-and-single-toggle")
+        library.grid.setCurrentCell(0, 0)
         identifier = library.rows[0]["id"]
         action(library, "切换审核")
         idle(window)
@@ -389,7 +438,7 @@ def run_smoke(application, destination: Path) -> int:
         idle(window)
         first_playback = window.player.source().toLocalFile()
         assert Path(first_playback).is_file()
-        cell = library.grid.visualItemRect(library.grid.item(0, 2))
+        cell = library.grid.visualItemRect(library.grid.item(0, 1))
         window.stack.currentWidget().ensureWidgetVisible(library.grid)
         application.processEvents()
         QTest.mouseClick(library.grid.viewport(), Qt.MouseButton.LeftButton, pos=cell.center())
@@ -397,19 +446,21 @@ def run_smoke(application, destination: Path) -> int:
         idle(window)
         assert window.player.source().toLocalFile() != first_playback
         assert Path(window.player.source().toLocalFile()).is_file()
-        assert library.grid.columnWidth(0) == 44
+        assert first_id in library.selected and library.grid.item(0, 0).checkState() == Qt.CheckState.Checked
+        assert runtime.call("/api/samples", params={"quality": "rejected"})["total"] == 1
         from PySide6.QtWidgets import QStyledItemDelegate
         assert isinstance(library.grid.itemDelegate(), QStyledItemDelegate)
         # Long display fixture on a real sample ID; compare row height before
         # and after focus, with both screenshots for visual wrap acceptance.
         display_rows = [dict(row) for row in library.rows]
+        display_rows[0]["text"] = "较长的文本换行验收：勾选框与文本位于同一列，整行点击都可选中，也不裁切内容。" * 2
         display_rows[0]["voice_name"] = "音色名称较长的换行显示验收：选中后保留全部信息"
         library.show_rows({"items": display_rows, "page": 1, "total": len(display_rows)})
-        library.grid.clearSelection()
+        library.grid.item(0, 0).setCheckState(Qt.CheckState.Unchecked)
         application.processEvents()
         height_before = library.grid.rowHeight(0)
         window.grab().save(str(destination / "sample-long-unselected.png"))
-        library.grid.setCurrentCell(0, 2)
+        QTest.mouseClick(library.grid.viewport(), Qt.MouseButton.LeftButton, pos=library.grid.visualItemRect(library.grid.item(0, 0)).center())
         application.processEvents()
         assert library.grid.rowHeight(0) == height_before and height_before > 43
         window.grab().save(str(destination / "sample-long-selected.png"))
@@ -422,7 +473,7 @@ def run_smoke(application, destination: Path) -> int:
         assert window.player.playbackState() == QMediaPlayer.PlaybackState.StoppedState
         window.navigate(1)
         idle(window)
-        check("sample-double-click-playback-compact-check-column-wrap-stable-local-controls")
+        check("sample-double-click-selects-and-plays-integrated-text-wrap-local-controls")
         library.selected.update(row["id"] for row in samples)
         library.load_page(2)
         idle(window)
