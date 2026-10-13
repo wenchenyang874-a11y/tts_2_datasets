@@ -62,10 +62,19 @@ Inno Setup 的每用户安装器将程序放在 LocalAppData/Programs，应用�
 
 ## 2.0.0-beta.2 决策
 
-桌面数据路径偏好放在当前用户应用配置目录的 desktop_preferences.json，独立于数据目录和供应商凭据。原子写入并探测目标可写性，仅更改下次启动路径；不在后台任务运行期间切换数据库。命令行路径优先，错误偏好不静默回退到空数据目录；冻结程序禁止数据目录与安装树重叠。
+桌面数据路径偏好放在当前用户应用配置目录的 desktop_preferences.json，独立于数据目录和供应商凭据。原子写入并探测目标可写性，beta.2 曾仅更改下次启动路径，beta.3 已由下节的即时会话切换替代；任务执行中不允许切换。命令行路径优先，错误偏好不静默回退到空数据目录；冻结程序禁止数据目录与安装树重叠。
 
 表单验证通过请求体传递未保存内容，服务端合并已存秘密并保留留空的密钥，仅做参数校验、不持久化；保存成功和后续音色获取结果分开反馈，目录失败不将有效保存回滚。小米未公开账号音色枚举接口，本版维护官方预置快照，不伪造远端账号可用性。
 
 小米通过 [MiMo TTS 官方接口](https://mimo.mi.com/docs/zh-CN/api/audio/tts)发送 assistant 目标文本、可选 user 风格指令并解码 Base64 音频。豆包 1.0 请求不变，2.0 按 [V3 HTTP 官方接口](https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-text-to-speech-http?lang=zh)使用 X-Api-Key 和模型资源 ID；有界收集 JSON 音频分段，任一分段错误即丢弃部分音频，计费 POST 不重试。两类新请求都进入现有归一化、样本与分组导出流程。
 
 帮助控件不只依赖平台延迟的 ToolTip 事件，通过真实 Enter/Hover 与键盘聚焦驱动不激活窗口的 Qt Tooltip；纯文本、屏幕边界约束、移出/失焦清理。验收需要实际鼠标位置命中当前窗口控件，不能直接注入帮助事件。设置已移除 Web 导入 UI 入口，内部数据复制仍供维护回归。
+
+## beta.3 即时数据目录切换
+
+目录锁由桌面会话拥有，不绑定启动函数的局部变量。切换期间禁用页面与后台轮询，等待已提交界面请求完成，检查业务任务及录音状态，释放播放资源。先取得目标目录锁；迁移模式建立经 SQLite 完整性检查和路径重定位的暂存数据，新服务就绪且偏好原子写入成功后才移除旧位置对应文件。目录切换事务保留旧锁和回退能力，任何准备或启动失败恢复旧服务。成功后刷新所有数据相关状态并清除跨目录选择。旧目录存在其他实例锁时不可迁移或开启。该操作仅由用户选择目录触发。
+
+
+beta.3 的两套豆包配置分别存于 volcengine / volcengine_v2，独立保存、清空和估价。桌面服务 ID 为 volcengine_v1 / volcengine_v2，语音行按对应模型过滤；目录刷新只更新对应范围，不能禁用另一版本音色。实际合成前进行模型对应凭据预检，缺失不创建任务，不发请求。当前阶段不做旧配置转换。
+
+Base URL 与请求路径分离：小米 /v1 → /v1/chat/completions，豆包基础主机分别补齐 /api/v1/tts 和 /api/v3/tts/unidirectional，阿里 /api/v1 → /api/v1/services/audio/tts/SpeechSynthesizer。主机允许列表与 HTTPS 校验仍执行，完整路径为显式高级配置。阿里路由依据[官方 HTTP 文档](https://www.alibabacloud.com/help/en/model-studio/audio-generation-api)，不通过修改标签而继续向基础主机根路径发送合成请求。

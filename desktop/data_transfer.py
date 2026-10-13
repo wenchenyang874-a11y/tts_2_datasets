@@ -20,7 +20,7 @@ def _is_link(path: Path) -> bool:
     return path.is_symlink() or bool(getattr(path.lstat(), "st_file_attributes", 0) & 0x400)
 
 
-def copy_dataset(source: Path, destination: Path) -> Path:
+def copy_dataset(source: Path, destination: Path, *, path_root: Path | None = None) -> Path:
     source, destination = source.resolve(), destination.resolve()
     if source == destination or source in destination.parents or destination in source.parents:
         raise ValueError("源与目标目录不能相同或互相包含")
@@ -78,7 +78,7 @@ def copy_dataset(source: Path, destination: Path) -> Path:
                         if not indices or ".." in pieces[indices[0]:]:
                             raise ValueError("源数据含无效文件路径")
                         relative = Path(*pieces[indices[0]:])
-                    db.execute(f"UPDATE {table} SET file_path=? WHERE id=?", (str(destination / relative), identifier))
+                    db.execute(f"UPDATE {table} SET file_path=? WHERE id=?", (str((path_root or destination) / relative), identifier))
             db.commit()
         # Keep the original untouched. A failed import removes only this newly
         # created staging tree; it never empties the user's chosen destination.

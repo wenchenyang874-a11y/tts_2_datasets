@@ -23,20 +23,22 @@ class DesktopPreferences:
             raise ValueError("已保存的数据目录配置无效")
         return Path(directory).resolve()
 
-    def save_data_directory(self, value):
+    def validate_data_directory(self, value):
         directory = Path(value).expanduser().resolve()
         if getattr(sys, "frozen", False):
             installation = Path(sys.executable).resolve().parent
             if directory == installation or installation in directory.parents or directory in installation.parents:
                 raise ValueError("数据目录必须与程序安装目录分离")
         directory.mkdir(parents=True, exist_ok=True)
-        # Probe only an owned temporary file. Saving a preference never moves,
-        # initializes or rewrites a chosen dataset, and never switches the live
-        # backend while tasks/files are in use. The next normal launch takes
-        # the usual QLockFile before opening that dataset.
+        # The session owns migration/locking. This method checks only location
+        # and write access; it never opens or rewrites the dataset itself.
         with tempfile.TemporaryFile(dir=directory, prefix=".tts-write-check-") as probe:
             probe.write(b"writable")
             probe.flush()
+        return directory
+
+    def save_data_directory(self, value):
+        directory = self.validate_data_directory(value)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = None
         try:

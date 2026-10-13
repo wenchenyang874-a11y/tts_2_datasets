@@ -21,10 +21,14 @@ from .settings import SettingsPage
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, runtime, preferences=None):
+    def __init__(self, runtime, preferences=None, session=None):
         super().__init__()
         self.runtime = runtime
         self.preferences = preferences
+        from .session import DirectorySession, acquire_directory_lock
+        self.session = session or (DirectorySession(runtime, preferences, acquire_directory_lock(runtime.data_directory)) if preferences else None)
+        self.switching = False
+        self.epoch = 0
         self.jobs = {}
         self.selected_samples = set()
         self.project = {}
@@ -36,8 +40,8 @@ class MainWindow(QMainWindow):
         # task pool. A single pipe never interleaves request/reply pairs, and
         # timers cannot create overlapping polling calls on a slow backend.
         self.setWindowTitle("语音数据集工坊")
-        self.resize(1280, 900)
-        self.setMinimumSize(1060, 720)
+        self.resize(1260, 880)
+        self.setMinimumSize(980, 680)
         self.setStyleSheet(STYLE)
         center = QWidget()
         center.setObjectName("canvas")
@@ -46,14 +50,17 @@ class MainWindow(QMainWindow):
         outer.setSpacing(0)
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(204)
+        sidebar.setFixedWidth(184)
         navigation = QVBoxLayout(sidebar)
         navigation.setContentsMargins(14, 28, 14, 20)
         navigation.setSpacing(7)
-        brand = QLabel("语音数据集\n工坊")
+        brand = QLabel("语音工坊")
         brand.setObjectName("brand")
         navigation.addWidget(brand)
-        navigation.addSpacing(30)
+        caption = QLabel("DATASET STUDIO")
+        caption.setObjectName("muted")
+        navigation.addWidget(caption)
+        navigation.addSpacing(24)
         self.nav_buttons = []
         labels = ["合成创作", "样本库", "真人录音", "噪声增强", "任务中心", "训练集导出", "设置"]
         for index, label in enumerate(labels):
@@ -68,11 +75,11 @@ class MainWindow(QMainWindow):
         navigation.addWidget(data)
         outer.addWidget(sidebar)
         main = QVBoxLayout()
-        main.setContentsMargins(32, 22, 32, 20)
+        main.setContentsMargins(24, 18, 24, 14)
         header = QHBoxLayout()
-        self.project_label = QLabel("语音数据集工坊")
+        self.project_label = QLabel("你好，小助手")
         self.project_label.setTextFormat(Qt.TextFormat.PlainText)
-        self.project_label.setObjectName("section")
+        self.project_label.setObjectName("projectChip")
         header.addWidget(self.project_label)
         header.addStretch()
         self.status = QLabel("正在启动")
@@ -84,13 +91,7 @@ class MainWindow(QMainWindow):
         main.addLayout(header)
         main.addSpacing(16)
         self.stack = QStackedWidget()
-        self.pages = [cls(self) for cls in [GeneratePage, SamplesPage, RecordingPage, NoisesPage,
-                                           TasksPage, ExportsPage, SettingsPage]]
-        for page in self.pages:
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setWidget(page)
-            self.stack.addWidget(scroll)
+        self.build_pages()
         main.addWidget(self.stack)
         self.player = QMediaPlayer(self)
         self.output = QAudioOutput(self)
@@ -125,14 +126,28 @@ class MainWindow(QMainWindow):
         self.poll_timer.timeout.connect(self.poll)
         self.poll_timer.start()
 
-    def submit(self, function, callback=None, error=None):
-        if self.closing:
+    def build_pages(self):
+        while self.stack.count():
+            old = self.stack.widget(0)
+            self.stack.removeWidget(old)
+            old.deleteLater()
+        self.pages = [cls(self) for cls in [GeneratePage, SamplesPage, RecordingPage, NoisesPage,
+                                           TasksPage, ExportsPage, SettingsPage]]
+        for page in self.pages:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(page)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.stack.addWidget(scroll)
+
+    def submit(self, function, callback=None, error=None, *, switching=False):
+        if self.closing or (self.switching and not switching):
             return
         identifier = uuid.uuid4().hex
-        self.jobs[identifier] = (self.pool.submit(function), callback, error)
+        self.jobs[identifier] = (self.pool.submit(function), callback, error, self.epoch)
 
     def drain_completions(self):
-        for identifier, (future, _, _) in list(self.jobs.items()):
+        for identifier, (future, _, _, _) in list(self.jobs.items()):
             if future.done():
                 try:
                     result = future.result()
@@ -145,7 +160,9 @@ class MainWindow(QMainWindow):
         entry = self.jobs.pop(identifier, None)
         if not entry or self.closing:
             return
-        _, success, failure = entry
+        _, success, failure, epoch = entry
+        if epoch != self.epoch:
+            return  # Old dataset replies must never populate the new pages.
         if error is not None:
             (failure or self.error)(error)
         elif success:
@@ -173,6 +190,8 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "操作未完成", str(error))
 
     def navigate(self, index):
+        if self.switching:
+            return
         self.stack.setCurrentIndex(index)
         for i, item in enumerate(self.nav_buttons):
             item.setChecked(i == index)
@@ -180,7 +199,7 @@ class MainWindow(QMainWindow):
             self.pages[index].refresh()
 
     def poll(self):
-        if self.ready and not self.closing and not self.jobs:
+        if self.ready and not self.closing and not self.switching and not self.jobs:
             if self.stack.currentIndex() == 4:
                 self.pages[4].refresh()
             elif self.stack.currentIndex() == 5:
@@ -188,6 +207,51 @@ class MainWindow(QMainWindow):
 
     def open_data_directory(self):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.runtime.data_directory)))
+
+    def switch_directory(self, value, mode="empty"):
+        if self.switching or not self.ready:
+            return
+        if self.session is None:
+            self.error("当前启动方式无法管理数据目录")
+            return
+        if self.pages[2].source is not None:
+            self.error("请先停止录音，再切换数据目录")
+            return
+        self.switching = True
+        self.epoch += 1
+        self.stack.setEnabled(False)
+        for item in self.nav_buttons:
+            item.setEnabled(False)
+        self.player.stop()
+        self.player.setSource(QUrl())
+        self.set_status("正在迁移数据…" if mode == "move" else "正在切换数据目录…")
+        self.submit(lambda: self.session.switch(value, mode), self.directory_switched, self.directory_failed, switching=True)
+
+    def enable_after_switch(self):
+        self.runtime = self.session.runtime
+        self.switching = False
+        self.stack.setEnabled(True)
+        for item in self.nav_buttons:
+            item.setEnabled(True)
+
+    def directory_switched(self, result):
+        self.enable_after_switch()
+        self.selected_samples = set()
+        self.project = {}
+        self.playback.clear()
+        self.build_pages()
+        self.navigate(6)
+        self.pages[0].refresh()
+        self.set_status(result["warning"] or "数据目录已切换", bool(result["warning"]))
+
+    def directory_failed(self, error):
+        self.enable_after_switch()
+        # Rollback may recreate the service, so stale loading flags and old
+        # forms must be reset even though the dataset identity stayed the same.
+        self.build_pages()
+        self.navigate(6)
+        self.pages[0].refresh()
+        self.error(str(error))
 
     def play_resource(self, kind, identifier, label="音频"):
         # Each playback gets a new snapshot: on Windows the current media
@@ -204,6 +268,10 @@ class MainWindow(QMainWindow):
         self.playback.setText("试听 · " + label[:35])
 
     def closeEvent(self, event):
+        if self.switching:
+            self.set_status("正在切换数据目录，完成后即可关闭")
+            event.ignore()
+            return
         self.closing = True
         self.poll_timer.stop()
         self.completion_timer.stop()
@@ -212,7 +280,10 @@ class MainWindow(QMainWindow):
         self.player.setSource(QUrl())
         self.output.setMuted(True)
         self.pool.shutdown(wait=False, cancel_futures=True)
-        self.runtime.close()
+        if self.session:
+            self.session.close()
+        else:
+            self.runtime.close()
         try:
             self.cache.cleanup()
         except OSError:

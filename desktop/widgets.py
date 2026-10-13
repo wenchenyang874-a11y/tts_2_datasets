@@ -9,15 +9,15 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushB
                                QHeaderView, QToolTip, QFrame)
 
 STYLE = """
-QWidget { font-family: 'Segoe UI', 'Microsoft YaHei UI'; font-size: 13px; color: #26334a; }
+QWidget { font-family: 'Segoe UI', 'Microsoft YaHei UI'; font-size: 14px; color: #26334a; }
 QMainWindow, QWidget#canvas, QWidget#page { background: #f4f6fb; }
-QWidget#sidebar { background: #182338; }
-QWidget#sidebar QLabel { color: #eef2ff; background: transparent; }
-QWidget#sidebar QPushButton { color: #b9c4d8; background: transparent; border: 0; text-align: left; padding: 13px 18px; border-radius: 8px; }
-QWidget#sidebar QPushButton:hover { background: #24324b; color: white; }
-QWidget#sidebar QPushButton:checked { background: #6563df; color: white; }
+QWidget#sidebar { background: #ffffff; border-right: 1px solid #e6eaf3; }
+QWidget#sidebar QLabel { color: #6155cc; background: transparent; }
+QWidget#sidebar QPushButton { color: #68758b; background: transparent; border: 0; text-align: left; padding: 13px 18px; border-radius: 8px; }
+QWidget#sidebar QPushButton:hover { background: #f3f2fd; color: #5245bc; }
+QWidget#sidebar QPushButton:checked { background: #efedff; color: #5245bc; font-weight: 600; }
 QLabel#brand { font-size: 20px; font-weight: 700; }
-QLabel#title { font-size: 26px; font-weight: 700; color: #17263d; }
+QLabel#title { font-size: 24px; font-weight: 700; color: #17263d; }
 QLabel#section { font-size: 15px; font-weight: 600; }
 QLabel#muted { color: #7a8497; }
 QPushButton { background: white; border: 1px solid #dce2ee; border-radius: 7px; padding: 8px 14px; }
@@ -46,8 +46,16 @@ QScrollBar::handle:vertical { background: #c9cfdd; border-radius: 5px; min-heigh
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QToolTip { background: #25334b; color: white; border: 0; padding: 9px; }
 QTabWidget::pane { border: 1px solid #e1e6f0; background: white; border-radius: 8px; padding: 8px; }
-QTabBar::tab { background: #e9edf5; border: 0; padding: 9px 18px; margin-right: 4px; border-top-left-radius: 7px; border-top-right-radius: 7px; }
-QTabBar::tab:selected { background: #6563df; color: white; }
+QTabBar::tab { background: transparent; border: 0; padding: 9px 18px; margin-right: 4px; border-top-left-radius: 7px; border-top-right-radius: 7px; }
+QTabBar::tab:selected { background: #efedff; color: #5245bc; font-weight: 600; }
+QFrame#card { background: white; border: 1px solid #e6eaf3; border-radius: 12px; }
+QPushButton#disclosure { background: transparent; border: 0; text-align: left; padding: 8px 0; color: #68758b; }
+QLabel#batchSummary { background: #eeecfa; color: #6155a0; border-radius: 8px; padding: 12px 16px; }
+QLabel#errorBanner { color: #b54050; }
+QLabel#formStatus { color: #68758b; padding: 4px 0; }
+QLabel#projectChip { color: #6f648f; background: #eeecfa; border-radius: 6px; padding: 6px 12px; font-size: 12px; }
+QCheckBox { spacing: 8px; }
+QCheckBox::indicator { width: 17px; height: 17px; }
 QProgressBar { border: 0; background: #e8ebf4; border-radius: 5px; height: 12px; text-align: center; }
 QProgressBar::chunk { background: #6563df; border-radius: 5px; }
 """
@@ -140,6 +148,38 @@ def field(label: str, widget: QWidget, explanation: str = "") -> QWidget:
     layout.addLayout(row)
     layout.addWidget(widget)
     return container
+
+
+class Card(QFrame):
+    def __init__(self, title=""):
+        super().__init__()
+        self.setObjectName("card")
+        self.body = QVBoxLayout(self)
+        self.body.setContentsMargins(20, 18, 20, 18)
+        self.body.setSpacing(14)
+        if title:
+            heading = QLabel(title)
+            heading.setObjectName("section")
+            self.body.addWidget(heading)
+
+
+class Disclosure(QWidget):
+    """A short optional section, physically collapsed rather than disabled."""
+    def __init__(self, title):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.toggle = QPushButton(title + "  ▸")
+        self.toggle.setObjectName("disclosure")
+        self.toggle.setCheckable(True)
+        self.content = QWidget()
+        self.body = QVBoxLayout(self.content)
+        self.body.setContentsMargins(0, 8, 0, 4)
+        self.body.setSpacing(12)
+        self.toggle.toggled.connect(lambda visible: (self.content.setVisible(visible), self.toggle.setText(title + ("  ▾" if visible else "  ▸"))))
+        layout.addWidget(self.toggle)
+        layout.addWidget(self.content)
+        self.content.hide()
 
 
 def button(text, callback, primary=False):

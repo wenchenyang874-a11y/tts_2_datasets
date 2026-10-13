@@ -14,7 +14,7 @@ def main() -> int:
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--preferences-file", type=Path, help="Override desktop preferences location (for isolated testing)")
     parser.add_argument("--smoke-test", type=Path, help="Run offline native acceptance in a new isolated directory")
-    parser.add_argument("--verify-launch", type=Path, help="Verify normal locked startup/event loop, save evidence and close; requires --data-dir")
+    parser.add_argument("--verify-launch", type=Path, help="Verify normal locked startup/event loop, save evidence and close; requires isolated --data-dir or --preferences-file")
     args = parser.parse_args()
     if args.verify_launch and ((not args.data_dir and not args.preferences_file) or args.verify_launch.exists()):
         parser.error("--verify-launch requires isolated --data-dir or --preferences-file and a new evidence directory")
@@ -59,10 +59,10 @@ def run_application(args, version) -> int:
     # A per-directory lock prevents a second desktop process from changing
     # startup task state under a running first instance. Never remove another
     # process's lock; Qt checks its PID and handles stale process locks.
-    from PySide6.QtCore import QLockFile
-    lock = QLockFile(str(directory / ".desktop.lock"))
-    lock.setStaleLockTime(0)
-    if not lock.tryLock(100):
+    from desktop.session import DirectorySession
+    try:
+        session = DirectorySession.open(directory, preferences)
+    except (ValueError, OSError, RuntimeError):
         if args.verify_launch:
             import json
             args.verify_launch.mkdir(parents=True)
@@ -70,22 +70,16 @@ def run_application(args, version) -> int:
         else:
             QMessageBox.warning(None, "数据目录不可用", "该数据目录已由另一实例使用或无法写入，请关闭原窗口或选择其他目录。")
         return 1
+    runtime = session.runtime
     try:
-        runtime = BusinessRuntime(directory)
-    except (OSError, RuntimeError):
-        lock.unlock()
-        QMessageBox.warning(None, "服务不可用", "无法启动或管理业务进程，请检查系统权限与完整程序包。")
-        return 1
-    try:
-        window = MainWindow(runtime, preferences)
+        window = MainWindow(runtime, preferences, session)
         window.show()
         if args.verify_launch:
             from desktop.launch_check import attach_launch_check
             check_timer = attach_launch_check(application, window, args.verify_launch)
         return application.exec()
     finally:
-        runtime.close()
-        lock.unlock()
+        session.close()
 
 
 if __name__ == "__main__":

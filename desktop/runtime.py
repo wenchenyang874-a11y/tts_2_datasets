@@ -136,6 +136,7 @@ class BusinessRuntime:
         self.data_directory = data_directory.resolve()
         self._lock = threading.Lock()
         self._closed = threading.Event()
+        self._ready_result = None
         context = mp.get_context("spawn")
         self.connection, child = context.Pipe()
         self.process = context.Process(target=backend_main, args=(child, str(self.data_directory)), daemon=True)
@@ -151,7 +152,9 @@ class BusinessRuntime:
 
     def ready(self, timeout: float = 45) -> dict:
         with self._lock:
-            return self._receive(timeout)
+            if self._ready_result is None:
+                self._ready_result = self._receive(timeout)
+            return self._ready_result
 
     def _receive(self, timeout: float) -> Any:
         if not self.connection.poll(timeout):

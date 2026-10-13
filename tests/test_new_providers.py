@@ -112,3 +112,28 @@ def test_public_catalog_queries_both_model_resources(monkeypatch, tmp_path):
     assert voices[0].model == "seed-tts-2.0"
     assert len(builtin_voices("xiaomi")) == 9
     assert any(voice.model == "seed-tts-2.0" for voice in builtin_voices("volcengine"))
+
+
+@pytest.mark.parametrize("base", ["https://openspeech.bytedance.com", "https://openspeech.bytedance.com/", "https://openspeech.bytedance.com/api/v3"])
+def test_doubao2_base_url_expands_to_request_path(base):
+    assert providers._volc_endpoint(base, True) == "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+
+
+def test_all_base_url_forms_expand_without_breaking_full_legacy_urls():
+    assert providers._ali_service_endpoint({"endpoint":"https://dashscope.aliyuncs.com/api/v1"}, "SpeechSynthesizer").endswith("/api/v1/services/audio/tts/SpeechSynthesizer")
+    assert providers._ali_service_endpoint({"endpoint":"https://dashscope.aliyuncs.com/api/v1"}, "customization").endswith("/api/v1/services/audio/tts/customization")
+    assert providers._volc_endpoint("https://openspeech.bytedance.com", False).endswith("/api/v1/tts")
+    assert providers._mimo_endpoint({"endpoint":"https://api.xiaomimimo.com/v1"}).endswith("/v1/chat/completions")
+    full = "https://openspeech.bytedance.com/api/v1/tts"
+    assert providers._volc_endpoint(full, False) == full
+
+
+def test_doubao_configuration_clear_is_independent(tmp_path):
+    store = ProviderSettingsStore(tmp_path / "settings.json")
+    store.update_provider("volcengine", {"app_id":"fixture-app", "access_token":"fixture-v1-token"})
+    store.update_provider("volcengine_v2", {"api_key":"fixture-v2-key"})
+    store.clear_provider("volcengine_v2")
+    store = ProviderSettingsStore(store.path)
+    assert store.get_provider("volcengine_v2") == {}
+    adapter = providers.VolcTTSProvider(settings_store=store)
+    assert adapter.api_key == "" and adapter.token == "fixture-v1-token"

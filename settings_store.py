@@ -29,6 +29,7 @@ MAX_PRICING_RATE_LENGTH = 64
 MAX_PRICING_CURRENCY_LENGTH = 16
 
 PROVIDER_FIELDS: dict[str, frozenset[str]] = {
+    "volcengine_v2": frozenset({"api_key", "v3_endpoint", "access_key_id", "access_key_secret", "catalog_endpoint", *PRICING_FIELDS}),
     "xiaomi": frozenset({"api_key", "endpoint", *PRICING_FIELDS}),
     "aliyun": frozenset(
         {
@@ -49,18 +50,18 @@ PROVIDER_FIELDS: dict[str, frozenset[str]] = {
             "access_key_id",
             "access_key_secret",
             "catalog_endpoint",
-            "api_key",
-            "v3_endpoint",
             *PRICING_FIELDS,
         }
     ),
 }
 SECRET_FIELDS: dict[str, frozenset[str]] = {
+    "volcengine_v2": frozenset({"api_key", "access_key_secret"}),
     "xiaomi": frozenset({"api_key"}),
     "aliyun": frozenset({"api_key"}),
-    "volcengine": frozenset({"access_token", "access_key_secret", "api_key"}),
+    "volcengine": frozenset({"access_token", "access_key_secret"}),
 }
 REQUIRED_FIELDS: dict[str, frozenset[str]] = {
+    "volcengine_v2": frozenset({"api_key"}),
     "xiaomi": frozenset({"api_key"}),
     "aliyun": frozenset({"api_key"}),
     "volcengine": frozenset({"app_id", "access_token"}),
@@ -247,8 +248,7 @@ class ProviderSettingsStore:
             result["v1_configured"] = all(
                 config.get(key) for key in ("app_id", "access_token")
             )
-            result["v2_configured"] = bool(config.get("api_key"))
-            result["synthesis_configured"] = result["v1_configured"] or result["v2_configured"]
+            result["synthesis_configured"] = result["v1_configured"]
             result["configured"] = result["synthesis_configured"]
             result["catalog_configured"] = all(
                 config.get(key) for key in ("access_key_id", "access_key_secret")
@@ -259,6 +259,9 @@ class ProviderSettingsStore:
         elif provider == "xiaomi":
             result["synthesis_configured"] = bool(config.get("api_key"))
             result["catalog_configured"] = True  # Official preset snapshot, not an account permission check.
+        elif provider == "volcengine_v2":
+            result["synthesis_configured"] = bool(config.get("api_key"))
+            result["catalog_configured"] = all(config.get(key) for key in ("access_key_id", "access_key_secret"))
         for field in sorted(PROVIDER_FIELDS[provider]):
             if field in SECRET_FIELDS[provider]:
                 value = config.get(field, "")

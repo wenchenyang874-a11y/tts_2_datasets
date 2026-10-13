@@ -108,18 +108,28 @@ def run_smoke(application, destination: Path) -> int:
         window.activateWindow()
         window.raise_()
         pump_until(lambda: window.isActiveWindow(), 4)
-        QCursor.setPos(window.mapToGlobal(window.rect().topLeft()))
-        application.processEvents()
-        QTest.mouseMove(visible_help, visible_help.rect().center())
-        QCursor.setPos(visible_help.mapToGlobal(visible_help.rect().center()))
-        application.processEvents()
-        assert application.widgetAt(QCursor.pos()) is visible_help, "Actual cursor is not over the owned help control"
-        try:
-            pump_until(lambda: visible_help.popup is not None and visible_help.popup.isVisible(), 4)
-        except AssertionError:
-            result["hover_debug"] = {"active": window.isActiveWindow(), "window": [window.x(),window.y(),window.width(),window.height()], "hovered": visible_help.hovered, "under_mouse": visible_help.underMouse(), "popup_created": visible_help.popup is not None,
-                                     "widget_at_cursor": type(application.widgetAt(QCursor.pos())).__name__, "cursor": [QCursor.pos().x(), QCursor.pos().y()], "target": [visible_help.mapToGlobal(visible_help.rect().center()).x(), visible_help.mapToGlobal(visible_help.rect().center()).y()]}
-            raise
+        # Shared machines may receive unrelated physical pointer movement.
+        # Retry only a short bounded positioning attempt, and require an actual
+        # hit at the moment the popup appears; never inject a Help event.
+        hover_passed = False
+        for attempt in range(4):
+            QCursor.setPos(window.mapToGlobal(window.rect().topLeft()))
+            application.processEvents()
+            QTest.mouseMove(visible_help, visible_help.rect().center())
+            QCursor.setPos(visible_help.mapToGlobal(visible_help.rect().center()))
+            application.processEvents()
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                application.processEvents()
+                if application.widgetAt(QCursor.pos()) is not visible_help:
+                    break
+                if visible_help.popup is not None and visible_help.popup.isVisible():
+                    hover_passed = True
+                    break
+                time.sleep(.02)
+            if hover_passed:
+                break
+        assert hover_passed and application.widgetAt(QCursor.pos()) is visible_help, "Real hover unavailable: pointer moved away or popup did not appear"
         assert visible_help.popup.findChild(QLabel).text() == visible_help.toolTip()
         visible_help.popup.grab().save(str(destination / "hover-help.png"))
         QCursor.setPos(window.mapToGlobal(window.rect().topLeft()))
@@ -133,11 +143,11 @@ def run_smoke(application, destination: Path) -> int:
         settings = window.pages[6]
         settings.findChildren(QTabWidget)[0].setCurrentIndex(2)
         settings.fields["xiaomi"]["api_key"].setText("native-smoke-test-only-key")
-        action(settings, "验证格式")
+        action(settings, "检查配置")
         idle(window)
         assert "格式通过" in window.status.text()
         assert not runtime.call("/api/settings/providers")["providers"][0]["api_key"]["configured"]
-        action(settings, "保存")
+        action(settings, "保存配置")
         idle(window)
         persisted = (destination / "data/provider_settings.json").read_text(encoding="utf-8")
         assert "native-smoke-test-only-key" not in persisted
@@ -145,31 +155,69 @@ def run_smoke(application, destination: Path) -> int:
         assert not settings.fields["xiaomi"]["api_key"].text()
         assert len(runtime.call("/api/voices", params={"provider": "xiaomi"})) == 9
         assert "已获取 9" in settings.state["xiaomi"].text()
-        action(settings, "验证格式")
+        action(settings, "检查配置")
         idle(window)
         assert "格式通过" in window.status.text()
         check("native-provider-form-save-dpapi-secret-not-returned")
         check("unsaved-form-validation-retains-saved-secret-and-auto-catalog")
+        old_directory = runtime.data_directory
+        old_process = runtime.process
         new_directory = destination / "自定义 数据目录"
-        settings.data_directory.setText(str(new_directory))
-        action(settings, "保存目录")
+        new_directory.mkdir()
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        original_picker = QFileDialog.getExistingDirectory
+        QFileDialog.getExistingDirectory = staticmethod(lambda *args: str(new_directory))
+        def choose_empty_mode():
+            dialog = application.activeModalWidget()
+            assert isinstance(dialog, QMessageBox)
+            chosen = next(item for item in dialog.buttons() if item.text() == "使用空目录")
+            QTest.mouseClick(chosen, Qt.MouseButton.LeftButton)
+        try:
+            QTimer.singleShot(250, choose_empty_mode)
+            action(settings, "更换目录")
+        finally:
+            QFileDialog.getExistingDirectory = original_picker
         idle(window)
+        runtime = window.runtime
         assert window.preferences.data_directory() == new_directory.resolve()
-        assert runtime.data_directory != new_directory.resolve()
-        assert not (new_directory / "tts_dataset.sqlite3").exists()
-        check("custom-data-directory-saved-live-dataset-unchanged")
+        assert runtime.data_directory == new_directory.resolve()
+        assert not old_process.is_alive() and window.isVisible()
+        assert (new_directory / "tts_dataset.sqlite3").exists()
+        assert (old_directory / "tts_dataset.sqlite3").exists()
+        assert not any(item.text() == "保存目录" for item in window.findChildren(QPushButton))
+        assert window.pages[6].location.text() == str(new_directory.resolve())
+        check("directory-auto-saved-and-live-switched-without-window-restart")
+        window.pages[6].use_directory(old_directory, "existing")
+        idle(window)
+        runtime = window.runtime
+        assert runtime.call("/api/settings/providers")["providers"]
         window.navigate(0)
         generation = window.pages[0]
-        generation.provider.setCurrentIndex(generation.provider.findData("volcengine"))
-        generation.model.setCurrentIndex(generation.model.findData("seed-tts-2.0"))
+        generation.provider.setCurrentIndex(generation.provider.findData("volcengine_v2"))
         action(generation, "获取音色列表")
         idle(window)
         assert generation.voices.count() >= 2
-        assert all("豆包 2.0" in generation.voices.item(i).text() for i in range(generation.voices.count()))
-        check("visible-catalog-button-and-doubao2-model-filter")
+        assert all(generation.voice_rows[generation.voices.item(i).data(Qt.ItemDataRole.UserRole)]["model"] == "seed-tts-2.0" for i in range(generation.voices.count()))
+        generation.voices.item(0).setCheckState(Qt.CheckState.Checked)
+        generation.billing.setChecked(True)
+        before_count = len(runtime.call("/api/tasks"))
+        action(generation, "开始合成")
+        idle(window)
+        assert "API Key" in generation.problem.text()
+        assert len(runtime.call("/api/tasks")) == before_count
+        action(generation, "去配置")
+        idle(window)
+        assert window.stack.currentIndex() == 6 and window.pages[6].tabs.currentIndex() == 1
+        assert "access_token" not in window.pages[6].fields["volcengine_v2"]
+        assert "api_key" not in window.pages[6].fields["volcengine_v1"]
+        window.grab().save(str(destination / "doubao2-settings.png"))
+        check("separate-doubao-settings-and-missing-v2-key-blocks-before-task-creation")
+        window.navigate(0)
+        idle(window)
         generation.provider.setCurrentIndex(generation.provider.findData("mock"))
         generation.refresh_catalog()
         idle(window)
+        assert not generation.selected
         assert generation.voices.count() >= 2
         generation.voices.item(0).setCheckState(Qt.CheckState.Checked)
         generation.voices.item(1).setCheckState(Qt.CheckState.Checked)
@@ -307,10 +355,40 @@ def run_smoke(application, destination: Path) -> int:
         window.navigate(0)
         idle(window)
         window.grab().save(str(destination / "compact.png"))
+        window.navigate(4)
+        idle(window)
+        window.poll_timer.stop()
+        tasks_page = window.pages[4]
+        failure_fixture = {"id":"owned-failed-display", "type":"generate_batch", "status":"failed", "total":1, "completed":0, "failed":1,
+                           "children":[{"id":"owned-failed-child", "type":"generate", "status":"failed", "total":1, "completed":0, "failed":1,
+                                        "message":"豆包 2.0 未配置 API Key，请打开设置 → 豆包 2.0"}]}
+        tasks_page.show_tasks([failure_fixture])
+        tasks_page.tree.setCurrentItem(tasks_page.tree.topLevelItem(0))
+        application.processEvents()
+        assert "API Key" in tasks_page.detail.text()
+        assert "API Key" in tasks_page.tree.topLevelItem(0).text(5)
+        window.grab().save(str(destination / "task-failure.png"))
+        check("failure-reason-visible-without-json-dialog")
+        window.poll_timer.start()
+        previous_directory = runtime.data_directory
+        moved_directory = destination / "迁移 数据"
+        moved_directory.mkdir()
+        window.pages[6].use_directory(moved_directory, "move")
+        idle(window)
+        runtime = window.runtime
+        assert runtime.data_directory == moved_directory.resolve()
+        assert runtime.call("/api/samples")["total"] == 17
+        assert not (previous_directory / "tts_dataset.sqlite3").exists()
+        assert not (previous_directory / "samples").exists()
+        assert window.preferences.data_directory() == moved_directory.resolve()
+        check("live-move-preserves-samples-and-removes-old-data-not-a-copy")
+        window.navigate(6)
+        idle(window)
+        window.grab().save(str(destination / "settings-after-move.png"))
         window.close()
         pump_until(lambda: not runtime.process.is_alive())
         check("native-close-no-business-child-left")
-        imported = copy_dataset(destination / "data", destination / "导入 数据")
+        imported = copy_dataset(runtime.data_directory, destination / "导入 数据")
         runtime2, window2 = start(imported)
         assert runtime2.call("/api/samples")["total"] == 17
         assert runtime2.call("/api/exports")

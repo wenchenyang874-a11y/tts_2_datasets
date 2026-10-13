@@ -552,7 +552,13 @@ def _ali_service_endpoint(config: Mapping[str, Any], service: str) -> str:
         config.get("endpoint" if service == "SpeechSynthesizer" else "customization_endpoint", "")
     ).strip()
     if explicit:
-        return explicit
+        base = explicit.rstrip("/")
+        path = urlparse(base).path
+        if path in ("", "/api/v1"):
+            # A Base URL is not a request endpoint. The former early return
+            # sent synthesis to the host root when users entered a base URL.
+            return base + ("/api/v1" if not path else "") + f"/services/audio/tts/{service}"
+        return base  # Explicit full request paths are also accepted.
 
     # An override for one service can also act as a model-studio base from which
     # the sibling service URL is derived. This keeps the UI compact while still
@@ -838,6 +844,15 @@ class XiaomiTTSProvider(BaseTTSProvider):
         return _decode_base64_audio(audio.get("data") if isinstance(audio, dict) else None, "小米 MiMo")
 
 
+def _volc_endpoint(value: str, v2: bool) -> str:
+    route = "/api/v3/tts/unidirectional" if v2 else "/api/v1/tts"
+    base = _validate_vendor_endpoint(value.strip().rstrip("/") or "https://openspeech.bytedance.com", "豆包 Base URL", ("openspeech.bytedance.com",))
+    path = urlparse(base).path
+    if path in ("", "/api", "/api/v3" if v2 else "/api/v1"):
+        return base[:-len(path)] + route if path else base + route
+    return base  # Explicit full request paths are also accepted.
+
+
 class VolcTTSProvider(BaseTTSProvider):
     """Volcengine OpenSpeech JSON TTS adapter."""
 
@@ -854,6 +869,15 @@ class VolcTTSProvider(BaseTTSProvider):
             if config is not None
             else (settings_store or get_default_settings_store()).get_provider("volcengine")
         )
+        if config is None:
+            store = settings_store or get_default_settings_store()
+            v2 = store.get_provider("volcengine_v2")
+            # Each model uses its own credential store. The adapter combines
+            # only the fields needed to route an explicitly selected model.
+            for key in ("api_key", "v3_endpoint"):
+                self.config.pop(key, None)
+                if v2.get(key):
+                    self.config[key] = v2[key]
         self.app_id = str(self.config.get("app_id", "")).strip()
         configured_token = str(self.config.get("access_token", "")).strip()
         self.token = re.sub(r"^Bearer;?\s*", "", configured_token, flags=re.I)
@@ -866,9 +890,7 @@ class VolcTTSProvider(BaseTTSProvider):
         base = str(self.config.get("endpoint", "")).strip()
         if not base:
             base = "https://openspeech.bytedance.com/api/v1/tts"
-        self.endpoint = _validate_vendor_endpoint(
-            base, "火山引擎", ("openspeech.bytedance.com",)
-        )
+        self.endpoint = _volc_endpoint(base, False)
 
     def synthesize(
         self,
@@ -946,7 +968,7 @@ class VolcTTSProvider(BaseTTSProvider):
             raise ProviderConfigurationError("豆包语音 2.0 需要控制台 API Key，请在设置中填写 2.0 API Key")
         if audio_format == "ogg_opus":
             raise ProviderRequestError("豆包 2.0 Ogg Opus 需要 48000 Hz；当前兼容参数请使用 WAV 或 MP3")
-        endpoint = _validate_vendor_endpoint(str(self.config.get("v3_endpoint") or "https://openspeech.bytedance.com/api/v3/tts/unidirectional"), "豆包语音 2.0", ("openspeech.bytedance.com",))
+        endpoint = _volc_endpoint(str(self.config.get("v3_endpoint") or ""), True)
         params = {"text": text, "speaker": voice, "audio_params": {"format": audio_format, "sample_rate": sample_rate,
                   "speech_rate": round((speed - 1) * 100), "loudness_rate": round((max(.5, min(2., volume / 50.)) - 1) * 100)}}
         if instruction.strip():
@@ -1203,6 +1225,12 @@ def validate_provider_configuration(
     """Validate stored configuration without making a billable cloud request."""
 
     normalized = name.strip().lower().replace("-", "_")
+    if normalized == "volcengine_v2":
+        _volc_endpoint(str(config.get("v3_endpoint") or ""), True)
+        if require_credentials and not config.get("api_key"):
+            raise ProviderConfigurationError("豆包 2.0 未配置 API Key，请打开设置 → 豆包 2.0")
+        validate_provider_configuration("volcengine", {key: value for key, value in config.items() if key not in {"app_id", "access_token"}}, require_credentials=False)
+        return
     if normalized in {"xiaomi", "mimo"}:
         _mimo_endpoint(config)
         if require_credentials or config.get("api_key"):

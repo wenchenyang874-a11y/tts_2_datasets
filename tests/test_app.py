@@ -1595,3 +1595,31 @@ def test_materialize_unexpected_error_finishes_task(
     assert client.get("/api/samples", params={
         "keyword_id": "materialize_failure_keyword",
     }).json()["total"] == 0
+
+
+def test_doubao_versions_have_independent_credentials_and_preflight(client):
+    client.delete("/api/settings/providers/volcengine")
+    client.delete("/api/settings/providers/volcengine_v2")
+    assert client.put("/api/settings/providers/volcengine", json={"app_id":"fixture-app", "access_token":"fixture-token"}).status_code == 200
+    v1 = client.get("/api/voices", params={"provider":"volcengine_v1"}).json()[0]
+    v2 = client.get("/api/voices", params={"provider":"volcengine_v2"}).json()[0]
+    before = app_module.db.one("SELECT COUNT(*) AS n FROM tasks")["n"]
+    assert client.post("/api/generation/preflight", json={"voice_ids":[v1["id"]]}).status_code == 200
+    missing = client.post("/api/tasks/generate-batch", json={"texts":["测试"],"voice_ids":[v2["id"]],"cost_acknowledged":True})
+    assert missing.status_code == 400 and "豆包 2.0" in missing.json()["detail"]
+    assert app_module.db.one("SELECT COUNT(*) AS n FROM tasks")["n"] == before
+    assert client.put("/api/settings/providers/volcengine_v2", json={"api_key":"fixture-v2-key"}).status_code == 200
+    assert client.post("/api/generation/preflight", json={"voice_ids":[v2["id"]]}).status_code == 200
+    client.delete("/api/settings/providers/volcengine")
+    assert client.post("/api/generation/preflight", json={"voice_ids":[v2["id"]]}).status_code == 200
+    assert client.post("/api/generation/preflight", json={"voice_ids":[v1["id"]]}).status_code == 400
+    client.delete("/api/settings/providers/volcengine_v2")
+
+
+def test_scoped_catalog_refresh_does_not_disable_other_doubao_version(client):
+    rows = client.get("/api/voices", params={"provider":"volcengine_v1"}).json()
+    assert rows and all(row["model"] != "seed-tts-2.0" for row in rows)
+    result = client.post("/api/voices/refresh", json={"provider":"volcengine_v2"})
+    assert result.status_code == 200 and result.json()["count"] >= 2
+    after = client.get("/api/voices", params={"provider":"volcengine_v1"}).json()
+    assert {row["id"] for row in rows} == {row["id"] for row in after}

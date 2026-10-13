@@ -3,9 +3,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QHBoxLayout, QVBoxLayout, QPlainTextEdit, QLineEdit,
                                QListWidget, QListWidgetItem, QGroupBox, QCheckBox, QLabel, QWidget)
 from .base import Page
-from .widgets import field, combo, spin, button, HelpButton
+from .widgets import field, combo, spin, button, HelpButton, Card, Disclosure
+from .services import SERVICES, audio_provider
 
-PROVIDERS = [("豆包语音 · 火山引擎", "volcengine"), ("阿里云", "aliyun"), ("小米 MiMo", "xiaomi"), ("离线验证 · Mock", "mock")]
+PROVIDERS = SERVICES
 TARGETS = [("正样本", "positive"), ("负样本", "negative"), ("背景样本", "background")]
 AGES = [("青年", "young"), ("中年", "middle"), ("儿童", "child"), ("老年", "senior"), ("未知", "unknown")]
 
@@ -13,123 +14,145 @@ AGES = [("青年", "young"), ("中年", "middle"), ("儿童", "child"), ("老年
 class GeneratePage(Page):
     def __init__(self, shell):
         super().__init__(shell, "合成创作")
-        self.selected = set()
-        self.voice_rows = {}
-        self.capabilities = {}
-        self.audio_options = {}
+        self.selected, self.voice_rows, self.capabilities, self.audio_options = set(), {}, {}, {}
         self.project = {}
         self.submitting = False
-        self.display_text = QLineEdit("你好，小助手")
-        project_row = QHBoxLayout()
-        project_row.addWidget(field("唤醒词", self.display_text, "保存后统一生成目标标签；修改不会重写已有样本。"), 1)
-        project_row.addWidget(button("保存唤醒词", self.save_project), 0, Qt.AlignmentFlag.AlignBottom)
-        self.layout.addLayout(project_row)
-        body = QHBoxLayout()
-        left = QVBoxLayout()
-        self.texts = QPlainTextEdit("你好，小助手")
-        self.texts.setPlaceholderText("每行一条文本")
-        self.texts.setMinimumHeight(165)
-        left.addWidget(field("合成文本", self.texts, "每行创建一个子任务。Mock 只生成测试音调，不是真实人声。"))
-        row = QHBoxLayout()
-        self.kind = combo(TARGETS)
-        self.count = spin(1, 1000, 1)
-        self.concurrency = spin(1, 16, 3)
-        for label, widget, help_text in [("样本目标", self.kind, "负样本仍属于当前唤醒词，训练目标为 0。"),
-                                          ("每音色份数", self.count, "每条文本 × 音色 × 份数形成合成调用。"),
-                                          ("并发", self.concurrency, "实际并发同时受全局线程池与供应商能力限制。")]:
-            row.addWidget(field(label, widget, help_text))
-        left.addLayout(row)
-        body.addLayout(left, 3)
-        right = QVBoxLayout()
-        filters = QHBoxLayout()
-        self.provider = combo(PROVIDERS)
-        self.gender = combo([("全部性别", ""), ("女", "female"), ("男", "male")])
-        self.model = combo([("全部模型", ""), ("豆包语音 1.0", "v1"), ("豆包语音 2.0", "seed-tts-2.0")])
-        self.model.currentIndexChanged.connect(self.refresh_voices)
-        self.model.currentIndexChanged.connect(self.update_capabilities)
-        self.age = combo([("全部年龄", "")] + AGES)
-        for widget in [self.provider, self.gender, self.age]:
-            filters.addWidget(widget)
-            widget.currentIndexChanged.connect(self.refresh_voices)
-        self.provider.currentIndexChanged.connect(self.update_capabilities)
-        right.addLayout(filters)
-        catalog_row = QHBoxLayout()
-        catalog_row.addWidget(self.model)
-        self.catalog_button = button("获取音色列表", self.refresh_catalog, True)
-        catalog_row.addWidget(self.catalog_button)
-        catalog_row.addWidget(HelpButton("小米加载官方预置音色快照。豆包远程目录查询使用独立 AK/SK；合成 API Key 不等于目录密钥。显示音色不代表账号已开通对应资源。"))
-        right.addLayout(catalog_row)
-        self.voices = QListWidget()
-        self.voices.itemChanged.connect(self.voice_changed)
-        right.addWidget(self.voices)
-        self.selection_count = QLabel("已选 0 个音色")
-        right.addWidget(self.selection_count)
-        voice_actions = QHBoxLayout()
-        voice_actions.addWidget(button("清空选择", self.clear_voices))
-        right.addLayout(voice_actions)
-        body.addLayout(right, 4)
-        self.layout.addLayout(body)
-        parameters = QGroupBox("合成参数")
-        p = QVBoxLayout(parameters)
-        controls = QHBoxLayout()
-        self.speed = spin(.5, 2, 1, True)
-        self.pitch = spin(.5, 2, 1, True)
-        self.volume = spin(0, 100, 50)
-        self.seed = spin(0, 2**31-1, 20260804)
-        for label, widget, tip in [("语速", self.speed, "供应商不支持的参数由业务层拒绝，不静默发送。"),
-                                   ("音高", self.pitch, "接口支持情况依供应商和模型而定。"),
-                                   ("音量", self.volume, "供应商 0–100 相对控制量，不是声学 dB。"),
-                                   ("随机种子", self.seed, "用于确定性参数与可复现增强。")]:
-            controls.addWidget(field(label, widget, tip))
-        p.addLayout(controls)
-        self.advanced = QWidget()
-        advanced = QVBoxLayout(self.advanced)
-        advanced.setContentsMargins(0, 0, 0, 0)
-        randoms = QVBoxLayout()
-        self.random_fields = {}
-        for name, label, minimum, maximum, low, high in [
-            ("speed", "随机语速", .5, 2, .8, 1.2),
-            ("pitch", "随机音高", .5, 2, .9, 1.1),
-            ("volume", "随机音量", 0, 100, 40, 60)]:
-            enable = QCheckBox(label)
-            start = spin(minimum, maximum, low, name != "volume")
-            end = spin(minimum, maximum, high, name != "volume")
-            group = QHBoxLayout()
-            group.addWidget(enable)
-            group.addWidget(start)
-            group.addWidget(QLabel("—"))
-            group.addWidget(end)
-            randoms.addLayout(group)
-            self.random_fields[name] = enable, start, end
-        advanced.addLayout(randoms)
-        self.instruction = QLineEdit()
-        advanced.addWidget(field("风格指令", self.instruction, "仅发送给支持该能力的接口，留空使用音色默认风格。"))
-        audio_row = QHBoxLayout()
-        self.audio_format = combo([])
-        self.sample_rate = combo([])
-        self.audio_format.currentIndexChanged.connect(self.store_audio_options)
-        self.sample_rate.currentIndexChanged.connect(self.store_audio_options)
-        audio_row.addWidget(field("请求格式", self.audio_format, "向供应商请求的格式；入库仍统一 PCM16 WAV。只显示该供应商支持的选项。"))
-        audio_row.addWidget(field("请求采样率", self.sample_rate, "请求采样率与训练音频不同；入库和导出统一为 16 kHz mono。"))
-        advanced.addLayout(audio_row)
-        p.addWidget(button("高级参数", lambda: self.advanced.setVisible(not self.advanced.isVisible())))
-        p.addWidget(self.advanced)
-        self.advanced.hide()
-        self.layout.addWidget(parameters)
-        self.billing = QCheckBox("我已了解云调用费用由凭据所属账号承担")
-        self.layout.addWidget(self.billing)
-        # Keep the primary action in the heading: at 150% DPI Windows can
-        # constrain the window to a shorter logical height. A bottom-only
-        # action otherwise disappears below the first visible form viewport.
         title = self.layout.takeAt(0).widget()
         heading = QHBoxLayout()
         heading.addWidget(title)
         heading.addStretch()
-        heading.addWidget(button("查看任务", lambda: shell.navigate(4)))
+        heading.addWidget(button("任务中心", lambda: shell.navigate(4)))
         self.start_button = button("开始合成", self.generate, True)
         heading.addWidget(self.start_button)
-        self.layout.insertLayout(0, heading)
+        self.layout.addLayout(heading)
+        project_row = QHBoxLayout()
+        self.display_text = QLineEdit("你好，小助手")
+        project_row.addWidget(field("项目唤醒词", self.display_text, "保存后统一标签；已有样本不重写。"), 1)
+        project_row.addWidget(button("保存唤醒词", self.save_project), 0, Qt.AlignmentFlag.AlignBottom)
+        self.layout.addLayout(project_row)
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        text_card, voice_card = Card("01  合成文本"), Card("02  选择音色")
+        self.texts = QPlainTextEdit("你好，小助手")
+        self.texts.setPlaceholderText("每行一条文本")
+        self.texts.setMinimumHeight(220)
+        self.texts.textChanged.connect(self.update_summary)
+        text_card.body.addWidget(self.texts, 1)
+        row = QHBoxLayout()
+        self.kind = combo(TARGETS)
+        self.count = spin(1, 1000, 1)
+        self.concurrency = spin(1, 16, 3)
+        self.count.valueChanged.connect(self.update_summary)
+        for label, widget, tip in [("样本类型", self.kind, "负样本的训练目标为 0。"), ("份数", self.count, "每条文本 × 每个音色的合成份数。"), ("并发", self.concurrency, "同时执行的文本任务数量，仍受业务线程池限制。")]:
+            row.addWidget(field(label, widget, tip))
+        text_card.body.addLayout(row)
+        self.provider = combo(PROVIDERS)
+        self.provider.setMinimumHeight(40)
+        voice_card.body.addWidget(self.provider)
+        filters = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("搜索音色")
+        self.gender = combo([("全部性别", ""), ("女", "female"), ("男", "male")])
+        self.age = combo([("全部年龄", "")] + AGES)
+        for widget in [self.search, self.gender, self.age]:
+            filters.addWidget(widget)
+        voice_card.body.addLayout(filters)
+        self.provider.currentIndexChanged.connect(self.provider_changed)
+        self.gender.currentIndexChanged.connect(self.refresh_voices)
+        self.age.currentIndexChanged.connect(self.refresh_voices)
+        self.search.textChanged.connect(self.refresh_voices)
+        self.voices = QListWidget()
+        self.voices.setMinimumHeight(210)
+        self.voices.itemChanged.connect(self.voice_changed)
+        voice_card.body.addWidget(self.voices, 1)
+        voice_actions = QHBoxLayout()
+        self.catalog_button = button("获取音色列表", self.refresh_catalog, True)
+        voice_actions.addWidget(self.catalog_button)
+        voice_actions.addWidget(HelpButton("预置列表不代表账号权限。远程目录查询使用可选 AK/SK；合成前会检查所选服务的凭据。"))
+        voice_actions.addStretch()
+        voice_actions.addWidget(button("全选", self.select_all))
+        voice_actions.addWidget(button("清空", self.clear_voices))
+        voice_card.body.addLayout(voice_actions)
+        body.addWidget(text_card, 1)
+        body.addWidget(voice_card, 1)
+        self.layout.addLayout(body)
+        self.selection_count = QLabel("0 条文本 · 0 个音色 · 0 次合成")
+        self.selection_count.setObjectName("batchSummary")
+        self.layout.addWidget(self.selection_count)
+        parameters = Disclosure("合成参数")
+        controls = QHBoxLayout()
+        self.speed, self.pitch, self.volume = spin(.5, 2, 1, True), spin(.5, 2, 1, True), spin(0, 100, 50)
+        for label, widget in [("语速", self.speed), ("音高", self.pitch), ("音量", self.volume)]:
+            controls.addWidget(field(label, widget, "只允许当前服务支持的参数。"))
+        parameters.body.addLayout(controls)
+        self.advanced = parameters.content
+        randoms = Disclosure("随机变化与音频格式")
+        self.random_fields = {}
+        for name, label, minimum, maximum, low, high in [("speed", "随机语速", .5, 2, .8, 1.2), ("pitch", "随机音高", .5, 2, .9, 1.1), ("volume", "随机音量", 0, 100, 40, 60)]:
+            enable = QCheckBox(label)
+            start, end = spin(minimum, maximum, low, name != "volume"), spin(minimum, maximum, high, name != "volume")
+            start.setEnabled(False)
+            end.setEnabled(False)
+            enable.toggled.connect(start.setEnabled)
+            enable.toggled.connect(end.setEnabled)
+            group = QHBoxLayout()
+            for widget in [enable, start, QLabel("—"), end]:
+                group.addWidget(widget)
+            randoms.body.addLayout(group)
+            self.random_fields[name] = enable, start, end
+        self.seed = spin(0, 2**31-1, 20260804)
+        randoms.body.addWidget(field("随机种子", self.seed, "用于确定性参数与可复现增强。"))
+        audio_row = QHBoxLayout()
+        self.audio_format, self.sample_rate = combo([]), combo([])
+        self.audio_format.currentIndexChanged.connect(self.store_audio_options)
+        self.sample_rate.currentIndexChanged.connect(self.store_audio_options)
+        audio_row.addWidget(field("请求格式", self.audio_format, "入库统一为 PCM16 WAV。"))
+        audio_row.addWidget(field("请求采样率", self.sample_rate, "入库与导出统一为 16 kHz mono。"))
+        randoms.body.addLayout(audio_row)
+        parameters.body.addWidget(randoms)
+        self.instruction = QLineEdit()
+        self.instruction.setPlaceholderText("例如：轻快、自然")
+        parameters.body.addWidget(field("风格指令", self.instruction, "仅供支持风格指令的服务使用。"))
+        self.layout.addWidget(parameters)
+        self.billing = QCheckBox("我已了解云合成费用由当前账号承担")
+        self.layout.addWidget(self.billing)
+        issue = QHBoxLayout()
+        self.problem = QLabel()
+        self.problem.setWordWrap(True)
+        self.problem.setTextFormat(Qt.TextFormat.PlainText)
+        self.problem.setObjectName("errorBanner")
+        self.configure_button = button("去配置", self.open_settings)
+        self.configure_button.hide()
+        issue.addWidget(self.problem, 1)
+        issue.addWidget(self.configure_button)
+        self.layout.addLayout(issue)
         self.layout.addStretch()
+
+    def update_summary(self):
+        if not hasattr(self, "selection_count"):
+            return
+        texts = len([line for line in self.texts.toPlainText().splitlines() if line.strip()])
+        voices = len(self.selected)
+        self.selection_count.setText(f"{texts} 条文本 · {voices} 个音色 · {texts * voices * self.count.value()} 次合成")
+
+    def provider_changed(self):
+        # Selections never cross service boundaries invisibly. beta.2 could
+        # retain a hidden V2 voice when the user switched back to V1.
+        self.selected.clear()
+        self.voice_rows.clear()
+        self.problem.clear()
+        self.configure_button.hide()
+        self.update_summary()
+        self.update_capabilities()
+        self.refresh_voices()
+
+    def select_all(self):
+        for index in range(self.voices.count()):
+            self.voices.item(index).setCheckState(Qt.CheckState.Checked)
+
+    def open_settings(self):
+        self.shell.navigate(6)
+        self.shell.pages[6].select_service(self.provider.currentData())
 
     def voice_changed(self, item):
         identifier = item.data(Qt.ItemDataRole.UserRole)
@@ -137,12 +160,12 @@ class GeneratePage(Page):
             self.selected.add(identifier)
         else:
             self.selected.discard(identifier)
-        self.selection_count.setText(f"已选 {len(self.selected)} 个音色")
+        self.update_summary()
         self.update_capabilities()
 
     def clear_voices(self):
         self.selected.clear()
-        self.selection_count.setText("已选 0 个音色")
+        self.update_summary()
         self.refresh_voices()
 
     def refresh(self):
@@ -158,14 +181,14 @@ class GeneratePage(Page):
         if not hasattr(self, "audio_format"):
             return
         provider = self.provider.currentData()
-        capability = self.capabilities.get(provider, {})
+        capability = self.capabilities.get(audio_provider(provider), {})
         saved = self.audio_options.get(provider, {})
         self.audio_format.blockSignals(True)
         self.sample_rate.blockSignals(True)
         self.audio_format.clear()
         self.sample_rate.clear()
         formats = capability.get("audio_formats", [])
-        if provider == "volcengine" and (self.model.currentData() == "seed-tts-2.0" or any(self.voice_rows[v].get("model") == "seed-tts-2.0" for v in self.selected)):
+        if provider == "volcengine_v2":
             formats = [value for value in formats if value != "ogg_opus"]
         for format in formats:
             self.audio_format.addItem(format.upper(), format)
@@ -176,7 +199,7 @@ class GeneratePage(Page):
         self.audio_format.blockSignals(False)
         self.sample_rate.blockSignals(False)
         self.store_audio_options()
-        providers = {self.voice_rows[v]["provider"] for v in self.selected} or {provider}
+        providers = {audio_provider(provider)}
         for name, control, default in (("pitch", self.pitch, 1), ("speed", self.speed, 1), ("volume", self.volume, 50)):
             supported = all(self.capabilities.get(item, {}).get(name, True) for item in providers)
             control.setEnabled(supported)
@@ -184,7 +207,10 @@ class GeneratePage(Page):
             if not supported:
                 control.setValue(default)
                 self.random_fields[name][0].setChecked(False)
-        self.model.setVisible(provider == "volcengine")
+        self.billing.setVisible(provider != "mock")
+        self.instruction.setEnabled(provider != "volcengine_v1")
+        if provider == "volcengine_v1":
+            self.instruction.clear()
 
     def store_audio_options(self):
         if self.audio_format.currentData() and self.sample_rate.currentData():
@@ -206,27 +232,27 @@ class GeneratePage(Page):
                      callback=lambda result: (self.set_project(result), self.notify("唤醒词已保存")))
 
     def refresh_voices(self):
-        snapshot = (self.provider.currentData(), self.gender.currentData(), self.age.currentData(), self.model.currentData())
-        self.request("/api/voices", params={"provider": self.provider.currentData(),
-                     "gender": self.gender.currentData(), "age_group": self.age.currentData()},
-                     callback=lambda rows: self.show_voices(rows) if snapshot == (self.provider.currentData(), self.gender.currentData(), self.age.currentData(), self.model.currentData()) else None)
+        snapshot = (self.provider.currentData(), self.gender.currentData(), self.age.currentData(), self.search.text())
+        self.request("/api/voices", params={"provider": self.provider.currentData(), "gender": self.gender.currentData(), "age_group": self.age.currentData()},
+                     callback=lambda rows: self.show_voices(rows) if snapshot == (self.provider.currentData(), self.gender.currentData(), self.age.currentData(), self.search.text()) else None)
 
     def show_voices(self, rows):
-        if self.provider.currentData() == "volcengine" and self.model.currentData():
-            selected_model = self.model.currentData()
-            rows = [row for row in rows if (row["model"] == "seed-tts-2.0") == (selected_model == "seed-tts-2.0")]
         self.voices.blockSignals(True)
         self.voices.clear()
+        query = self.search.text().strip().casefold()
         for row in rows:
             self.voice_rows[row["id"]] = row
-            model = "豆包 2.0" if row.get("model") == "seed-tts-2.0" else ("豆包 1.0" if row["provider"] == "volcengine" else row.get("model", ""))
-            item = QListWidgetItem(f"{row['name']}  ·  {model}")
+            if query and query not in (row["name"] + " " + row["voice_id"]).casefold():
+                continue
+            gender = {"female": "女", "male": "男", "unknown": ""}.get(row.get("gender"), "")
+            item = QListWidgetItem(row['name'] + ("  ·  " + gender if gender else ""))
             item.setData(Qt.ItemDataRole.UserRole, row["id"])
-            item.setToolTip(f"{row['voice_id']}\n{row.get('gender', '')} · {row.get('age_group', '')}")
+            item.setToolTip(f"{row['voice_id']}\n{row.get('model', '')}")
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked if row["id"] in self.selected else Qt.CheckState.Unchecked)
             self.voices.addItem(item)
         self.voices.blockSignals(False)
+        self.update_summary()
 
     def refresh_catalog(self):
         self.catalog_button.setEnabled(False)
@@ -244,34 +270,44 @@ class GeneratePage(Page):
                   "instruction": self.instruction.text(), "cost_acknowledged": self.billing.isChecked()}
         for name, (enable, start, end) in self.random_fields.items():
             result.update({"random_" + name: enable.isChecked(), name + "_min": start.value(), name + "_max": end.value()})
-        providers = {self.voice_rows[v]["provider"] for v in self.selected}
-        result["provider_audio"] = {name: value for name, value in self.audio_options.items() if name in providers}
+        service = self.provider.currentData()
+        result["provider_audio"] = {audio_provider(service): self.audio_options[service]} if service in self.audio_options else {}
         return result
 
     def generate(self):
         if self.submitting:
             return
         if not self.selected:
-            self.shell.error("请选择音色")
+            self.creation_failed("请选择音色")
             return
-        cloud = any(self.voice_rows[v]["provider"] != "mock" for v in self.selected)
+        if not self.texts.toPlainText().strip():
+            self.creation_failed("请输入至少一条合成文本")
+            return
+        cloud = self.provider.currentData() != "mock"
         if cloud and not self.billing.isChecked():
-            self.shell.error("云合成前请确认费用责任")
-            return
-        calls = len([t for t in self.texts.toPlainText().splitlines() if t.strip()]) * len(self.selected) * self.count.value()
-        if cloud and not self.confirm(f"即将发起最多 {calls} 次云合成调用。最终费用以厂商账单为准，是否继续？"):
+            self.creation_failed("请确认云合成费用")
             return
         try:
             payload = self.payload()
         except (ValueError, KeyError):
-            self.shell.error("请检查合成参数或等待项目初始化")
+            self.creation_failed("请检查参数或等待项目初始化")
             return
-        # Disable creation until the acknowledgement returns. A double click
-        # must not silently create a second potentially billable batch.
+        self.problem.clear()
+        self.configure_button.hide()
         self.submitting = True
         self.start_button.setEnabled(False)
-        self.request("/api/tasks/generate-batch", "POST", json=payload,
-                     callback=self.created, error=self.creation_failed)
+        self.request("/api/generation/preflight", "POST", json={"voice_ids": payload["voice_ids"]},
+                     callback=lambda result: self.preflight_ready(payload, cloud), error=self.creation_failed)
+
+    def preflight_ready(self, payload, cloud):
+        calls = len([t for t in payload["texts"] if t.strip()]) * len(payload["voice_ids"]) * payload["count"]
+        if cloud and not self.confirm(f"即将发起最多 {calls} 次云合成调用。最终费用以厂商账单为准，是否继续？"):
+            self.submitting = False
+            self.start_button.setEnabled(True)
+            return
+        # Snapshot the form before preflight. Editing while a response is in
+        # flight must not silently change the billable batch being confirmed.
+        self.request("/api/tasks/generate-batch", "POST", json=payload, callback=self.created, error=self.creation_failed)
 
     def created(self, result):
         self.submitting = False
@@ -282,4 +318,6 @@ class GeneratePage(Page):
     def creation_failed(self, error):
         self.submitting = False
         self.start_button.setEnabled(True)
-        self.shell.error(error)
+        self.problem.setText(str(error))
+        self.configure_button.setVisible("配置" in str(error) or "API Key" in str(error))
+        self.shell.set_status(str(error), True)

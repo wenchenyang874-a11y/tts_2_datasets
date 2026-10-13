@@ -1,6 +1,6 @@
 # 项目文档
 
-Windows 原生桌面版本已在开发分支实现并完成 Windows 11 离线验证，Windows 10 尚待实测；main 保持 Web 基线。桌面安装包与便携包已发布为 [v2.0.0-beta.1](https://github.com/wenchenyang874-a11y/tts_2_datasets/releases/tag/v2.0.0-beta.1) 预发布版。人类读者先看产品需求与桌面使用，开发与接手人员再看架构、状态和验证要求。
+Windows 原生桌面版本在开发分支实现，Windows 10 尚待实测，main 保留 Web 基线。[2.0.0-beta.3](releases/v2.0.0-beta.3.md) 为本地待用户验收版本，未打 Tag、未发布；先交付安装包，收到用户验证通过和明确发布通知后再发布。使用者先看产品规范与桌面使用，维护人员再看架构、状态和验证要求。
 
 | 分类 | 入口 |
 | --- | --- |
