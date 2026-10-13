@@ -172,3 +172,9 @@ Windows 11 x64 / 10.0.26200。源码 `artifacts/beta5-source-final-150-3/result.
 普通缩放 `artifacts/beta5-rowpaint-source-100/result.json` 同样 ok=true、27 项流程通过；200 项离线测试通过，1 条既有 Starlette 提示。前一份 1cc84c9 产物完整核验后归档到 `dist/releases/archive/2.0.0-beta.5/1cc84c91e5b6/`；仍保持 beta.5，安装与发布需绑定新构建。
 
 最新构建源 `d85428b463a9740ff479b68147137f2762aa6c1b`，manifest SHA-256 `dc6237fc979ee7db8bb3064cbc039b7982695dca18074f8608fecee8a342a3c6`。三项资产完整字节数和哈希核对一致，生产安装器／隔离副本／程序 PE 版本均 2.0.0.5。冻结完整流程在实际悬停入口失败；系统前台与鼠标所在进程均为 LockApp，明确记录锁屏遮挡而非推断已验收。两个失败目录保持 ok=false，等待用户解锁后继续，不改测试跳过真实悬停、不提前声明新安装验收通过。
+
+用户解锁后，`artifacts/beta5-rowpaint-unlocked-150/result.json` 为 ok=true，现有冻结程序 27 项原生流程通过。`sample-first-paint.json` 六种入口全部在第一次 QPaintEvent 覆盖六列，相邻行不重绘；QScreen 实际窗口截图已核对，真实鼠标悬停、整行点击、双击播放和长文本显示通过。未改运行代码、未重建安装包，三项资产字节数和 SHA-256 再次匹配原清单，安装验收继续执行。
+
+首次隔离安装 `artifacts/installer-beta5-rowpaint-unlocked/result.json` 为 ok=false：已通过首帧与相关样本交互，后续迁移将测试 data/samples 原子移入本轮 retired 目录时遭遇 WinError 5。原数据回滚保留 17 条样本；退出后在同一个已确认的测试目录中重命名 samples 成功并恢复，拒绝访问的占用来源未确定。没有删除或操作用户真实数据，该失败证据保持原状。
+
+新测试目录的 `artifacts/installer-beta5-rowpaint-unlocked-final/result.json` 为 ok=true，9 项隔离安装检查与安装后 27 项原生流程通过，包含实际迁移及清理旧数据、普通／偏好目录冷启动、运行保护、同版本修复、两个降级边界和卸载保留数据。安装后的 `sample-first-paint.json` 六种入口首帧均覆盖六列，相邻行不重绘，实际窗口截图已核对。未修改运行代码／测试／安装包，源 d85428b 与原清单一致。测试身份已卸载，生产安装 beta.5 路径／版本保留；Win10、真实云、真实麦克风仍待实测，没有 Tag、推送或 Release。
