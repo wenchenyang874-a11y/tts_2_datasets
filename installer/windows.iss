@@ -75,6 +75,20 @@ begin
   end;
 end;
 
+function CompareUnsignedVersion(First, Second: Int64): Integer;
+begin
+  // A packed Windows version uses four UNSIGNED 16-bit components, but Inno
+  // 6.7.3 ComparePackedVersion compares signed Int64. A major >= 32768 sets
+  // the sign bit and otherwise looks older than 2.x. Preserve the full PE
+  // range by comparing sign groups first, then the remaining packed order.
+  if (First < 0) and (Second >= 0) then
+    Result := 1
+  else if (First >= 0) and (Second < 0) then
+    Result := -1
+  else
+    Result := ComparePackedVersion(First, Second);
+end;
+
 function InitializeSetup(): Boolean;
 var
   PreviousVersion: String;
@@ -84,10 +98,17 @@ begin
   // Compare numeric resources, not lexicographic beta strings. A downgrade
   // could open data written by a newer app; require explicit manual removal.
   if RegQueryStringValue(HKCU64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppId}_is1', 'TDSNumericVersion', PreviousVersion) then
-    if StrToVersion(PreviousVersion, PreviousPacked) and StrToVersion('{#NumericVersion}', CurrentPacked) then
-    if ComparePackedVersion(PreviousPacked, CurrentPacked) > 0 then
+  begin
+    Log('Previous installed numeric version: ' + PreviousVersion);
+    if not StrToVersion(PreviousVersion, PreviousPacked) then
+      RaiseException('Invalid installed version information.');
+    if not StrToVersion('{#NumericVersion}', CurrentPacked) then
+      RaiseException('Invalid installer version information.');
+    Log('Version comparison: ' + IntToStr(CompareUnsignedVersion(PreviousPacked, CurrentPacked)));
+    if CompareUnsignedVersion(PreviousPacked, CurrentPacked) > 0 then
     begin
       SuppressibleMsgBox('A newer version is installed. Uninstall it first to install this older version. Your datasets will be preserved.', mbError, MB_OK, IDOK);
       Result := False;
     end;
+  end;
 end;

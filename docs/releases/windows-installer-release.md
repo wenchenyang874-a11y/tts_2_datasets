@@ -26,7 +26,7 @@
 .venv/Scripts/python.exe -m pytest -q
 # 更新版本、说明和规则后，核对 Git 身份并提交。构建要求干净工作区。
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_release.ps1 -Iscc '<ISCC.exe 路径>'
-.venv/Scripts/python.exe scripts/verify_installer.py dist/releases/2.0.0-beta.1 artifacts/installer-beta1
+.venv/Scripts/python.exe scripts/verify_installer.py dist/releases/2.0.0-beta.1 artifacts/installer-beta1-final
 ```
 
 每版输出 `dist/releases/<版本>/`：安装器 `*-setup.exe`、便携 `*-portable.zip`、`SHA256SUMS.txt`、`release-manifest.json`。清单记录构建提交、版本、字节数和 SHA-256。版本输出目录已存在则停止，避免覆盖已验证产物。
@@ -38,7 +38,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_release.ps1 -I
 仓库根目录，已登录 `gh` 的 PowerShell：
 
 ```powershell
-.venv/Scripts/python.exe scripts/publish_release.py dist/releases/2.0.0-beta.1 --evidence artifacts/installer-beta1/result.json --notes docs/releases/v2.0.0-beta.1.md --download-dir artifacts/release-beta1-download
+.venv/Scripts/python.exe scripts/publish_release.py dist/releases/2.0.0-beta.1 --evidence artifacts/installer-beta1-final/result.json --notes docs/releases/v2.0.0-beta.1.md --download-dir artifacts/release-beta1-download
 ```
 
 发布脚本验证干净工作区、origin、分支、构建提交、版本与安装验证清单一致后，创建 annotated Tag 并推送分支和 Tag。随后建立 Release 草稿，上传安装包、便携包与校验文件；从 GitHub 实际下载，核对字节数和 SHA-256，再公开 Release。失败保留草稿和证据，不伪造成功、不移动 Tag、不覆盖已有发布资产；网络失败按项目代理规则处理。公开版本修复另发新版本。

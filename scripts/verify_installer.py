@@ -130,10 +130,11 @@ def main():
         if not sentinel.is_file() or not user_file.is_file():
             raise RuntimeError("Upgrade removed user data")
         report["checks"].append("upgrade_repairs_app_and_preserves_data")
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_name, 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as key:
-            winreg.SetValueEx(key, "TDSNumericVersion", 0, winreg.REG_SZ, "65535.0.0.65535")
         try:
-            run([*command, f"/LOG={evidence / 'downgrade.log'}"], expect_success=False)
+            for index, newer in enumerate(("9.0.0.65535", "65535.0.0.65535")):
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_name, 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as key:
+                    winreg.SetValueEx(key, "TDSNumericVersion", 0, winreg.REG_SZ, newer)
+                run([*command, f"/LOG={evidence / f'downgrade-{index}.log'}"], expect_success=False)
         finally:
             owned_registration()
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_name, 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as key:
