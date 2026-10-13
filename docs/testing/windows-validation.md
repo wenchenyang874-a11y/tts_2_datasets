@@ -89,6 +89,8 @@ Windows 10、真实麦克风录音/拒绝权限/设备拔插、真实云账号�
 
 本地 Windows 11 回归 200 项通过、1 条原有上游弃用提示；YAML 解析、QtCore 导入和离线 pip dry-run 依赖解析通过。实际 Linux 干净环境验证由 PR CI 执行，本地已有依赖的通过不替代该验证。此次仅修复开发依赖／CI 和说明，不改变应用版本、发布 Tag 或用户已验收安装包，不合入 main。
 
+修复提交 `0e6b3fe5c00c105eb0c8cf7ebed76b71d7ef4dc8` 的 [CI 38388016608](https://github.com/wenchenyang874-a11y/tts_2_datasets/actions/runs/38388016608) 已实际完成，结论 success：Ubuntu 24.04 / Python 3.11.17 干净安装 PySide6 6.8.3 后，195 项测试通过、5 项 Windows 专用测试跳过，保留 1 条 Starlette 弃用提示；公开扫描、Python／JavaScript 检查、Compose 校验、Docker 构建和容器健康检查全部通过。该任务 annotations 为空，Node.js 20 运行时警告已消失。此 Linux 结果不替代 Windows 10 或真实设备／云验收。
+
 ## 合入 main 的必要证据
 
 - 现有业务回归及新增桌面入口检查通过：Mock 批量生成、任务并发/失败、导入、审核、软删除/恢复、增强和全部导出格式。
