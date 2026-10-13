@@ -28,6 +28,7 @@ class TasksPage(Page):
         self.detail = QLabel("选择一个任务查看结果")
         self.detail.setTextFormat(Qt.TextFormat.PlainText)
         self.detail.setWordWrap(True)
+        self.detail.setMinimumHeight(54)
         self.detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         detail.body.addWidget(self.detail)
         technical = Disclosure("技术详情")
@@ -110,6 +111,10 @@ class TasksPage(Page):
         if row:
             status = STATUS.get(row["status"], row["status"])
             self.detail.setText(f"{status} · 完成 {row.get('completed', 0)} / {row.get('total', 0)}\n" + self.failure_reason(row))
+            # QLabel minimumSizeHint can underestimate a multiline wrapped
+            # result at 150% DPI. Reserve the actual height-for-width before
+            # the card layout squeezes the second line behind the disclosure.
+            self.detail.setMinimumHeight(max(54, self.detail.heightForWidth(max(260, self.detail.width()))))
             self.detail.setStyleSheet("color:#b54050;" if row["status"] in {"failed", "partial"} else "")
             self.raw_detail.setPlainText(json.dumps(row, ensure_ascii=False, indent=2))
         else:

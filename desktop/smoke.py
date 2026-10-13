@@ -366,6 +366,7 @@ def run_smoke(application, destination: Path) -> int:
         tasks_page.tree.setCurrentItem(tasks_page.tree.topLevelItem(0))
         application.processEvents()
         assert "API Key" in tasks_page.detail.text()
+        assert tasks_page.detail.height() >= tasks_page.detail.heightForWidth(tasks_page.detail.width())
         assert "API Key" in tasks_page.tree.topLevelItem(0).text(5)
         window.grab().save(str(destination / "task-failure.png"))
         check("failure-reason-visible-without-json-dialog")
