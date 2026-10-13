@@ -119,7 +119,10 @@ Windows 10、真实麦克风和真实云合成继续待验证；保留开发分�
 - `artifacts/beta3-cross-volume/result.json` 为 ok=true，实际从 Z: 迁移到 C:，旧数据库/音频移除，从新位置读取音频通过；仅使用自建数据集，结束后关闭服务再清理本轮临时目标。
 - `artifacts/beta3-frozen-150-final/result.json`：修复任务详情高度后的冻结流程 18 项通过，150% 截图中文字完整。其源提交为 c67ce0a，之后补齐样本来源筛选并重新构建；不能把此证据冒充最终源提交 a8da6b4 的完整鼠标验收。
 - 最终 `artifacts/installer-beta3-locked-subset/result.json`：installer_checks_passed=true，8 项安装/普通启动/冷启动检查通过；同一运行文件和安装源、独立 AppId/mutex，逐文件与生产便携 ZIP 匹配，生产安装器/副本/app PE 版本一致。用户 beta.2 安装保留原状态。
-- 最终鼠标命中被 Windows LockApp 锁屏窗口遮挡，已通过前台窗口与 WindowFromPoint 的进程身份查证，不靠 Qt 的 isActiveWindow 推断实际前台。最终全流程待解锁补测；子集证据 ok=false / visual_acceptance_pending=true，不能作为完整发布证据。安装器保护、修复、降级拒绝和卸载数据保留已实测，升级仍仅为模拟夹具。
+- 此前鼠标命中被 Windows LockApp 锁屏窗口遮挡，已通过前台窗口与 WindowFromPoint 的进程身份查证，不靠 Qt 的 isActiveWindow 推断实际前台。子集证据保留 ok=false / visual_acceptance_pending=true，不作为完整验收证据。
+- 用户解锁后，最终源 a8da6b4 的 `artifacts/beta3-unlocked-150/result.json` 为 ok=true，18 项冻结程序原生流程通过；150% 缩放截图中的任务结果两行完整，真实悬停、移出、键盘提示通过。即时目录切换、17 条样本实际迁移且移除旧数据、独立服务配置、缺失凭据预检与完整 Mock 音频/导出流程通过。
+- `artifacts/installer-beta3-unlocked/result.json` 为 ok=true，8 项隔离安装检查与安装后的 18 项原生流程通过，源提交 `a8da6b4d083c3a2dc8cc1097e31f2eac4fa14309`，manifest SHA-256 `2c425470839cbdff2df578372c41b98d18e14fcbb6b48f31a53d77098259a00f`。生产运行文件逐项匹配；安装器保护、修复、两个边界的降级拒绝、普通/冷启动和卸载保留数据通过。升级仍仅为模拟夹具，测试身份登记已卸载，无测试 app 进程残留，用户 beta.2 安装保持原路径与版本。
+- 补测后未修改运行代码或重建安装包，三项资产字节数及 SHA-256 与 manifest 再次核对一致。
 - 最终产物、源提交和完整哈希见 beta.3 版本记录；未执行远程推送、Tag 或 Release。
 
 当前不做旧配置/旧版本兼容；真实云、真实麦克风和 Win10 仍待实测。只交付本地安装包，未打 Tag、未创建或上传 Release，不合入 main。
