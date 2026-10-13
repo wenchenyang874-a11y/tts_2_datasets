@@ -41,6 +41,14 @@ PyInstaller 生成 one-directory 包，含 Python、Qt、业务依赖和 imageio
 
 旧数据通过 `desktop/data_transfer.py` 导入空目录，SQLite.backup 保留一致快照，复制文件并将文件路径重定位到新根；拒绝目录包含关系、符号链接、NTFS reparse/Junction、越界路径和活跃记录缺文件，原数据不写入。调用前必须停止原 Web 服务保证文件与数据库一致。
 
+## 2026-10-13 安装与版本设计
+
+Inno Setup 的每用户安装器将程序放在 LocalAppData/Programs，应用数据仍在独立数据目录；升级覆盖登记的程序文件，卸载只删除安装器记录的内容，保留数据库、音频、凭据和未知用户文件。固定 AppId 维持升级身份，版本字段在 ssPostInstall 写入卸载登记，避免被安装器重建登记覆盖。
+
+启动入口在导入 Qt 前持有 `desktop/installer_guard.py` 的 Local 命名 mutex，直到 UI 及业务进程退出才释放。该标记对应当前 Windows 交互会话的安装/卸载保护；每数据目录的 QLockFile 另行保护同一数据目录，不禁止使用不同目录的多个实例。安装器不通过 Restart Manager 强制关闭应用。
+
+`app_version.py` 为应用/API、PE、安装器、文件名和 Tag 的单一版本来源。构建清单绑定源提交与资产哈希；安装验证和回读证据绑定同一清单。先建 Release 草稿、上传并校验完整远程资产，再公开；发布工具故障修复可追加开发提交，已发布 Tag 不移动。详细流程见 [安装与版本发布](../releases/windows-installer-release.md)。
+
 ## 已发现的迁移注意点
 
 - `app.py` 在模块导入时设置 umask、创建数据目录、初始化数据库、修改中断任务并创建线程池。迁移时把初始化/关闭职责显式设计出来，避免 UI 引用模块就触发持久化副作用；进程重启不能伪造任务续跑。

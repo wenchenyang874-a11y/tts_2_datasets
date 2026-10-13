@@ -41,7 +41,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_release.ps1 -I
 .venv/Scripts/python.exe scripts/publish_release.py dist/releases/2.0.0-beta.1 --evidence artifacts/installer-beta1-final/result.json --notes docs/releases/v2.0.0-beta.1.md --download-dir artifacts/release-beta1-download
 ```
 
-发布脚本验证干净工作区、origin、分支、构建提交、版本与安装验证清单一致后，创建 annotated Tag 并推送分支和 Tag。随后建立 Release 草稿，上传安装包、便携包与校验文件；从 GitHub 实际下载，核对字节数和 SHA-256，再公开 Release。失败保留草稿和证据，不伪造成功、不移动 Tag、不覆盖已有发布资产；网络失败按项目代理规则处理。公开版本修复另发新版本。
+发布脚本验证干净工作区、origin、分支、构建提交、版本与安装验证清单一致后，创建 annotated Tag 并推送分支和 Tag。随后建立 Release 草稿，上传安装包、便携包与校验文件；通过 scripts/download_release_assets.py 从 GitHub 分段并行下载，核对各段范围与长度、完整文件字节数和 SHA-256，再公开 Release。失败保留草稿和证据，不伪造成功、不移动 Tag、不覆盖已有发布资产；网络失败按项目代理规则处理。公开版本修复另发新版本。
 
 稳定版额外传入 `--windows10-evidence <Win10 result.json>`；两套系统的证据都必须对应相同提交与产物清单，脚本从实际 Windows build 分类系统。
 
@@ -52,3 +52,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_release.ps1 -I
 Inno Setup [官方 6.7.3](https://github.com/jrsoftware/issrc/releases/tag/is-6_7_3)，安装器 SHA-256 `9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732`。简体中文译文取自同一标签 `Files/Languages/Unofficial/ChineseSimplified.isl`，保留上游署名，仅规范化尾随空格，随项目存于 `installer/`；属于社区译文。安装器 API 根据[官方文档](https://jrsoftware.org/ishelp/)实现。
 
 包内保留项目与实际依赖许可、版本清单、FFmpeg `-L/-version/-buildconf` 和对应上游源码入口。Qt DLL 可替换，FFmpeg 为独立可执行文件；项目 Apache-2.0 许可不替代第三方许可。改变依赖或分发方式时重新核对实际内容。
+
+## 发布排障
+
+GitHub 按标签查询 Release 的接口在草稿阶段返回 404，即使当前用户是创建者；草稿 URL 中的 untagged-* 也不是正式 Tag。publish_release.py 改为分页列出已认证可访问的 Release，按 tag_name 定位并使用数字 ID；重复草稿时停止检查。首版运行中发现此问题，已保留原 Tag 并通过草稿 ID 继续后续上传与回读校验，相关工具修复随开发分支后续提交。
+
+单连接下载过慢时，回读使用最多 8 个 HTTPS Range 请求；原慢下载停止，未完成文件保留在本轮忽略目录。仅在完整回读哈希匹配后公开草稿。下载认证只在内存使用，不将 Authorization 传给重定向后的资产主机，也不记录签名 URL。失败保留草稿，不自动重试或降低 TLS 校验。

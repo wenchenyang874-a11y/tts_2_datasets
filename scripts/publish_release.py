@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from release_artifacts import ROOT, VERSION, digest
+from download_release_assets import download_verified
 
 REPOSITORY = "wenchenyang874-a11y/tts_2_datasets"
 
@@ -15,6 +16,19 @@ def output(*command):
 
 def execute(*command):
     subprocess.run(command, cwd=ROOT, check=True)
+
+
+def release_for_tag(tag):
+    # GitHub's GET /releases/tags/{tag} omits unpublished drafts and returns
+    # 404 even for their author. List authenticated releases (all pages) and
+    # identify the draft by its declared tag_name, then use its numeric ID.
+    # The draft html_url contains an untagged-* placeholder and is unsuitable
+    # as a tag key. Detect duplicate drafts before any upload or publication.
+    pages = json.loads(output("gh", "api", f"repos/{REPOSITORY}/releases", "--paginate", "--slurp"))
+    matches = [release for page in pages for release in page if release["tag_name"] == tag]
+    if len(matches) > 1:
+        raise RuntimeError("Multiple releases use this tag; inspect them before publishing")
+    return matches[0] if matches else None
 
 
 def main():
@@ -60,19 +74,19 @@ def main():
     exists = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}"], cwd=ROOT, capture_output=True).returncode == 0
     if exists and output("git", "rev-list", "-n", "1", tag) != commit:
         raise RuntimeError("Existing tag points elsewhere; never move a published tag")
-    existing = subprocess.run(["gh", "api", f"repos/{REPOSITORY}/releases/tags/{tag}"], capture_output=True, text=True, encoding="utf-8")
-    existing_release = json.loads(existing.stdout) if existing.returncode == 0 else None
+    existing_release = release_for_tag(tag)
     if existing_release and not existing_release["draft"]:
         raise RuntimeError("Release is already published; create a new version")
-    if existing.returncode and "404" not in existing.stderr:
-        raise RuntimeError("Could not determine remote release state; stop without publishing")
     if not exists:
         execute("git", "tag", "-a", tag, "-m", f"TTS Dataset Studio {VERSION}", commit)
     execute("git", "-c", "http.proxy=", "-c", "https.proxy=", "push", "origin", branch)
     execute("git", "-c", "http.proxy=", "-c", "https.proxy=", "push", "origin", f"refs/tags/{tag}")
     if not existing_release:
         execute("gh", "release", "create", tag, "--repo", REPOSITORY, "--verify-tag", "--draft", "--title", f"TTS Dataset Studio {VERSION}", "--notes-file", str(args.notes), *( ["--prerelease"] if manifest["prerelease"] else []))
-    current = json.loads(output("gh", "api", f"repos/{REPOSITORY}/releases/tags/{tag}"))
+    current = release_for_tag(tag)
+    if current is None:
+        raise RuntimeError("Created draft could not be found; stop without uploading")
+    release_id = current["id"]
     # A draft may be resumed after an interrupted upload. Never clobber assets:
     # mismatching names/digests must be inspected, not silently overwritten.
     for entry in manifest["assets"]:
@@ -82,14 +96,9 @@ def main():
                 raise RuntimeError("Draft contains a differing asset; leave draft for inspection")
         else:
             execute("gh", "release", "upload", tag, str(release / entry["name"]), "--repo", REPOSITORY)
-    args.download_dir.mkdir(parents=True)
-    for entry in manifest["assets"]:
-        execute("gh", "release", "download", tag, "--repo", REPOSITORY, "--pattern", entry["name"], "--dir", str(args.download_dir))
-        downloaded = args.download_dir / entry["name"]
-        if downloaded.stat().st_size != entry["size"] or digest(downloaded) != entry["sha256"]:
-            raise RuntimeError("Remote asset verification failed; release remains a draft")
+    download_verified(REPOSITORY, release_id, manifest["assets"], args.download_dir)
     execute("gh", "release", "edit", tag, "--repo", REPOSITORY, "--draft=false", "--latest=false" if manifest["prerelease"] else "--latest=true")
-    published = json.loads(output("gh", "api", f"repos/{REPOSITORY}/releases/tags/{tag}"))
+    published = json.loads(output("gh", "api", f"repos/{REPOSITORY}/releases/{release_id}"))
     result = {"ok": not published["draft"], "url": published["html_url"], "tag": tag, "source_commit": commit,
               "assets": manifest["assets"], "remote_bytes_and_sha256_verified": True}
     (args.download_dir / "verification.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
