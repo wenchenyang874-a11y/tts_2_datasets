@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -39,7 +40,8 @@ def test_update_derives_and_persists_custom_project_settings(tmp_path: Path) -> 
     assert updated["label"] == "测试唤醒"
     assert updated["keyword_id"] == expected_id
     assert updated["updated_at"]
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert project_settings.ProjectSettingsStore(path).get() == updated
     assert not list(tmp_path.glob("*.tmp"))
 

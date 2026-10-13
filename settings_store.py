@@ -17,6 +17,11 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping
 
+try:
+    from .private_settings import decode_settings, encode_settings
+except ImportError:
+    from private_settings import decode_settings, encode_settings
+
 
 PRICING_UNITS = frozenset({"per_call", "per_1k_chars"})
 PRICING_FIELDS = frozenset({"pricing_unit", "pricing_rate", "pricing_currency"})
@@ -24,36 +29,37 @@ MAX_PRICING_RATE_LENGTH = 64
 MAX_PRICING_CURRENCY_LENGTH = 16
 
 PROVIDER_FIELDS: dict[str, frozenset[str]] = {
+    "volcengine_v2": frozenset({"api_key", "access_key_id", "access_key_secret", *PRICING_FIELDS}),
+    "xiaomi": frozenset({"api_key", *PRICING_FIELDS}),
     "aliyun": frozenset(
         {
             "api_key",
             "workspace_id",
             "region",
-            "endpoint",
-            "customization_endpoint",
             *PRICING_FIELDS,
         }
     ),
     "volcengine": frozenset(
         {
             "app_id",
-            "access_token",
-            "cluster",
-            "endpoint",
+            "api_key",
             "access_key_id",
             "access_key_secret",
-            "catalog_endpoint",
             *PRICING_FIELDS,
         }
     ),
 }
 SECRET_FIELDS: dict[str, frozenset[str]] = {
+    "volcengine_v2": frozenset({"api_key", "access_key_secret"}),
+    "xiaomi": frozenset({"api_key"}),
     "aliyun": frozenset({"api_key"}),
-    "volcengine": frozenset({"access_token", "access_key_secret"}),
+    "volcengine": frozenset({"api_key", "access_key_secret"}),
 }
 REQUIRED_FIELDS: dict[str, frozenset[str]] = {
+    "volcengine_v2": frozenset({"api_key"}),
+    "xiaomi": frozenset({"api_key"}),
     "aliyun": frozenset({"api_key"}),
-    "volcengine": frozenset({"app_id", "access_token"}),
+    "volcengine": frozenset({"api_key"}),
 }
 
 
@@ -100,6 +106,11 @@ class ProviderSettingsStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._data = self._load()
+        # Imported Web credentials may be plaintext. The desktop owns startup
+        # and opts into DPAPI before this store is constructed; seal an existing
+        # file immediately, without waiting for the first settings edit.
+        if self.path.exists() and os.getenv("TTS_DESKTOP_PROTECT_SETTINGS") == "1":
+            self._write_locked()
 
     @staticmethod
     def _empty() -> dict[str, Any]:
@@ -110,6 +121,8 @@ class ProviderSettingsStore:
             return self._empty()
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                raw = decode_settings(raw)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"供应商配置文件无法读取：{self.path.name}") from exc
         if not isinstance(raw, dict) or not isinstance(raw.get("providers", {}), dict):
@@ -136,13 +149,20 @@ class ProviderSettingsStore:
     def _write_locked(self) -> None:
         self._data["updated_at"] = _utc_now()
         payload = json.dumps(self._data, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
+        payload = encode_settings(payload)
         descriptor = -1
         temporary_path = ""
         try:
             descriptor, temporary_path = tempfile.mkstemp(
                 prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent
             )
-            os.fchmod(descriptor, 0o600)
+            # fchmod does not exist on Windows. Its chmod fallback only sets
+            # file flags there; credential confidentiality comes from DPAPI,
+            # not from pretending POSIX mode bits are Windows ACLs.
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o600)
+            else:
+                os.chmod(temporary_path, 0o600)
             with os.fdopen(descriptor, "wb") as output:
                 descriptor = -1
                 output.write(payload)
@@ -220,15 +240,23 @@ class ProviderSettingsStore:
             "configured": all(config.get(key) for key in REQUIRED_FIELDS[provider]),
         }
         if provider == "volcengine":
-            result["synthesis_configured"] = all(
-                config.get(key) for key in ("app_id", "access_token")
+            result["v1_configured"] = all(
+                config.get(key) for key in ("api_key",)
             )
+            result["synthesis_configured"] = result["v1_configured"]
+            result["configured"] = result["synthesis_configured"]
             result["catalog_configured"] = all(
                 config.get(key) for key in ("access_key_id", "access_key_secret")
             )
         elif provider == "aliyun":
             result["synthesis_configured"] = bool(config.get("api_key"))
             result["custom_voice_query_configured"] = bool(config.get("api_key"))
+        elif provider == "xiaomi":
+            result["synthesis_configured"] = bool(config.get("api_key"))
+            result["catalog_configured"] = True  # Official preset snapshot, not an account permission check.
+        elif provider == "volcengine_v2":
+            result["synthesis_configured"] = bool(config.get("api_key"))
+            result["catalog_configured"] = all(config.get(key) for key in ("access_key_id", "access_key_secret"))
         for field in sorted(PROVIDER_FIELDS[provider]):
             if field in SECRET_FIELDS[provider]:
                 value = config.get(field, "")

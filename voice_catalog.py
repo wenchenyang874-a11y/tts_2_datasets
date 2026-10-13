@@ -25,7 +25,7 @@ except ImportError:  # Support direct ``uvicorn app:app`` execution.
     from settings_store import ProviderSettingsStore  # type: ignore
 
 
-CATALOG_VERSION = "2026-08-05"
+CATALOG_VERSION = "2026-10-13"
 
 
 @dataclass(frozen=True)
@@ -73,7 +73,7 @@ def _voice(
         model=model,
         gender=gender,
         age_group=age_group,
-        languages=languages or ["zh-CN"],
+        languages=languages if languages is not None else ["zh-CN"],
         metadata=metadata,
     )
 
@@ -117,6 +117,24 @@ _ALIYUN_SYSTEM_VOICES: tuple[tuple[str, str, str, str, str, str], ...] = (
 
 
 _BUILTIN_VOICES: tuple[Voice, ...] = (
+    *(
+        _voice("xiaomi", identifier, name, "mimo-v2.5-tts", gender, "unknown",
+               description="小米 MiMo 官方预置音色；实际可用性由账号和集群决定。", languages=languages,
+               source_url="https://mimo.mi.com/docs/zh-CN/api/audio/tts")
+        for identifier, name, gender, languages in (
+            ("mimo_default", "MiMo 默认", "unknown", ["und"]),
+            ("冰糖", "冰糖", "female", ["zh-CN"]), ("茉莉", "茉莉", "female", ["zh-CN"]),
+            ("苏打", "苏打", "male", ["zh-CN"]), ("白桦", "白桦", "male", ["zh-CN"]),
+            ("Mia", "Mia", "female", ["en"]), ("Chloe", "Chloe", "female", ["en"]),
+            ("Milo", "Milo", "male", ["en"]), ("Dean", "Dean", "male", ["en"]),
+        )
+    ),
+    _voice("volcengine", "zh_female_vv_uranus_bigtts", "Vivi 2.0", "seed-tts-2.0", "female", "unknown",
+           description="豆包语音 2.0 官方接口示例音色；需开通对应资源。",
+           source_url="https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-text-to-speech-http?lang=zh"),
+    _voice("volcengine", "zh_female_xueayi_saturn_bigtts", "儿童绘本 2.0", "seed-tts-2.0", "female", "unknown",
+           description="豆包语音 2.0 儿童绘本音色；不将应用场景误标为儿童说话人。",
+           source_url="https://www.volcengine.com/docs/6561/162929"),
     _voice(
         "mock", "mock_female_young", "Mock 青年女声", "mock-v1", "female", "young",
         description="离线流程验证音色，不代表真人或云端音色。",
@@ -137,7 +155,7 @@ _BUILTIN_VOICES: tuple[Voice, ...] = (
         _voice(
             "aliyun", voice_id, name, model, gender, age_group,
             description="阿里云 CosyVoice 官方系统音色，具体语言和调用权限以控制台为准。",
-            languages=["zh-CN"], source_url=_ALIYUN_SOURCE, age_range=age_range,
+            languages=["zh-CN", "en"], source_url=_ALIYUN_SOURCE, age_range=age_range,
         )
         for voice_id, name, model, gender, age_group, age_range in _ALIYUN_SYSTEM_VOICES
     ),
@@ -167,9 +185,10 @@ def _canonical_provider(provider: str | None) -> str | None:
         "doubao": "volcengine",
         "offline": "mock",
         "demo": "mock",
+        "mimo": "xiaomi",
     }
     normalized = aliases.get(normalized, normalized)
-    supported = {"mock", "aliyun", "volcengine"}
+    supported = {"mock", "aliyun", "volcengine", "xiaomi"}
     if normalized not in supported:
         raise ProviderConfigurationError(f"不支持的音色目录供应商：{provider}")
     return normalized
@@ -261,7 +280,7 @@ def query_alibaba_custom_voices(
         model = _infer_custom_model(voice_id, item)
         synthesis_compatible = _speech_synthesizer_compatible(model)
         gender, age_group = _classify_custom_voice(item)
-        language = str(item.get("language") or "zh-CN").strip()
+        language = str(item.get("language") or "").strip()
         status = str(item.get("status") or "OK").upper()
         metadata = {
             "catalog_version": CATALOG_VERSION,
@@ -282,7 +301,7 @@ def query_alibaba_custom_voices(
                 model=model,
                 gender=gender,
                 age_group=age_group,
-                languages=[language],
+                languages=[language] if language else [],
                 source="account_custom",
                 enabled=(
                     synthesis_compatible
@@ -323,11 +342,11 @@ def query_volc_public_voices(
     settings_store: ProviderSettingsStore | None = None,
     refresh_state: dict[str, Any] | None = None,
 ) -> list[Voice]:
-    """Query the current public Seed-TTS 1.0 catalog using AK/SK OpenAPI auth."""
+    """Query both model-bound public catalogs using independent AK/SK auth."""
 
     client = VolcVoiceCatalogClient(settings_store=settings_store)
     result: list[Voice] = []
-    for item in client.list_speakers(resource_ids=("seed-tts-1.0",)):
+    for item in client.list_speakers(resource_ids=("seed-tts-1.0", "seed-tts-2.0")):
         voice_id = str(item.get("VoiceType") or "").strip()
         if not voice_id:
             continue
@@ -357,7 +376,7 @@ def query_volc_public_voices(
                 model=str(item.get("ResourceID") or "seed-tts-1.0"),
                 gender=_volc_gender(item.get("Gender")),
                 age_group=_volc_age_group(item.get("Age")),
-                languages=languages or ["zh-cn"],
+                languages=languages,
                 source="provider_catalog",
                 enabled=True,
                 metadata=metadata,

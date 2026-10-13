@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 logger = logging.getLogger(__name__)
 
 try:
+    from .app_version import VERSION
     from .audio_utils import (
         AudioError, audio_metrics,
         mix_noise,
@@ -47,9 +48,11 @@ try:
         validate_provider_configuration,
     )
     from .project_settings import ProjectSettingsStore, normalize_display_text
-    from .settings_store import ProviderSettingsStore, set_default_settings_store
+    from .settings_store import PROVIDER_FIELDS, ProviderSettingsStore, set_default_settings_store
     from .voice_catalog import builtin_voices, refresh_voice_catalog
+    from .voice_features import expression_features, language_groups, resolve_expression
 except ImportError:  # Support direct `uvicorn app:app` execution.
+    from app_version import VERSION
     from audio_utils import (  # type: ignore
         AudioError, audio_metrics, mix_noise, normalize_wav, probe_wav, sha256_file,
         spectrum_points, waveform_points,
@@ -60,8 +63,9 @@ except ImportError:  # Support direct `uvicorn app:app` execution.
         get_provider_capabilities, validate_provider_configuration,
     )
     from project_settings import ProjectSettingsStore, normalize_display_text  # type: ignore
-    from settings_store import ProviderSettingsStore, set_default_settings_store  # type: ignore
+    from settings_store import PROVIDER_FIELDS, ProviderSettingsStore, set_default_settings_store  # type: ignore
     from voice_catalog import builtin_voices, refresh_voice_catalog  # type: ignore
+    from voice_features import expression_features, language_groups, resolve_expression  # type: ignore
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -140,7 +144,7 @@ executor = ThreadPoolExecutor(max_workers=WORKER_LIMIT)
 
 app = FastAPI(
     title="语音数据集工坊",
-    version="0.1.0",
+    version=VERSION,
     description="Generate, review, augment, and export synthetic wake-word audio.",
 )
 
@@ -183,7 +187,9 @@ class GenerateRequest(BaseModel):
     pitch: float = Field(1.0, ge=0.5, le=2.0)
     volume: int = Field(50, ge=0, le=100)
     seed: int = Field(20260804, ge=0, le=2**31 - 1)
-    instruction: str = ""
+    instruction: str = Field("", max_length=500)
+    emotion: str = Field("", max_length=64)
+    emotion_scale: float = Field(4, ge=1, le=5)
     target_kind: str = "positive"
     provider_audio: dict[str, dict[str, Any]] = Field(default_factory=dict)
     cost_acknowledged: bool = False
@@ -215,7 +221,9 @@ class GenerateBatchRequest(BaseModel):
     pitch: float = Field(1.0, ge=0.5, le=2.0)
     volume: int = Field(50, ge=0, le=100)
     seed: int = Field(20260804, ge=0, le=2**31 - 1)
-    instruction: str = ""
+    instruction: str = Field("", max_length=500)
+    emotion: str = Field("", max_length=64)
+    emotion_scale: float = Field(4, ge=1, le=5)
     random_speed: bool = False
     speed_min: float = Field(0.8, ge=0.5, le=2.0)
     speed_max: float = Field(1.2, ge=0.5, le=2.0)
@@ -297,24 +305,21 @@ class ProjectSettingsRequest(BaseModel):
 
 
 class AliyunProviderSettingsRequest(BaseModel):
+    model_config = {"extra": "forbid"}
     api_key: str | None = None
     workspace_id: str | None = None
     region: str | None = None
-    endpoint: str | None = None
-    customization_endpoint: str | None = None
     pricing_unit: str | None = Field(None, pattern="^(per_call|per_1k_chars)$")
     pricing_rate: float | None = Field(None, ge=0)
     pricing_currency: str | None = None
 
 
 class VolcengineProviderSettingsRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    api_key: str | None = None
     app_id: str | None = None
-    access_token: str | None = None
-    cluster: str | None = None
-    endpoint: str | None = None
     access_key_id: str | None = None
     access_key_secret: str | None = None
-    catalog_endpoint: str | None = None
     pricing_unit: str | None = Field(None, pattern="^(per_call|per_1k_chars)$")
     pricing_rate: float | None = Field(None, ge=0)
     pricing_currency: str | None = None
@@ -551,7 +556,7 @@ def _insert_sample(sample: dict[str, Any]) -> None:
     )
 
 
-BILLABLE_PROVIDERS = {"aliyun", "volcengine"}
+BILLABLE_PROVIDERS = {"aliyun", "volcengine", "xiaomi"}
 
 
 def _local_cost_result() -> dict[str, Any]:
@@ -591,7 +596,8 @@ def _provider_audio_for(request: dict[str, Any], provider_name: str) -> dict[str
     capabilities = get_provider_capabilities(provider_name)
     audio_format = str(value.get("format") or value.get("audio_format") or "wav").strip().lower()
     try:
-        sample_rate = int(value.get("sample_rate", 16_000))
+        default_rate = 16_000 if 16_000 in capabilities["sample_rates"] else capabilities["sample_rates"][0]
+        sample_rate = int(value.get("sample_rate", default_rate))
     except (TypeError, ValueError) as exc:
         raise HTTPException(400, f"{provider_name} sample_rate 必须是整数") from exc
     if audio_format not in capabilities["audio_formats"]:
@@ -616,12 +622,48 @@ def _validate_provider_audio(
         _provider_audio_for(request, provider_name)
 
 
+def _generation_config_id(voice):
+    return "volcengine_v2" if voice["provider"] == "volcengine" and voice.get("model") == "seed-tts-2.0" else voice["provider"]
+
+
+def _validate_synthesis_credentials(selected):
+    # beta.2 allowed a V2 voice with only V1 credentials into the task pool.
+    # Validate the selected model before creating any task or sending a paid
+    # request. Account permission cannot be inferred from a local voice list.
+    for name in {_generation_config_id(voice) for voice in selected}:
+        if name == "mock":
+            continue
+        config = provider_settings.get_provider(name)
+        try:
+            validate_provider_configuration(name, config, require_credentials=True)
+        except ProviderError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+
+def _validate_expressions(request, selected):
+    for voice in selected:
+        try:
+            resolve_expression(voice, request.get("instruction", ""), request.get("emotion", ""), request.get("emotion_scale", 4))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/generation/preflight")
+def generation_preflight(request: GenerateRequest):
+    selected = _select_voices(request.voice_ids)
+    if not selected:
+        raise HTTPException(400, "请选择至少一个可用音色")
+    _validate_synthesis_credentials(selected)
+    _validate_expressions(request.model_dump(), selected)
+    return {"ok": True, "remote_verified": False}
+
+
 def _estimate_generation_cost(
     text: str, voices: list[dict[str, Any]], count: int,
 ) -> dict[str, Any]:
     voice_counts: dict[str, int] = {}
     for voice in voices:
-        provider_name = str(voice["provider"])
+        provider_name = str(_generation_config_id(voice))
         voice_counts[provider_name] = voice_counts.get(provider_name, 0) + 1
     breakdown: list[dict[str, Any]] = []
     currencies: set[str] = set()
@@ -632,7 +674,7 @@ def _estimate_generation_cost(
     units_by_pricing_unit: dict[str, float] = {}
     for provider_name, voice_count in sorted(voice_counts.items()):
         calls = voice_count * count
-        if provider_name not in BILLABLE_PROVIDERS:
+        if provider_name not in BILLABLE_PROVIDERS and provider_name != "volcengine_v2":
             breakdown.append({
                 "provider": provider_name, "cost_available": True,
                 "pricing_unit": "free", "billable_units": 0.0,
@@ -767,6 +809,7 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                 / f"{sample_id}.wav"
             )
             try:
+                expression = resolve_expression(voice, request.get("instruction", ""), request.get("emotion", ""), request.get("emotion_scale", 4))
                 existing = db.one(
                     """
                     SELECT id FROM samples
@@ -775,6 +818,8 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                       AND target_kind=?
                       AND speed=? AND pitch=? AND volume=? AND seed=?
                       AND COALESCE(json_extract(metadata_json, '$.instruction'), '')=?
+                      AND COALESCE(json_extract(metadata_json, '$.emotion'), '')=?
+                      AND COALESCE(json_extract(metadata_json, '$.emotion_scale'), 4)=?
                       AND COALESCE(json_extract(metadata_json, '$.provider_audio_request.format'), 'wav')=?
                       AND COALESCE(json_extract(metadata_json, '$.provider_audio_request.sample_rate'), 16000)=?
                     """,
@@ -783,6 +828,7 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                         request["label"], request["keyword_id"], request.get("target_kind", "positive"),
                         speed, pitch, volume, item_seed,
                         request.get("instruction", ""),
+                        request.get("emotion", ""), request.get("emotion_scale", 4),
                         provider_audio["format"], provider_audio["sample_rate"],
                     ),
                 )
@@ -794,12 +840,15 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                         message=f"已复用 {duplicates} 个已有样本",
                     )
                     continue
+                expression_args = {"instruction": expression["instruction"]}
+                if expression["emotion"]:
+                    expression_args.update(emotion=expression["emotion"], emotion_scale=expression["emotion_scale"])
                 audio = provider.synthesize(
                     text=request["text"], voice=voice["voice_id"], model=voice["model"],
                     audio_format=provider_audio["format"],
                     sample_rate=provider_audio["sample_rate"],
                     speed=speed, pitch=pitch, volume=volume,
-                    seed=item_seed, instruction=request.get("instruction", ""),
+                    seed=item_seed, **expression_args,
                 )
                 raw_path.parent.mkdir(parents=True, exist_ok=True)
                 raw_path.write_bytes(audio)
@@ -837,6 +886,8 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                     "quality_status": quality,
                     "metadata": {
                         "voice_db_id": voice["id"], "instruction": request.get("instruction", ""),
+                        "emotion": request.get("emotion", ""), "emotion_scale": request.get("emotion_scale", 4),
+                        "provider_expression_request": expression,
                         "gender": voice.get("gender", "unknown"),
                         "age_group": voice.get("age_group", "unknown"),
                         "provider_audio_request": provider_audio,
@@ -1264,16 +1315,28 @@ def providers() -> list[dict[str, Any]]:
 def provider_capabilities() -> dict[str, dict[str, Any]]:
     return {
         provider_id: get_provider_capabilities(provider_id)
-        for provider_id in ("mock", "aliyun", "volcengine")
+        for provider_id in ("mock", "aliyun", "volcengine", "xiaomi")
     }
 
 
 def _provider_settings_model(
     provider: str, payload: dict[str, Any]
 ) -> AliyunProviderSettingsRequest | VolcengineProviderSettingsRequest:
+    if provider in PROVIDER_FIELDS and set(payload) - PROVIDER_FIELDS[provider]:
+        raise HTTPException(400, "供应商配置包含不支持的字段")
+    if provider == "xiaomi":
+        # MiMo shares API key/pricing fields with Alibaba, but not the
+        # workspace/region options. Reject unsupported fields explicitly.
+        if set(payload) - {"api_key", "pricing_unit", "pricing_rate", "pricing_currency"}:
+            raise HTTPException(400, "小米 MiMo 配置包含不支持的字段")
+        return AliyunProviderSettingsRequest.model_validate(payload)
     if provider == "aliyun":
         return AliyunProviderSettingsRequest.model_validate(payload)
     if provider == "volcengine":
+        return VolcengineProviderSettingsRequest.model_validate(payload)
+    if provider == "volcengine_v2":
+        if set(payload) - {"api_key", "access_key_id", "access_key_secret", "pricing_unit", "pricing_rate", "pricing_currency"}:
+            raise HTTPException(400, "豆包 2.0 配置包含不支持的字段")
         return VolcengineProviderSettingsRequest.model_validate(payload)
     raise HTTPException(404, "不支持的供应商")
 
@@ -1311,26 +1374,42 @@ def put_provider_settings(
 
 @app.delete("/api/settings/providers/{provider}")
 def delete_provider_settings(provider: str) -> dict[str, Any]:
-    if provider not in {"aliyun", "volcengine"}:
+    if provider not in {"aliyun", "volcengine", "volcengine_v2", "xiaomi"}:
         raise HTTPException(404, "不支持的供应商")
     provider_settings.clear_provider(provider)
     disabled = 0
+    catalog_provider = "volcengine" if provider == "volcengine_v2" else provider
+    model_scope = "volcengine_v2" if provider == "volcengine_v2" else "volcengine_v1" if provider == "volcengine" else None
     dynamic_sources = db.all(
         "SELECT DISTINCT source FROM voices WHERE provider=? AND source!='builtin'",
-        (provider,),
+        (catalog_provider,),
     )
     for row in dynamic_sources:
-        disabled += db.disable_missing_voices(provider, str(row["source"]), set())
+        disabled += db.disable_missing_voices(catalog_provider, str(row["source"]), set(), model_scope=model_scope)
     result = provider_settings.public_provider(provider)
     result["disabled_dynamic_voices"] = disabled
     return result
 
 
 @app.post("/api/settings/providers/{provider}/test")
-def test_provider_settings(provider: str) -> dict[str, Any]:
-    if provider not in {"aliyun", "volcengine"}:
+def test_provider_settings(provider: str, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    if provider not in {"aliyun", "volcengine", "volcengine_v2", "xiaomi"}:
         raise HTTPException(404, "不支持的供应商")
     config = provider_settings.get_provider(provider)
+    # Validate the unsaved form against stored secrets without persisting it.
+    # The old endpoint ignored the form altogether, reporting missing/old
+    # values even when the user had just filled them. Empty masked secrets
+    # retain the existing secret; ordinary empty fields remove old overrides.
+    if payload:
+        values = _provider_settings_model(provider, payload).model_dump(exclude_unset=True)
+        for key, raw_value in values.items():
+            value = str(raw_value).strip() if raw_value is not None else ""
+            if not value and key in {"api_key", "access_token", "access_key_secret"}:
+                continue
+            if value:
+                config[key] = value
+            else:
+                config.pop(key, None)
     try:
         validate_provider_configuration(provider, config, require_credentials=True)
     except ProviderError as exc:
@@ -1346,29 +1425,61 @@ def test_provider_settings(provider: str) -> dict[str, Any]:
 
 @app.get("/api/voices")
 def voices(
-    provider: str = "", gender: str = "", age_group: str = "", enabled: bool = True,
+    provider: str = "", gender: str = "", age_group: str = "", enabled: bool = True, language_group: str = "", capability: str = "",
 ) -> list[dict[str, Any]]:
     clauses, params = [], []
     if enabled:
         clauses.append("enabled=1")
     if provider:
-        clauses.append("provider=?"); params.append(provider)
+        clauses.append("provider=?"); params.append("volcengine" if provider in {"volcengine_v1", "volcengine_v2"} else provider)
+        if provider in {"volcengine_v1", "volcengine_v2"}:
+            clauses.append("model=?" if provider.endswith("v2") else "model!=?")
+            params.append("seed-tts-2.0")
     if gender:
         clauses.append("gender=?"); params.append(gender)
     if age_group:
         clauses.append("age_group=?"); params.append(age_group)
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
-    return [_json_row(row) for row in db.all(f"SELECT * FROM voices{where} ORDER BY provider,name", tuple(params))]
+    if language_group not in {"", "chinese", "foreign", "unknown"}:
+        raise HTTPException(400, "音色语言分类无效")
+    if capability not in {"", "instruction", "emotion", "no_instruction"}:
+        raise HTTPException(400, "音色能力分类无效")
+    result = []
+    for row in db.all(f"SELECT * FROM voices{where} ORDER BY provider,name", tuple(params)):
+        value = _json_row(row)
+        groups = language_groups(value)
+        matches = not groups if language_group == "unknown" else language_group in groups
+        if language_group and not matches:
+            continue
+        value["expression_features"] = expression_features(value)
+        features = value["expression_features"]
+        if capability == "instruction" and features["instruction"] == "none":
+            continue
+        if capability == "emotion" and not features["emotions"]:
+            continue
+        if capability == "no_instruction" and features["instruction"] != "none":
+            continue
+        result.append(value)
+    return result
 
 
 @app.post("/api/voices/refresh")
 def refresh_voices(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     provider = payload.get("provider") or None
+    scope = provider if provider in {"volcengine_v1", "volcengine_v2"} else None
+    catalog_store = provider_settings
+    if scope:
+        provider = "volcengine"
+        if scope == "volcengine_v2":
+            class ScopedCatalogSettings:
+                def get_provider(self, name):
+                    return provider_settings.get_provider("volcengine_v2" if name == "volcengine" else name)
+            catalog_store = ScopedCatalogSettings()
     refresh_state: dict[str, Any] = {}
     try:
         catalog = refresh_voice_catalog(
             provider=provider,
-            settings_store=provider_settings,
+            settings_store=catalog_store,
             refresh_state=refresh_state,
         )
     except ProviderConfigurationError as exc:
@@ -1379,6 +1490,8 @@ def refresh_voices(payload: dict[str, Any] = Body(default_factory=dict)) -> dict
     values: list[dict[str, Any]] = []
     for voice in catalog:
         value = asdict(voice) if is_dataclass(voice) else dict(voice)
+        if scope and (value.get("model") == "seed-tts-2.0") != (scope == "volcengine_v2"):
+            continue
         values.append(value)
         voice_id = db.upsert_voice(value)
         added.append(voice_id)
@@ -1393,7 +1506,7 @@ def refresh_voices(payload: dict[str, Any] = Body(default_factory=dict)) -> dict
             and value.get("source", "builtin") == snapshot_source
         }
         disabled_stale += db.disable_missing_voices(
-            snapshot_provider, snapshot_source, active_keys
+            snapshot_provider, snapshot_source, active_keys, model_scope=scope
         )
     return {
         "count": len(added),
@@ -1576,7 +1689,9 @@ def create_generate_task(request: GenerateRequest) -> dict[str, Any]:
         if field not in request.model_fields_set:
             payload[field] = project[project_field]
     _require_cost_acknowledgement(selected, request.cost_acknowledged)
+    _validate_synthesis_credentials(selected)
     _validate_provider_audio(payload, selected)
+    _validate_expressions(payload, selected)
     estimate = _estimate_generation_cost(payload["text"], selected, request.count)
     task_id = _create_task(
         "generate", len(selected) * request.count, payload,
@@ -1618,7 +1733,9 @@ def create_generate_batch(request: GenerateBatchRequest) -> dict[str, Any]:
     if "keyword_id" not in request.model_fields_set:
         payload["keyword_id"] = project["keyword_id"]
     _require_cost_acknowledgement(selected, request.cost_acknowledged)
+    _validate_synthesis_credentials(selected)
     _validate_provider_audio(payload, selected)
+    _validate_expressions(payload, selected)
     applied_concurrency = min(request.concurrency, WORKER_LIMIT, len(request.texts))
     child_estimates = [
         _estimate_generation_cost(text, selected, request.count) for text in request.texts
@@ -1783,12 +1900,33 @@ def _sample_filter(
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
     clauses, params = ["deleted_at IS NULL"], []
+    if provider in {"volcengine_v1", "volcengine_v2"}:
+        # Keep the model boundary in this shared filter so pagination and
+        # selecting all filtered IDs cannot disagree about which service a
+        # sample belongs to. Augmented rows retain their source model too.
+        clauses.append("model=?" if provider == "volcengine_v2" else "model!=?")
+        params.append("seed-tts-2.0")
+        provider = "volcengine"
     for column, value in (("provider", provider), ("voice_id", voice_id),
-                          ("quality_status", quality), ("split", split),
+                          ("split", split),
                           ("keyword_id", keyword_id), ("target_kind", target_kind),
                           ("origin_job_id", origin_job_id)):
         if value:
             clauses.append(f"{column}=?"); params.append(value)
+    if quality:
+        # Generation historically writes pass/reject while interactive review
+        # writes accepted/rejected/pending. Filtering the UI's canonical value
+        # literally hid otherwise identical existing samples. Match aliases
+        # without rewriting provenance or the stored review decision.
+        review_groups = {
+            "pending": ("pending", "unchecked", "review"),
+            "accepted": ("accepted", "pass"),
+            "rejected": ("rejected", "reject"),
+        }
+        canonical = {"pass": "accepted", "reject": "rejected", "unchecked": "pending", "review": "pending"}.get(quality, quality)
+        aliases = review_groups.get(canonical, (quality,))
+        clauses.append("quality_status IN (" + ",".join("?" for _ in aliases) + ")")
+        params.extend(aliases)
     if gender:
         clauses.append("json_extract(metadata_json, '$.gender')=?"); params.append(gender)
     if age_group:

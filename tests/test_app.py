@@ -71,6 +71,93 @@ def _first_mock_voice(client: TestClient) -> dict:
     return voices[0]
 
 
+def test_voice_language_filters_handle_bilingual_foreign_and_unknown(client):
+    chinese = client.get("/api/voices", params={"provider": "xiaomi", "language_group": "chinese"}).json()
+    foreign = client.get("/api/voices", params={"provider": "xiaomi", "language_group": "foreign"}).json()
+    unknown = client.get("/api/voices", params={"provider": "xiaomi", "language_group": "unknown"}).json()
+    assert {row["voice_id"] for row in chinese} == {"冰糖", "茉莉", "苏打", "白桦"}
+    assert {row["voice_id"] for row in foreign} == {"Mia", "Chloe", "Milo", "Dean"}
+    assert [row["voice_id"] for row in unknown] == ["mimo_default"]
+    aliyun_chinese = client.get("/api/voices", params={"provider": "aliyun", "language_group": "chinese"}).json()
+    aliyun_foreign = client.get("/api/voices", params={"provider": "aliyun", "language_group": "foreign"}).json()
+    assert {row["id"] for row in aliyun_chinese} & {row["id"] for row in aliyun_foreign}
+    assert client.get("/api/voices", params={"language_group": "invalid"}).status_code == 400
+
+
+def test_voice_capability_filter_matches_exact_models_and_languages(client):
+    from voice_features import ALI_FIXED_VOICES
+    supported = client.get("/api/voices", params={"provider": "aliyun", "capability": "instruction", "language_group": "foreign"}).json()
+    assert {(row["model"], row["voice_id"]) for row in supported} == ALI_FIXED_VOICES
+    emotions = client.get("/api/voices", params={"provider": "aliyun", "capability": "emotion"}).json()
+    assert {row["id"] for row in emotions} == {row["id"] for row in supported}
+    unsupported = client.get("/api/voices", params={"provider": "aliyun", "capability": "no_instruction"}).json()
+    assert unsupported and all(row["expression_features"]["instruction"] == "none" for row in unsupported)
+    assert not ({row["id"] for row in unsupported} & {row["id"] for row in supported})
+    assert client.get("/api/voices", params={"capability": "invalid"}).status_code == 400
+
+
+def test_unsupported_expression_blocks_task_and_batch_before_creation(client, monkeypatch, tmp_path):
+    from settings_store import ProviderSettingsStore
+    store = ProviderSettingsStore(tmp_path / "expression-settings.json")
+    store.update_provider("volcengine", {"api_key": "fixture"})
+    monkeypatch.setattr(app_module, "provider_settings", store)
+    voices = client.get("/api/voices", params={"provider": "volcengine_v1"}).json()
+    voice = next(row for row in voices if not row["expression_features"]["emotions"])
+    monkeypatch.setattr(app_module, "_submit", lambda *args: pytest.fail("No task may be submitted"))
+    before = app_module.db.one("SELECT COUNT(*) AS n FROM tasks")["n"]
+    for path in ("/api/generation/preflight", "/api/tasks/generate", "/api/tasks/generate-batch"):
+        response = client.post(path, json={"voice_ids": [voice["id"]], "texts": ["测试"], "instruction": "开心一些", "cost_acknowledged": True})
+        assert response.status_code == 400 and "不支持表达指令" in response.json()["detail"]
+    assert app_module.db.one("SELECT COUNT(*) AS n FROM tasks")["n"] == before
+
+
+def test_emotion_participates_in_dedup_and_sample_metadata(client):
+    voice = _first_mock_voice(client)
+    base = {"voice_ids": [voice["id"]], "text": "情感去重验收", "label": "情感去重验收", "keyword_id": "emotion_dedup_fixture", "seed": 826519}
+    ids = []
+    for emotion in ("happy", "sad", "happy"):
+        result = client.post("/api/tasks/generate", json={**base, "emotion": emotion})
+        assert result.status_code == 200
+        task = _wait_for_task(client, result.json()["id"])
+        assert task["status"] == "completed"
+        ids.append(result.json()["id"])
+    rows = app_module.db.all("SELECT metadata_json FROM samples WHERE keyword_id=? AND deleted_at IS NULL", (base["keyword_id"],))
+    assert len(rows) == 2
+    assert {json.loads(row["metadata_json"])["emotion"] for row in rows} == {"happy", "sad"}
+    assert all("provider_expression_request" in json.loads(row["metadata_json"]) for row in rows)
+    owned = app_module.db.all("SELECT file_path FROM samples WHERE keyword_id=?", (base["keyword_id"],))
+    for row in owned:
+        path = Path(row["file_path"]).resolve()
+        assert path.is_relative_to(TEST_DATA_DIR.resolve())
+        path.unlink(missing_ok=True)
+    app_module.db.execute("DELETE FROM samples WHERE keyword_id=?", (base["keyword_id"],))
+
+
+def test_current_provider_form_validation_is_non_persisting_and_keeps_saved_secret(client, monkeypatch, tmp_path):
+    from settings_store import ProviderSettingsStore
+    store = ProviderSettingsStore(tmp_path / "settings.json")
+    monkeypatch.setattr(app_module, "provider_settings", store)
+    result = client.post("/api/settings/providers/xiaomi/test", json={"api_key": "unsaved-fixture-key"})
+    assert result.status_code == 200 and result.json()["remote_verified"] is False
+    assert "unsaved-fixture-key" not in result.text and store.get_provider("xiaomi") == {}
+    client.put("/api/settings/providers/xiaomi", json={"api_key": "saved-fixture-key"})
+    assert client.post("/api/settings/providers/xiaomi/test", json={"api_key": ""}).status_code == 200
+    invalid = client.post("/api/settings/providers/xiaomi/test", json={"endpoint": "https://untrusted.example/v1"})
+    assert invalid.status_code == 400
+    assert store.get_provider("xiaomi")["api_key"] == "saved-fixture-key"
+
+
+def test_xiaomi_cloud_cost_never_defaults_to_free(monkeypatch, tmp_path):
+    from settings_store import ProviderSettingsStore
+    monkeypatch.setattr(app_module, "provider_settings", ProviderSettingsStore(tmp_path / "settings.json"))
+    voice = {"provider": "xiaomi"}
+    assert app_module._provider_audio_for({}, "xiaomi")["sample_rate"] == 24000
+    with pytest.raises(app_module.HTTPException) as error:
+        app_module._require_cost_acknowledgement([voice], False)
+    assert error.value.status_code == 400
+    assert app_module._estimate_generation_cost("请开灯", [voice], 1)["cost_available"] is False
+
+
 def _wav_bytes(duration: float = 2.0, frequency: float = 173.0) -> bytes:
     sample_rate = 16_000
     timeline = np.arange(int(sample_rate * duration), dtype=np.float64) / sample_rate
@@ -202,7 +289,7 @@ def test_provider_settings_api_masks_secrets_and_separates_volc_credentials(
     client.delete("/api/settings/providers/volcengine")
 
     unsupported_region = client.put("/api/settings/providers/aliyun", json={
-        "region": "ap-southeast-1",
+        "region": "invalid-region",
     })
     assert unsupported_region.status_code == 400
     assert "cn-beijing" in unsupported_region.json()["detail"]
@@ -222,7 +309,8 @@ def test_provider_settings_api_masks_secrets_and_separates_volc_credentials(
     assert all_settings.status_code == 200
     assert aliyun_secret not in all_settings.text
     settings_path = TEST_DATA_DIR / "provider_settings.json"
-    assert stat.S_IMODE(settings_path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(settings_path.stat().st_mode) == 0o600
 
     preserved = client.put("/api/settings/providers/aliyun", json={
         "api_key": "", "workspace_id": "workspace-changed",
@@ -235,8 +323,7 @@ def test_provider_settings_api_masks_secrets_and_separates_volc_credentials(
 
     synthesis_only = client.put("/api/settings/providers/volcengine", json={
         "app_id": "volc-app",
-        "access_token": "volc-synthesis-secret",
-        "cluster": "volcano_tts",
+        "api_key": "volc-synthesis-secret",
     })
     assert synthesis_only.status_code == 200
     assert synthesis_only.json()["synthesis_configured"] is True
@@ -304,7 +391,8 @@ def test_project_settings_api_derives_metadata_and_requires_app_token(
     assert project["keyword_id"].startswith("kws_")
     assert len(project["keyword_id"]) == 16
     assert project["updated_at"]
-    assert stat.S_IMODE((TEST_DATA_DIR / "project_settings.json").stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE((TEST_DATA_DIR / "project_settings.json").stat().st_mode) == 0o600
 
     status = client.get("/api/status")
     assert status.status_code == 200
@@ -1568,3 +1656,48 @@ def test_materialize_unexpected_error_finishes_task(
     assert client.get("/api/samples", params={
         "keyword_id": "materialize_failure_keyword",
     }).json()["total"] == 0
+
+
+def test_doubao_versions_have_independent_credentials_and_preflight(client):
+    client.delete("/api/settings/providers/volcengine")
+    client.delete("/api/settings/providers/volcengine_v2")
+    assert client.put("/api/settings/providers/volcengine", json={"app_id":"fixture-app", "api_key":"fixture-token"}).status_code == 200
+    v1 = client.get("/api/voices", params={"provider":"volcengine_v1"}).json()[0]
+    v2 = client.get("/api/voices", params={"provider":"volcengine_v2"}).json()[0]
+    before = app_module.db.one("SELECT COUNT(*) AS n FROM tasks")["n"]
+    assert client.post("/api/generation/preflight", json={"voice_ids":[v1["id"]]}).status_code == 200
+    missing = client.post("/api/tasks/generate-batch", json={"texts":["测试"],"voice_ids":[v2["id"]],"cost_acknowledged":True})
+    assert missing.status_code == 400 and "豆包 2.0" in missing.json()["detail"]
+    assert app_module.db.one("SELECT COUNT(*) AS n FROM tasks")["n"] == before
+    assert client.put("/api/settings/providers/volcengine_v2", json={"api_key":"fixture-v2-key"}).status_code == 200
+    assert client.post("/api/generation/preflight", json={"voice_ids":[v2["id"]]}).status_code == 200
+    client.delete("/api/settings/providers/volcengine")
+    assert client.post("/api/generation/preflight", json={"voice_ids":[v2["id"]]}).status_code == 200
+    assert client.post("/api/generation/preflight", json={"voice_ids":[v1["id"]]}).status_code == 400
+    client.delete("/api/settings/providers/volcengine_v2")
+
+
+def test_scoped_catalog_refresh_does_not_disable_other_doubao_version(client):
+    rows = client.get("/api/voices", params={"provider":"volcengine_v1"}).json()
+    assert rows and all(row["model"] != "seed-tts-2.0" for row in rows)
+    result = client.post("/api/voices/refresh", json={"provider":"volcengine_v2"})
+    assert result.status_code == 200 and result.json()["count"] >= 2
+    after = client.get("/api/voices", params={"provider":"volcengine_v1"}).json()
+    assert {row["id"] for row in rows} == {row["id"] for row in after}
+
+
+def test_sample_pages_and_bulk_selection_follow_doubao_service_boundary(client, tmp_path):
+    ids = ["owned-service-v1-filter", "owned-service-v2-filter", "owned-service-mimo-filter"]
+    try:
+        for identifier, provider, model in zip(ids, ["volcengine", "volcengine", "xiaomi"], ["seed-tts-1.0", "seed-tts-2.0", "mimo-v2.5-tts"]):
+            app_module.db.execute("INSERT INTO samples(id,provider,voice_id,model,text,file_path,sha256,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                                  (identifier,provider,"owned-service-filter-voice",model,"filter fixture",str(tmp_path/(identifier+".wav")),identifier,"2026-10-13"))
+        for provider, expected in zip(["volcengine_v1", "volcengine_v2", "xiaomi"], ids):
+            params = {"provider":provider,"voice_id":"owned-service-filter-voice"}
+            rows = client.get("/api/samples",params=params).json()
+            selected = client.get("/api/samples/ids",params=params).json()
+            assert rows["total"] == selected["total"] == 1
+            assert rows["items"][0]["id"] == selected["ids"][0] == expected
+    finally:
+        for identifier in ids:
+            app_module.db.execute("DELETE FROM samples WHERE id=?", (identifier,))

@@ -295,6 +295,7 @@ class Database:
         provider: str,
         source: str,
         active_keys: set[tuple[str, str]],
+        *, model_scope: str | None = None,
     ) -> int:
         """Disable stale catalog rows while preserving history and foreign keys."""
 
@@ -307,6 +308,7 @@ class Database:
             stale_ids = [
                 int(row["id"])
                 for row in rows
+                if not model_scope or (str(row["model"]) == "seed-tts-2.0") == (model_scope == "volcengine_v2")
                 if (str(row["voice_id"]), str(row["model"])) not in active_keys
             ]
             if stale_ids:

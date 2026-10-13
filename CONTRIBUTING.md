@@ -6,18 +6,22 @@
 
 ## 开发环境
 
+Windows 原生桌面开发使用 `requirements-build.txt`、`desktop_main.py` 和 `scripts/build_windows.ps1`。完整入口见 [Windows 桌面版使用](docs/product/windows-quickstart.md)；测试用隔离目录和 Mock，不录制用户真实音频或调用未授权云服务。
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
 ```
 
+`requirements-dev.txt` 包含桌面依赖和测试工具；全套测试会导入 `PySide6.QtCore`，只安装后端 `requirements.txt` 会导致收集失败，不应通过跳过桌面测试绕过。无需为离线锁／数据目录回归打开 GUI；真实原生窗口验收另见测试文档。
+
 需要系统安装 `ffmpeg`，前端 JavaScript 语法检查需要 Node.js。
 
 ## 验证
 
 ```bash
-pytest -q
+python -m pytest -q
 python -m compileall -q .
 node --check static/app.js
 bash scripts/check_public_release.sh
@@ -33,6 +37,7 @@ docker build -t tts-2-datasets:check .
 - 修改接口、数据格式、导出结构或部署方式时，同步更新文档和测试。
 - 对文件移动、软删除和恢复路径增加失败与路径越界测试。
 - 不在前端、日志、测试夹具或错误响应中暴露真实凭据。
+- Windows 凭据验证以用户绑定的 DPAPI 读写为准，不能把 POSIX 文件模式检查替代为 Windows ACL 结论。录音、播放和业务进程的资源由桌面入口显式拥有，后台线程不操作 Qt 控件。
 - 不提交生成数据、数据库、个人路径和仅适用于某台服务器的配置。
 
 ## Pull Request

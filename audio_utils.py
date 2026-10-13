@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import random
 import shutil
 import subprocess
@@ -16,6 +17,23 @@ import numpy as np
 
 class AudioError(RuntimeError):
     pass
+
+
+def ffmpeg_executable() -> str:
+    """Prefer an explicit override, then PATH, then the desktop bundled binary."""
+    configured = os.getenv("TTS_FFMPEG_PATH")
+    if configured:
+        if not Path(configured).is_file():
+            raise AudioError("配置的 FFmpeg 不存在")
+        return configured
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError, RuntimeError, OSError) as exc:
+        raise AudioError("FFmpeg 不可用，请安装桌面完整包或配置 TTS_FFMPEG_PATH") from exc
 
 
 def sha256_file(path: Path) -> str:
@@ -47,10 +65,12 @@ def normalize_wav(src: str | Path, dst: str | Path, sample_rate: int = 16000) ->
     source, target = Path(src), Path(dst)
     target.parent.mkdir(parents=True, exist_ok=True)
     command = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
+        ffmpeg_executable(), "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
         "-ac", "1", "-ar", str(sample_rate), "-c:a", "pcm_s16le", str(target),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
+    # A windowed Windows app must not flash a console for every conversion.
+    result = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False,
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     if result.returncode != 0:
         target.unlink(missing_ok=True)
         raise AudioError(f"ffmpeg normalization failed: {result.stderr.strip()[-500:]}")
