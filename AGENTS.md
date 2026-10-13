@@ -4,7 +4,7 @@
 
 ## 项目与边界
 
-- 目标与范围：将 `tts_2_datasets` 的现有 Web 工具迁移为 Windows 原生桌面应用，支持 Windows 10 和 Windows 11。初始化阶段已完成；当前阶段开发、验证 Windows 原生版，满足验收门槛后合入 main。
+- 目标与范围：维护 `tts_2_datasets` 的 Windows 原生桌面应用，支持 Windows 10 和 Windows 11。用户已完成迁移分支合入；后续直接在 main 开发、验证和本地构建。
 - 代码位置：本文件所在 Git 仓库，远程仓库为 `https://github.com/wenchenyang874-a11y/tts_2_datasets`。业务代码和项目文档在本仓库内修改，不依赖仓外文件。
 - 需求入口：`docs/product/windows-app-requirements.md`。
 - 硬约束：使用原生桌面界面，不以嵌入网页或自动打开浏览器代替原生迁移；保留现有业务语义、数据安全和音频/导出契约。已确认 x64、Windows 10 1809 及以上/Windows 11、PySide6 6.8.3 原生控件和包含依赖的便携包与安装包；框架兼容与项目实测结论分开记录。
@@ -15,13 +15,13 @@
 ## Windows 迁移约束
 
 - 主分支为 `main`。用户已确认沿用实际主分支，不新建 `master`。
-- Web 基线保存在 `backup/web-2026-10-12`；该备份分支不得继续开发、覆盖或删除。Windows 版本在 `feature/windows-native` 开发。
+- Web 基线保存在 `backup/web-2026-10-12`；该备份分支不得继续开发、覆盖或删除。Windows 版本直接在 `main` 开发；`feature/windows-native` 为已合入的历史迁移分支，不作为默认开发入口。
 - 新界面应复用或迁移现有供应商、任务、样本、增强与导出逻辑，先建立职责边界再替换入口；不能把 Web 层的全局状态、数据库初始化和任务池生命周期直接绑定到界面事件。
 - 保留 16 kHz、单声道、signed 16-bit little-endian PCM WAV 契约，以及按说话人/供应商音色分组划分 Train/Dev/Test 的防泄漏规则。
 - 保留云费用显式确认和错误脱敏；可能计费的合成请求不得隐式自动重试。自动化测试只用 Mock，真实云调用需用户明确授权。
 - 长耗时处理不得阻塞 UI；录音、播放、后台任务、进程与文件句柄需明确释放。退出或重启时如有任务中断，应如实记录，不声称已完成或可自动续跑。
 - 数据和凭据与安装目录分离；Windows 数据位置、访问保护、导出路径和旧 Web 数据迁移方案先落文档，再实施。不依赖 POSIX 权限设置在 Windows 上自动生效。
-- Windows 10/11 必须分别记录实际运行与打包验证；只有一台系统、源码测试或构建通过时，不得声称两套系统验收通过。合入门槛见仓内测试文档。
+- Windows 10/11 必须分别记录实际运行与打包验证；只有一台系统、源码测试或构建通过时，不得声称两套系统验收通过。用户已合入 main 不代表 Windows 10 验收完成；稳定发布门槛见仓内测试文档。
 - 供应商覆盖小米 MiMo 与豆包语音 1.0/2.0；音色绑定对应模型与鉴权方式。设置只显示一个数据目录，选择后自动保存并立即使用，无单独保存按钮、无重启要求。空目录由用户选择迁移现有数据（不是保留副本）或使用空数据集；切换需先保护任务、录音、播放与目录锁，失败恢复原目录，成功迁移后才移除旧位置对应数据。不显示 Web 备份导入入口。
 - 当前预发布开发阶段不考虑旧配置、旧版本兼容；不为兼容增加迁移逻辑或额外界面。实际用户数据安全、目录迁移回滚和训练数据契约仍须遵守。
 - 豆包 1.0/2.0 统一采用 V3 HTTP 单向流式及独立 API Key，不回退旧合成鉴权；火山、小米地址内置，阿里云通过地域下拉框与可选 Workspace ID 自动生成地址，不提供 URL 输入框。
@@ -89,8 +89,8 @@
 - 推送、Tag、Release 和部署按用户明确授权执行，沿用会话中已获得的授权；本地提交、打包不等于发布。
 - 提交信息、共同作者行及交付材料不添加 AI 署名或 AI 辅助编程声明；提交前核对 Git 身份，推送前核对远程仓库和目标分支。
 - 改写已推送历史、移动已发布 Tag 或强制推送，须有针对该操作的明确授权。
-- 本次已授权创建并推送 Web 备份分支和 Windows 开发分支；用户也已授权后续在 Windows 验收通过后合入 `main`。全部验收前不合入。合入采用保留历史的正常合并，不把“覆盖”解释成重写主分支或强制推送。
-- 用户于 2026-10-13 调整发布授权：可自主本地提交、测试和构建安装包，先交付本地安装包供用户验证。只有用户验证通过并明确通知发布后，才为该版本创建/推送 Tag、创建 Release 草稿、上传资产并公开 Release；不得以 Agent 自测通过代替用户验收，不再沿用此前的自动发布授权。版本统一来自 app_version.py。获准发布时，Win10 尚未实测则仅发布非 Latest 预发布，保留开发分支、不合入 main；稳定版仍需通过合入门槛。流程见 docs/releases/windows-installer-release.md。
+- 用户已于 2026-10-13 将 PR #16 合入 `main`，并明确授权以后直接在 `main` 开发；可正常提交、推送开发改动，不再要求留在迁移分支等待合入。保留现有历史和 Web 备份，不将该授权解释为强制推送或移动已发布 Tag。
+- 用户于 2026-10-13 调整发布授权：可自主本地提交、测试和构建安装包，先交付本地安装包供用户验证。只有用户验证通过并明确通知发布后，才为该版本创建/推送 Tag、创建 Release 草稿、上传资产并公开 Release；不得以 Agent 自测通过代替用户验收，不再沿用此前的自动发布授权。版本统一来自 app_version.py。获准发布时，Win10 尚未实测则仅发布非 Latest 预发布；稳定版仍需通过 Windows 10/11 实测门槛。直接在 main 开发不构成自动发布授权。流程见 docs/releases/windows-installer-release.md。
 
 ## 可用的代理
 
@@ -123,7 +123,7 @@
 
 | 操作 | 工作目录 | Shell | 命令 | 产物或通过标准 |
 | --- | --- | --- | --- | --- |
-| 检查工作区 | 仓库根目录 | PowerShell | `git status --short --branch` | Windows 开发使用 `feature/windows-native`，核对已有改动 |
+| 检查工作区 | 仓库根目录 | PowerShell | `git status --short --branch` | 默认开发使用 `main`，核对已有改动 |
 | Python 语法 | 仓库根目录 | PowerShell | `python -m compileall -q app.py audio_utils.py db.py project_settings.py providers.py settings_store.py voice_catalog.py tests` | 无语法错误；仅语法检查 |
 | Web JavaScript 语法 | 仓库根目录 | PowerShell | `node --check static/app.js` | 无语法错误；仅 Web 基线检查 |
 | 离线业务测试 | 仓库根目录 | PowerShell | `python -m pytest -q` | 安装 `requirements-dev.txt` 和 ffmpeg 后执行；测试用临时数据和 Mock |

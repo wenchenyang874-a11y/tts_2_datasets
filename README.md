@@ -2,7 +2,7 @@
 
 面向中文关键词唤醒（KWS）的 Windows 原生桌面工具，支持云 TTS 批量合成、真人录音导入、样本试听审核、噪声增强和训练集导出。
 
-目标环境：x64 Windows 10 1809 及以上、Windows 11。桌面版在 `feature/windows-native` 开发；实际系统验证与待验收项见 [验证记录](docs/testing/windows-validation.md)，验收完成前不合入 main。
+目标环境：x64 Windows 10 1809 及以上、Windows 11。桌面版已合入 `main`，后续直接在 main 开发；实际系统验证与待验收项见 [验证记录](docs/testing/windows-validation.md)。
 
 ## 快速启动
 
