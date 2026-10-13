@@ -107,4 +107,4 @@ beta.5 仅收窄默认 checkbox 单元格，仍使用 Qt 委托的绘制／命�
 
 `desktop/sample_table.py` 的 SampleTable 将 checkbox 与文本合并为第一列，保留六个信息列。SampleDelegate 明确绘制 checkbox，去掉默认 HasCheckIndicator／HasFocus 面板，文本用同一 QTextLayout 计算行高与绘制。其他列按首列 checkbox 状态着色，窗口／列宽变化重新计算行高；当前格与业务选择不混用。
 
-鼠标 press 保存样本稳定 ID，release 在同一 ID 的行内才切换一次，不把同一事件继续传给 Qt checkbox 编辑器；双击确保 Checked 并触发已有播放入口，第二次 release 不反转。刷新可能重新排序／替换行，不能缓存行号或原 item 指针作为一次点击的身份。空间键在表格层统一切换，跨页 selected 仍由 SamplesPage 维护，后端音频／导出契约未改变。验收需要点击实际画出的框边／中心、间隙和其他列，并校验渲染像素与业务选择集合。
+鼠标 press 保存样本稳定 ID，release 在同一 ID 的行内才切换一次，不把同一事件继续传给 Qt checkbox 编辑器；双击确保 Checked 并触发已有播放入口，第二次 release 不反转。刷新可能重新排序／替换行，不能缓存行号或原 item 指针作为一次点击的身份。空格键在表格层统一切换，跨页 selected 仍由 SamplesPage 维护，后端音频／导出契约未改变。验收需要点击实际画出的框边／中心、间隙和其他列，并校验渲染像素与业务选择集合。

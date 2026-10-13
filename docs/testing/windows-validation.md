@@ -158,3 +158,7 @@ Windows 11 x64 / 10.0.26200。源码 `artifacts/beta5-source-final-150-3/result.
 双击选中并加载实际 WAV 缓存，审核数量不变；长文本／来源在勾选前后行高不变、完整换行，同列没有额外空白焦点格。200 项离线测试通过，1 条既有 Starlette 上游弃用提示。后续冻结／隔离安装与最终资产结果补入本节；Win10、真实云和麦克风仍待验证。
 
 用户明确只有发布后才递增版本号，最终继续使用 beta.5。`artifacts/beta5-selection-source-150/result.json` 为 ok=true，26 项流程通过。旧 beta.5 包完整归档到 `dist/releases/archive/2.0.0-beta.5/fb99b73822b8/`，原资产哈希不变；不得把旧包的安装证据当作新构建通过。新的安装检查增加同版本重新安装修复运行文件并保留数据，用户现有生产安装 beta.5 保留。
+
+最终 `artifacts/beta5-selection-source-100/result.json`、`artifacts/beta5-selection-frozen-150/result.json` 均 ok=true，各 26 项流程通过；安装后的 checkbox／整行点击、长文本换行截图已核对。`artifacts/installer-beta5-selection-final/result.json` 为 ok=true，9 项隔离安装检查及安装后的 26 项原生流程通过。源 `1cc84c91e5b66d734bff6c87dfc52f0e0c32026d`，manifest SHA-256 `09754504fd250d6d50490f101d8524667aee8f7192e21c26435ba3d4942904a0`；所有资产字节数和哈希与清单一致。
+
+同版本重装夹具保留当前登记版本，损坏本轮 exe 后重新安装，完整文件逐项恢复到便携包哈希且用户文件／数据保留；不是用户生产程序原位升级实测。其余版本／运行保护、两个降级边界、模拟旧版本修复、正常与偏好目录冷启动、卸载保留数据均通过。生产安装仍为 beta.5，测试登记已移除；未关闭或替换用户程序，未调用真实云。本次继续 beta.5，不创建新版本 Tag、推送或 Release。
