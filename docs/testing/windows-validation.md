@@ -177,4 +177,12 @@ Windows 11 x64 / 10.0.26200。源码 `artifacts/beta5-source-final-150-3/result.
 
 首次隔离安装 `artifacts/installer-beta5-rowpaint-unlocked/result.json` 为 ok=false：已通过首帧与相关样本交互，后续迁移将测试 data/samples 原子移入本轮 retired 目录时遭遇 WinError 5。原数据回滚保留 17 条样本；退出后在同一个已确认的测试目录中重命名 samples 成功并恢复，拒绝访问的占用来源未确定。没有删除或操作用户真实数据，该失败证据保持原状。
 
-新测试目录的 `artifacts/installer-beta5-rowpaint-unlocked-final/result.json` 为 ok=true，9 项隔离安装检查与安装后 27 项原生流程通过，包含实际迁移及清理旧数据、普通／偏好目录冷启动、运行保护、同版本修复、两个降级边界和卸载保留数据。安装后的 `sample-first-paint.json` 六种入口首帧均覆盖六列，相邻行不重绘，实际窗口截图已核对。未修改运行代码／测试／安装包，源 d85428b 与原清单一致。测试身份已卸载，生产安装 beta.5 路径／版本保留；Win10、真实云、真实麦克风仍待实测，没有 Tag、推送或 Release。
+新测试目录的 `artifacts/installer-beta5-rowpaint-unlocked-final/result.json` 为 ok=true，9 项隔离安装检查与安装后 27 项原生流程通过，包含实际迁移及清理旧数据、普通／偏好目录冷启动、运行保护、同版本修复、两个降级边界和卸载保留数据。安装后的 `sample-first-paint.json` 六种入口首帧均覆盖六列，相邻行不重绘，实际窗口截图已核对。未修改运行代码／测试／安装包，源 d85428b 与原清单一致。测试身份已卸载，生产安装 beta.5 路径／版本保留；Win10、真实云、真实麦克风仍待实测。该验收结束时未发布；后续发布证据见下节。
+
+## 2026-10-13 / beta.5 发布回读验证
+
+用户明确通知发布后，使用上述 d85428b 原构建及最终安装证据执行正式发布入口；未重新构建安装包。annotated Tag `v2.0.0-beta.5` 固定在 `d85428b463a9740ff479b68147137f2762aa6c1b`。GitHub Release ID 为 `411556616`，三项资产分别核对 GitHub 元数据、完整回读字节数与 SHA-256；`artifacts/release-beta5-download/verification.json` 为 ok=true、remote_bytes_and_sha256_verified=true。
+
+安装包 78684421 字节、SHA-256 `c0ed9bdcc2aac62e06f2bf5cd162a6c6e265aad0d4f7de1119c8186c29f03a98`；便携包 107721638 字节、SHA-256 `058681cf438f6a9e1ef537cb9ae41a7b97f7b1284bd8c9cc9db3c87d2554ab53`；校验文件 245 字节、SHA-256 `f04787bc965dc670a44d8e2cb2912889457402b89f14162fcad816a416428e1c`，均与用户验收清单匹配。
+
+完整回读通过后才公开 [beta.5 Release](https://github.com/wenchenyang874-a11y/tts_2_datasets/releases/tag/v2.0.0-beta.5)，draft=false、prerelease=true，不设置 Latest；Latest 仍为 v1.1.0。main 与 Web 备份仍为 fcbcbb22f84797dfe9b17b81da0c9eea444fe38d，未合入开发分支。发布不扩大上述系统、云及麦克风验收范围。
