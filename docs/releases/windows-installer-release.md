@@ -1,6 +1,6 @@
 # Windows 安装与版本发布
 
-面向维护者。用户已授权每个版本制作安装包、打 Tag 并上传 GitHub Release；该授权持续有效。普通开发提交不必单独发版，正式交付版本必须完成以下流程。
+面向维护者。用户于 2026-10-13 调整发布规则：Agent 可自主本地提交、测试和构建安装包，先提供本地产物供用户验证；用户验证通过并明确通知发布后，才打 Tag 并上传 GitHub Release。此前的自动发布授权已撤回，Agent 自测通过不等于用户验收。普通开发提交不必单独发版。
 
 ## 安装契约
 
@@ -35,6 +35,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_release.ps1 -I
 
 ## Tag 与 Release
 
+仅在用户验证本版本安装包通过并明确通知发布后执行。未获通知时，不创建本地/远程 Tag，不创建 Release 草稿，不上传资产，也不运行 publish_release.py。通知对应具体版本、构建提交和安装包；验收后若改变运行代码或重新构建，应重新交付用户验证。
+
 仓库根目录，已登录 `gh` 的 PowerShell：
 
 ```powershell
@@ -49,7 +51,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_release.ps1 -I
 
 ## 版本结尾的交付回复
 
-每个版本的最终交付回复必须列出本地已打好的安装包：版本、完整文件名和可点击的绝对路径。GitHub Release 链接同时提供，不能替代本地安装包链接。回复前检查实际文件存在，并核对其字节数和 SHA-256 与该版本 `release-manifest.json` 一致；如有多个安装包，逐一列出。
+每个版本的最终交付回复必须列出本地已打好的安装包：版本、完整文件名和可点击的绝对路径。已获通知并实际发布时同时提供 GitHub Release 链接；待用户验收时明确写明未打 Tag、未发布。Release 链接不能替代本地安装包链接。回复前检查实际文件存在，并核对其字节数和 SHA-256 与该版本 `release-manifest.json` 一致；如有多个安装包，逐一列出。
 
 仓内文档仍使用相对产物路径，例如 `dist/releases/2.0.0-beta.1/TTS-Dataset-Studio-2.0.0-beta.1-windows-x64-setup.exe`；本机绝对路径只在当前会话的交付回复中按实际工作区生成，不能写死到公开仓库。
 
