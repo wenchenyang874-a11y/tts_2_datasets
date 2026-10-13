@@ -4,10 +4,11 @@ from PySide6.QtWidgets import (QGroupBox, QVBoxLayout, QHBoxLayout, QLineEdit, Q
                                QWidget, QFileDialog, QLabel)
 from .base import Page
 from .widgets import field, button, combo
-from .data_transfer import copy_dataset
 
 FIELDS = {
+    "xiaomi": [("api_key", "API Key", True), ("endpoint", "合成 Endpoint", False)],
     "volcengine": [("app_id", "App ID", False), ("access_token", "Access Token", True),
+                    ("api_key", "2.0 API Key", True), ("v3_endpoint", "2.0 Endpoint", False),
                     ("cluster", "Cluster", False), ("access_key_id", "Access Key ID", False),
                     ("access_key_secret", "Access Key Secret", True), ("endpoint", "合成 Endpoint", False),
                     ("catalog_endpoint", "音色 Endpoint", False)],
@@ -22,8 +23,9 @@ class SettingsPage(Page):
         self.fields = {}
         self.units = {}
         self.state = {}
+        self.controls = {}
         tabs = QTabWidget()
-        for provider, title in [("volcengine", "火山引擎"), ("aliyun", "阿里云")]:
+        for provider, title in [("volcengine", "火山引擎"), ("aliyun", "阿里云"), ("xiaomi", "小米 MiMo")]:
             content = QWidget()
             layout = QVBoxLayout(content)
             controls = {}
@@ -33,6 +35,10 @@ class SettingsPage(Page):
                     widget.setEchoMode(QLineEdit.EchoMode.Password)
                 tip = "凭据由当前 Windows 用户的 DPAPI 保护；留空保留已保存的密钥，不回显明文。" if secret else (
                     "默认仅允许供应商官方 HTTPS 主机。留空使用适配器默认值。" if "endpoint" in key else "")
+                if provider == "volcengine" and key == "api_key":
+                    tip += " 豆包 2.0 使用控制台 API Key 管理中的密钥，与 1.0 Access Token 和目录查询 AK/SK 不同。"
+                if provider == "xiaomi" and key == "endpoint":
+                    tip += " 可填写官方 https://api.xiaomimimo.com/v1 或完整 /v1/chat/completions 地址。"
                 layout.addWidget(field(label, widget, tip))
                 controls[key] = widget
             prices = QHBoxLayout()
@@ -46,9 +52,12 @@ class SettingsPage(Page):
             prices.addWidget(field("币种", currency))
             layout.addLayout(prices)
             actions = QHBoxLayout()
-            actions.addWidget(button("保存", lambda checked=False, p=provider: self.save(p), True))
-            actions.addWidget(button("验证格式", lambda checked=False, p=provider: self.validate(p)))
-            actions.addWidget(button("清空配置", lambda checked=False, p=provider: self.clear(p)))
+            self.controls[provider] = [button("保存", lambda checked=False, p=provider: self.save(p), True),
+                button("验证格式", lambda checked=False, p=provider: self.validate(p)),
+                button("获取音色列表", lambda checked=False, p=provider: self.fetch_catalog(p)),
+                button("清空配置", lambda checked=False, p=provider: self.clear(p))]
+            for control in self.controls[provider]:
+                actions.addWidget(control)
             actions.addStretch()
             layout.addLayout(actions)
             self.state[provider] = QLabel()
@@ -58,9 +67,11 @@ class SettingsPage(Page):
         self.layout.addWidget(tabs)
         self.location = QLabel(str(shell.runtime.data_directory))
         self.location.setWordWrap(True)
-        self.layout.addWidget(field("数据目录", self.location, "数据库、音频和加密凭据位于用户数据目录，与安装包分离。DPAPI 凭据只能由原 Windows 用户读取，跨用户恢复需重新配置。"))
-        self.actions(("打开数据目录", shell.open_data_directory, False),
-                     ("导入 Web 备份到新目录", self.import_data, False))
+        self.layout.addWidget(field("当前数据目录", self.location, "数据库、音频和加密凭据位于用户数据目录，与安装包分离。DPAPI 凭据只能由原 Windows 用户读取，跨用户恢复需重新配置。"))
+        self.data_directory = QLineEdit(str(shell.runtime.data_directory))
+        self.layout.addWidget(field("下次启动目录", self.data_directory, "选择或输入目录并保存，下次启动生效。旧数据保留原位置，不自动搬迁；命令行 --data-dir 优先于此设置。"))
+        self.actions(("选择目录", self.choose_directory, False), ("保存目录", self.save_directory, True),
+                     ("打开当前目录", shell.open_data_directory, False))
         self.layout.addStretch()
 
     def refresh(self):
@@ -68,18 +79,23 @@ class SettingsPage(Page):
 
     def show_settings(self, result):
         for provider in result["providers"]:
-            name = provider["id"]
-            for key, widget in self.fields[name].items():
-                value = provider.get(key, "")
-                if isinstance(value, dict):
-                    widget.clear()
-                    widget.setPlaceholderText("已保存，留空保留" if value.get("configured") else "尚未配置")
-                else:
-                    widget.setText(str(value))
-            self.units[name].setCurrentIndex(max(0, self.units[name].findData(provider.get("pricing_unit"))))
-            self.state[name].setText("合成配置已填写" if provider.get("synthesis_configured") else "合成配置未完整填写")
+            self.show_provider(provider)
 
-    def save(self, provider):
+    def show_provider(self, provider):
+        name = provider["id"]
+        if name not in self.fields:
+            return
+        for key, widget in self.fields[name].items():
+            value = provider.get(key, "")
+            if isinstance(value, dict):
+                widget.clear()
+                widget.setPlaceholderText("已保存，留空保留" if value.get("configured") else "尚未配置")
+            else:
+                widget.setText(str(value))
+        self.units[name].setCurrentIndex(max(0, self.units[name].findData(provider.get("pricing_unit"))))
+        self.state[name].setText("合成配置已填写" if provider.get("synthesis_configured") else "合成配置未完整填写")
+
+    def form_payload(self, provider):
         payload = {}
         secret_names = {key for key, _, secret in FIELDS[provider] if secret}
         for key, widget in self.fields[provider].items():
@@ -88,28 +104,72 @@ class SettingsPage(Page):
                 continue
             payload[key] = value if value else None
         payload["pricing_unit"] = self.units[provider].currentData() or None
+        return payload
+
+    def busy(self, provider, enabled):
+        for control in self.controls[provider]:
+            control.setEnabled(not enabled)
+
+    def save(self, provider):
+        payload = self.form_payload(provider)
+        self.busy(provider, True)
         self.request(f"/api/settings/providers/{provider}", "PUT", json=payload,
-                     callback=lambda result: (self.notify("配置已保存"), self.refresh()))
+                     callback=lambda result: self.saved(provider, result), error=lambda error: self.failed(provider, error))
+
+    def saved(self, provider, result):
+        # Render only the saved provider, so another tab's unsaved edits are
+        # not lost. A failed catalog lookup must not roll back valid settings
+        # or claim the save failed: surface those two results separately.
+        self.show_provider(result)
+        self.fetch_catalog(provider, saved=True)
+
+    def failed(self, provider, error):
+        self.busy(provider, False)
+        self.shell.error(error)
 
     def validate(self, provider):
-        self.request(f"/api/settings/providers/{provider}/test", "POST",
-                     callback=lambda result: self.notify("配置格式通过；尚未验证真实云调用"))
+        self.busy(provider, True)
+        self.request(f"/api/settings/providers/{provider}/test", "POST", json=self.form_payload(provider),
+                     callback=lambda result: (self.busy(provider, False), self.notify("当前填写内容格式通过；未发起云调用")),
+                     error=lambda error: self.failed(provider, error))
+
+    def fetch_catalog(self, provider, saved=False):
+        self.busy(provider, True)
+        self.state[provider].setText("配置已保存，正在获取音色…" if saved else "正在获取音色…")
+        self.request("/api/voices/refresh", "POST", json={"provider": provider},
+                     callback=lambda result: self.catalog_ready(provider, result),
+                     error=lambda error: self.catalog_failed(provider, error, saved))
+
+    def catalog_ready(self, provider, result):
+        self.busy(provider, False)
+        suffix = "；" + "；".join(result["warnings"]) if result.get("warnings") else ""
+        description = "预置音色" if provider == "xiaomi" else "音色"
+        self.state[provider].setText(f"已获取 {result['count']} 个{description}" + suffix)
+        self.notify(self.state[provider].text())
+        self.shell.pages[0].refresh_voices()
+
+    def catalog_failed(self, provider, error, saved):
+        self.busy(provider, False)
+        message = ("配置已保存；" if saved else "") + "音色获取失败：" + str(error)
+        self.state[provider].setText(message)
+        self.shell.set_status(message, True)
 
     def clear(self, provider):
         if self.confirm("清空该供应商配置与凭据？"):
             self.mutate(f"/api/settings/providers/{provider}", "DELETE")
 
-    def import_data(self):
-        if not self.confirm("请先停止原 Web 服务并备份完整数据目录。将导入到一个空目录，原数据保持不变。继续？"):
+    def choose_directory(self):
+        directory = QFileDialog.getExistingDirectory(self, "选择数据目录", self.data_directory.text())
+        if directory:
+            self.data_directory.setText(directory)
+
+    def save_directory(self):
+        value = self.data_directory.text().strip()
+        if not value:
+            self.shell.error("请输入或选择数据目录")
             return
-        source = QFileDialog.getExistingDirectory(self, "选择停止服务后的 Web 数据备份")
-        if not source:
+        if self.shell.preferences is None:
+            self.shell.error("当前启动方式未配置桌面偏好存储")
             return
-        destination = QFileDialog.getExistingDirectory(self, "选择空的导入目标目录")
-        if not destination:
-            return
-        if Path(destination).resolve() == self.shell.runtime.data_directory:
-            self.shell.error("不能导入到正在使用的数据目录")
-            return
-        self.shell.submit(lambda: copy_dataset(Path(source), Path(destination)),
-                          lambda result: self.notify("数据已导入；关闭应用后以 --data-dir 指定新目录启动。跨 Windows 用户的凭据需重新配置。"))
+        self.shell.submit(lambda: self.shell.preferences.save_data_directory(value),
+                          lambda path: (self.data_directory.setText(str(path)), self.notify("数据目录已保存，下次启动生效")))

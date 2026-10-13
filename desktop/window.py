@@ -21,9 +21,10 @@ from .settings import SettingsPage
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, runtime):
+    def __init__(self, runtime, preferences=None):
         super().__init__()
         self.runtime = runtime
+        self.preferences = preferences
         self.jobs = {}
         self.selected_samples = set()
         self.project = {}

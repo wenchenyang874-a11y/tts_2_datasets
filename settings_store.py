@@ -29,6 +29,7 @@ MAX_PRICING_RATE_LENGTH = 64
 MAX_PRICING_CURRENCY_LENGTH = 16
 
 PROVIDER_FIELDS: dict[str, frozenset[str]] = {
+    "xiaomi": frozenset({"api_key", "endpoint", *PRICING_FIELDS}),
     "aliyun": frozenset(
         {
             "api_key",
@@ -48,15 +49,19 @@ PROVIDER_FIELDS: dict[str, frozenset[str]] = {
             "access_key_id",
             "access_key_secret",
             "catalog_endpoint",
+            "api_key",
+            "v3_endpoint",
             *PRICING_FIELDS,
         }
     ),
 }
 SECRET_FIELDS: dict[str, frozenset[str]] = {
+    "xiaomi": frozenset({"api_key"}),
     "aliyun": frozenset({"api_key"}),
-    "volcengine": frozenset({"access_token", "access_key_secret"}),
+    "volcengine": frozenset({"access_token", "access_key_secret", "api_key"}),
 }
 REQUIRED_FIELDS: dict[str, frozenset[str]] = {
+    "xiaomi": frozenset({"api_key"}),
     "aliyun": frozenset({"api_key"}),
     "volcengine": frozenset({"app_id", "access_token"}),
 }
@@ -239,15 +244,21 @@ class ProviderSettingsStore:
             "configured": all(config.get(key) for key in REQUIRED_FIELDS[provider]),
         }
         if provider == "volcengine":
-            result["synthesis_configured"] = all(
+            result["v1_configured"] = all(
                 config.get(key) for key in ("app_id", "access_token")
             )
+            result["v2_configured"] = bool(config.get("api_key"))
+            result["synthesis_configured"] = result["v1_configured"] or result["v2_configured"]
+            result["configured"] = result["synthesis_configured"]
             result["catalog_configured"] = all(
                 config.get(key) for key in ("access_key_id", "access_key_secret")
             )
         elif provider == "aliyun":
             result["synthesis_configured"] = bool(config.get("api_key"))
             result["custom_voice_query_configured"] = bool(config.get("api_key"))
+        elif provider == "xiaomi":
+            result["synthesis_configured"] = bool(config.get("api_key"))
+            result["catalog_configured"] = True  # Official preset snapshot, not an account permission check.
         for field in sorted(PROVIDER_FIELDS[provider]):
             if field in SECRET_FIELDS[provider]:
                 value = config.get(field, "")

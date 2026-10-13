@@ -12,11 +12,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", action="version", version=VERSION)
     parser.add_argument("--data-dir", type=Path)
+    parser.add_argument("--preferences-file", type=Path, help="Override desktop preferences location (for isolated testing)")
     parser.add_argument("--smoke-test", type=Path, help="Run offline native acceptance in a new isolated directory")
     parser.add_argument("--verify-launch", type=Path, help="Verify normal locked startup/event loop, save evidence and close; requires --data-dir")
     args = parser.parse_args()
-    if args.verify_launch and (not args.data_dir or args.verify_launch.exists()):
-        parser.error("--verify-launch requires --data-dir and a new evidence directory")
+    if args.verify_launch and ((not args.data_dir and not args.preferences_file) or args.verify_launch.exists()):
+        parser.error("--verify-launch requires isolated --data-dir or --preferences-file and a new evidence directory")
     from desktop.installer_guard import InstallerGuard
     # Hold the marker before importing Qt or spawning the business process.
     # Acquiring it only after startup leaves a race where an upgrade replaces
@@ -42,8 +43,14 @@ def run_application(args, version) -> int:
     if args.smoke_test:
         from desktop.smoke import run_smoke
         return run_smoke(application, args.smoke_test)
-    directory = args.data_dir or Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local")) / "TTS Dataset Studio" / "data"
     from PySide6.QtWidgets import QMessageBox
+    from desktop.preferences import DesktopPreferences
+    preferences = DesktopPreferences(args.preferences_file)
+    try:
+        directory = args.data_dir or preferences.data_directory() or Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local")) / "TTS Dataset Studio" / "data"
+    except (OSError, ValueError):
+        QMessageBox.warning(None, "数据目录配置不可用", "无法读取已保存的数据目录配置，请检查配置文件或用 --data-dir 指定目录。")
+        return 1
     try:
         directory.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -70,7 +77,7 @@ def run_application(args, version) -> int:
         QMessageBox.warning(None, "服务不可用", "无法启动或管理业务进程，请检查系统权限与完整程序包。")
         return 1
     try:
-        window = MainWindow(runtime)
+        window = MainWindow(runtime, preferences)
         window.show()
         if args.verify_launch:
             from desktop.launch_check import attach_launch_check

@@ -71,6 +71,31 @@ def _first_mock_voice(client: TestClient) -> dict:
     return voices[0]
 
 
+def test_current_provider_form_validation_is_non_persisting_and_keeps_saved_secret(client, monkeypatch, tmp_path):
+    from settings_store import ProviderSettingsStore
+    store = ProviderSettingsStore(tmp_path / "settings.json")
+    monkeypatch.setattr(app_module, "provider_settings", store)
+    result = client.post("/api/settings/providers/xiaomi/test", json={"api_key": "unsaved-fixture-key", "endpoint": "https://api.xiaomimimo.com/v1"})
+    assert result.status_code == 200 and result.json()["remote_verified"] is False
+    assert "unsaved-fixture-key" not in result.text and store.get_provider("xiaomi") == {}
+    client.put("/api/settings/providers/xiaomi", json={"api_key": "saved-fixture-key"})
+    assert client.post("/api/settings/providers/xiaomi/test", json={"api_key": ""}).status_code == 200
+    invalid = client.post("/api/settings/providers/xiaomi/test", json={"endpoint": "https://untrusted.example/v1"})
+    assert invalid.status_code == 400
+    assert store.get_provider("xiaomi")["api_key"] == "saved-fixture-key"
+
+
+def test_xiaomi_cloud_cost_never_defaults_to_free(monkeypatch, tmp_path):
+    from settings_store import ProviderSettingsStore
+    monkeypatch.setattr(app_module, "provider_settings", ProviderSettingsStore(tmp_path / "settings.json"))
+    voice = {"provider": "xiaomi"}
+    assert app_module._provider_audio_for({}, "xiaomi")["sample_rate"] == 24000
+    with pytest.raises(app_module.HTTPException) as error:
+        app_module._require_cost_acknowledgement([voice], False)
+    assert error.value.status_code == 400
+    assert app_module._estimate_generation_cost("请开灯", [voice], 1)["cost_available"] is False
+
+
 def _wav_bytes(duration: float = 2.0, frequency: float = 173.0) -> bytes:
     sample_rate = 16_000
     timeline = np.arange(int(sample_rate * duration), dtype=np.float64) / sample_rate

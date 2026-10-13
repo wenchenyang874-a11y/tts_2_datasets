@@ -63,6 +63,10 @@ class ProviderInfo:
 
 
 PROVIDER_CAPABILITIES: dict[str, dict[str, Any]] = {
+    "xiaomi": {
+        "audio_formats": ("wav", "mp3"), "sample_rates": (24_000,),
+        "speed": False, "pitch": False, "volume": False,
+    },
     "mock": {
         "audio_formats": ("wav",),
         "sample_rates": (16_000,),
@@ -100,6 +104,7 @@ def get_provider_capabilities(name: str) -> dict[str, Any]:
         "volc": "volcengine",
         "doubao": "volcengine",
         "bytedance": "volcengine",
+        "mimo": "xiaomi",
     }
     provider_id = aliases.get(normalized, normalized)
     capabilities = PROVIDER_CAPABILITIES.get(provider_id)
@@ -780,6 +785,59 @@ class AlibabaTTSProvider(BaseTTSProvider):
 AliyunTTSProvider = AlibabaTTSProvider
 
 
+def _mimo_endpoint(config: Mapping[str, Any]) -> str:
+    value = str(config.get("endpoint") or "https://api.xiaomimimo.com/v1/chat/completions").strip().rstrip("/")
+    value = _validate_vendor_endpoint(value, "小米 MiMo", ("api.xiaomimimo.com",))
+    path = urlparse(value).path
+    if path in ("", "/v1"):
+        value += "/v1/chat/completions" if not path else "/chat/completions"
+    elif path != "/v1/chat/completions":
+        raise ProviderConfigurationError("小米 MiMo Endpoint 应为 /v1 或 /v1/chat/completions")
+    return value
+
+
+class XiaomiTTSProvider(BaseTTSProvider):
+    """MiMo preset TTS via the documented Chat Completions audio response."""
+
+    provider_id = "xiaomi"
+
+    def __init__(self, config=None, *, settings_store=None):
+        self.config = dict(config if config is not None else (settings_store or get_default_settings_store()).get_provider("xiaomi"))
+        self.api_key = str(self.config.get("api_key") or "").strip()
+        if not self.api_key:
+            raise ProviderConfigurationError("小米 MiMo 未配置：请填写 API Key")
+        if any(ord(character) < 33 or ord(character) > 126 for character in self.api_key):
+            raise ProviderConfigurationError("小米 MiMo API Key 不应包含空白或非 ASCII 字符")
+        self.endpoint = _mimo_endpoint(self.config)
+
+    def synthesize(self, *, text, voice, model="mimo-v2.5-tts", audio_format="wav",
+                   sample_rate=24_000, speed=1.0, pitch=1.0, volume=50, seed=0, instruction=""):
+        self._validate_input(text, voice, audio_format, sample_rate, speed, pitch, volume)
+        if model != "mimo-v2.5-tts":
+            raise ProviderRequestError("当前小米适配器仅支持预置音色模型 mimo-v2.5-tts")
+        # The target text MUST be assistant content. User content is optional
+        # style guidance, not text to speak. MiMo has no numeric rate/volume,
+        # pitch or sample_rate request fields; reject unsupported numeric
+        # controls above and let the existing importer resample the returned
+        # 24 kHz audio to the project's 16 kHz PCM16 training contract.
+        messages = ([{"role": "user", "content": instruction.strip()}] if instruction.strip() else [])
+        messages.append({"role": "assistant", "content": text})
+        response = _request("POST", self.endpoint, provider="小米 MiMo",
+                            headers={"api-key": self.api_key, "Content-Type": "application/json"},
+                            json_body={"model": model, "messages": messages, "audio": {"voice": voice, "format": audio_format}, "stream": False},
+                            secrets=(self.api_key,), max_response_bytes=_max_audio_wire_bytes(), retry_transient=False)
+        payload = _extract_json(response, "小米 MiMo", (self.api_key,))
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise ProviderRequestError("小米 MiMo 响应缺少合成结果")
+        choice = choices[0]
+        if choice.get("finish_reason") not in (None, "stop"):
+            raise ProviderRequestError("小米 MiMo 未完整生成音频，请检查文本与账号限制")
+        message = choice.get("message")
+        audio = message.get("audio") if isinstance(message, dict) else None
+        return _decode_base64_audio(audio.get("data") if isinstance(audio, dict) else None, "小米 MiMo")
+
+
 class VolcTTSProvider(BaseTTSProvider):
     """Volcengine OpenSpeech JSON TTS adapter."""
 
@@ -800,7 +858,8 @@ class VolcTTSProvider(BaseTTSProvider):
         configured_token = str(self.config.get("access_token", "")).strip()
         self.token = re.sub(r"^Bearer;?\s*", "", configured_token, flags=re.I)
         self.cluster = str(self.config.get("cluster", "volcano_tts")).strip() or "volcano_tts"
-        if not self.app_id or not self.token:
+        self.api_key = str(self.config.get("api_key") or "").strip()
+        if not self.api_key and (not self.app_id or not self.token):
             raise ProviderConfigurationError(
                 "火山引擎未配置：请在设置页面填写 App ID 和 Access Token"
             )
@@ -828,6 +887,10 @@ class VolcTTSProvider(BaseTTSProvider):
         self._validate_input(
             text, voice, audio_format, sample_rate, speed, pitch, volume
         )
+        if model == "seed-tts-2.0":
+            return self._synthesize_v2(text, voice, audio_format, sample_rate, speed, volume, instruction)
+        if not self.app_id or not self.token:
+            raise ProviderConfigurationError("豆包语音 1.0 需要 App ID 和 Access Token；2.0 音色使用 API Key")
         if len(text.encode("utf-8")) > 1024:
             raise ProviderRequestError("火山引擎在线短文本接口单次输入不能超过 1024 字节")
         if model and model not in {
@@ -877,6 +940,47 @@ class VolcTTSProvider(BaseTTSProvider):
                 f"火山引擎请求失败：code={_redact(code)}，message={_redact(message, (self.token, self.app_id))}{suffix}"
             )
         return _decode_base64_audio(body.get("data"), "火山引擎")
+
+    def _synthesize_v2(self, text, voice, audio_format, sample_rate, speed, volume, instruction):
+        if not self.api_key:
+            raise ProviderConfigurationError("豆包语音 2.0 需要控制台 API Key，请在设置中填写 2.0 API Key")
+        if audio_format == "ogg_opus":
+            raise ProviderRequestError("豆包 2.0 Ogg Opus 需要 48000 Hz；当前兼容参数请使用 WAV 或 MP3")
+        endpoint = _validate_vendor_endpoint(str(self.config.get("v3_endpoint") or "https://openspeech.bytedance.com/api/v3/tts/unidirectional"), "豆包语音 2.0", ("openspeech.bytedance.com",))
+        params = {"text": text, "speaker": voice, "audio_params": {"format": audio_format, "sample_rate": sample_rate,
+                  "speech_rate": round((speed - 1) * 100), "loudness_rate": round((max(.5, min(2., volume / 50.)) - 1) * 100)}}
+        if instruction.strip():
+            params["additions"] = json.dumps({"context_texts": [instruction.strip()]}, ensure_ascii=False)
+        response = _request("POST", endpoint, provider="豆包语音 2.0",
+                            headers={"X-Api-Key": self.api_key, "X-Api-Resource-Id": "seed-tts-2.0", "X-Api-Request-Id": str(uuid.uuid4()), "Content-Type": "application/json"},
+                            json_body={"req_params": params}, secrets=(self.api_key,),
+                            max_response_bytes=_max_audio_wire_bytes(), retry_transient=False)
+        # HTTP Chunked transport carries newline-separated JSON records, not a
+        # single V1 JSON body. Collect bounded decoded segments; discard all
+        # partial audio if a later record fails. No billable POST is retried.
+        decoder = json.JSONDecoder()
+        body = response.text
+        offset = 0
+        output = bytearray()
+        try:
+            while offset < len(body):
+                while offset < len(body) and body[offset].isspace():
+                    offset += 1
+                if offset == len(body):
+                    break
+                record, offset = decoder.raw_decode(body, offset)
+                if not isinstance(record, dict):
+                    raise ProviderRequestError("豆包 2.0 返回了无效音频分段")
+                code = record.get("code")
+                if code not in (0, 20000000):
+                    raise ProviderRequestError("豆包 2.0 合成失败：" + _redact(record.get("message", "未知错误"), (self.api_key,)))
+                if record.get("data"):
+                    output.extend(_decode_base64_audio(record["data"], "豆包 2.0"))
+                    if len(output) > _max_audio_bytes():
+                        raise ProviderRequestError("豆包 2.0 音频超过大小限制")
+        except (ValueError, json.JSONDecodeError) as error:
+            raise ProviderRequestError("豆包 2.0 返回了不完整或无效的音频分段 JSON") from error
+        return _bounded_audio(bytes(output), "豆包 2.0")
 
 
 class VolcVoiceCatalogClient:
@@ -1083,10 +1187,10 @@ def _cloud_configured(
     provider_id: str, settings_store: ProviderSettingsStore | None = None
 ) -> bool:
     config = (settings_store or get_default_settings_store()).get_provider(provider_id)
-    if provider_id == "aliyun":
+    if provider_id in {"aliyun", "xiaomi"}:
         return bool(config.get("api_key"))
     if provider_id == "volcengine":
-        return bool(config.get("app_id") and config.get("access_token"))
+        return bool(config.get("api_key") or (config.get("app_id") and config.get("access_token")))
     return True
 
 
@@ -1099,6 +1203,11 @@ def validate_provider_configuration(
     """Validate stored configuration without making a billable cloud request."""
 
     normalized = name.strip().lower().replace("-", "_")
+    if normalized in {"xiaomi", "mimo"}:
+        _mimo_endpoint(config)
+        if require_credentials or config.get("api_key"):
+            XiaomiTTSProvider(config=config)
+        return
     if normalized in {"aliyun", "alibaba", "ali", "dashscope"}:
         workspace_id = str(config.get("workspace_id", "")).strip()
         if workspace_id and not re.fullmatch(r"[A-Za-z0-9-]+", workspace_id):
@@ -1121,8 +1230,11 @@ def validate_provider_configuration(
             AlibabaTTSProvider(config=config)
         return
     if normalized in {"volcengine", "volc", "doubao", "bytedance"}:
+        if config.get("api_key") and any(ord(c) < 33 or ord(c) > 126 for c in str(config["api_key"])):
+            raise ProviderConfigurationError("豆包 2.0 API Key 不应包含空白或非 ASCII 字符")
         for field, label, allowed_hosts in (
             ("endpoint", "火山引擎合成", ("openspeech.bytedance.com",)),
+            ("v3_endpoint", "豆包 2.0 合成", ("openspeech.bytedance.com",)),
             (
                 "catalog_endpoint",
                 "火山引擎音色目录",
@@ -1137,11 +1249,13 @@ def validate_provider_configuration(
             catalog_present = bool(
                 config.get("access_key_id") or config.get("access_key_secret")
             )
-            if not synthesis_present and not catalog_present:
+            if not synthesis_present and not catalog_present and not config.get("api_key"):
                 raise ProviderConfigurationError(
                     "火山引擎未配置：合成需要 App ID/Access Token，目录需要 AK/SK"
                 )
             if synthesis_present:
+                if not config.get("app_id") or not config.get("access_token"):
+                    raise ProviderConfigurationError("豆包语音 1.0 的 App ID 与 Access Token 应同时填写")
                 VolcTTSProvider(config=config)
             if catalog_present:
                 VolcVoiceCatalogClient(config=config)
@@ -1161,6 +1275,9 @@ def available_providers(
         volc_config.get("access_key_id") and volc_config.get("access_key_secret")
     )
     return [
+        ProviderInfo(id="xiaomi", name="小米 MiMo", configured=_cloud_configured("xiaomi", settings_store),
+                     available=_cloud_configured("xiaomi", settings_store), supports_voice_query=True, supports_seed=False,
+                     detail="MiMo 预置音色；目录来自官方文档快照，不代表账号调用权限", synthesis_configured=_cloud_configured("xiaomi", settings_store), catalog_configured=True),
         ProviderInfo(
             id="mock", name="离线 Mock", configured=True, available=True,
             supports_voice_query=True, supports_seed=True,
@@ -1172,7 +1289,7 @@ def available_providers(
             available=volc_configured, supports_voice_query=volc_catalog_configured,
             supports_seed=False,
             detail=(
-                "合成使用 App ID/Access Token；公共音色目录使用独立的 Access Key ID/Secret"
+                "1.0 合成使用 App ID/Access Token，2.0 使用 API Key；音色目录使用独立 AK/SK"
             ),
             synthesis_configured=volc_configured,
             catalog_configured=volc_catalog_configured,
@@ -1196,6 +1313,8 @@ def get_provider(
     normalized = name.strip().lower().replace("-", "_")
     if normalized in {"mock", "offline", "demo"}:
         return MockTTSProvider()
+    if normalized in {"xiaomi", "mimo"}:
+        return XiaomiTTSProvider(settings_store=settings_store)
     if normalized in {"aliyun", "alibaba", "ali", "dashscope"}:
         return AlibabaTTSProvider(settings_store=settings_store)
     if normalized in {"volcengine", "volc", "doubao", "bytedance"}:
@@ -1204,6 +1323,7 @@ def get_provider(
 
 
 __all__ = [
+    "XiaomiTTSProvider",
     "AlibabaTTSProvider",
     "AliyunTTSProvider",
     "BaseTTSProvider",

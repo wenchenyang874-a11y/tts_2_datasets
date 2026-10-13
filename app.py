@@ -310,6 +310,8 @@ class AliyunProviderSettingsRequest(BaseModel):
 
 
 class VolcengineProviderSettingsRequest(BaseModel):
+    api_key: str | None = None
+    v3_endpoint: str | None = None
     app_id: str | None = None
     access_token: str | None = None
     cluster: str | None = None
@@ -553,7 +555,7 @@ def _insert_sample(sample: dict[str, Any]) -> None:
     )
 
 
-BILLABLE_PROVIDERS = {"aliyun", "volcengine"}
+BILLABLE_PROVIDERS = {"aliyun", "volcengine", "xiaomi"}
 
 
 def _local_cost_result() -> dict[str, Any]:
@@ -593,7 +595,8 @@ def _provider_audio_for(request: dict[str, Any], provider_name: str) -> dict[str
     capabilities = get_provider_capabilities(provider_name)
     audio_format = str(value.get("format") or value.get("audio_format") or "wav").strip().lower()
     try:
-        sample_rate = int(value.get("sample_rate", 16_000))
+        default_rate = 16_000 if 16_000 in capabilities["sample_rates"] else capabilities["sample_rates"][0]
+        sample_rate = int(value.get("sample_rate", default_rate))
     except (TypeError, ValueError) as exc:
         raise HTTPException(400, f"{provider_name} sample_rate 必须是整数") from exc
     if audio_format not in capabilities["audio_formats"]:
@@ -1266,13 +1269,19 @@ def providers() -> list[dict[str, Any]]:
 def provider_capabilities() -> dict[str, dict[str, Any]]:
     return {
         provider_id: get_provider_capabilities(provider_id)
-        for provider_id in ("mock", "aliyun", "volcengine")
+        for provider_id in ("mock", "aliyun", "volcengine", "xiaomi")
     }
 
 
 def _provider_settings_model(
     provider: str, payload: dict[str, Any]
 ) -> AliyunProviderSettingsRequest | VolcengineProviderSettingsRequest:
+    if provider == "xiaomi":
+        # MiMo shares API key/pricing fields with Alibaba, but not the
+        # workspace/region options. Reject unsupported fields explicitly.
+        if set(payload) - {"api_key", "endpoint", "pricing_unit", "pricing_rate", "pricing_currency"}:
+            raise HTTPException(400, "小米 MiMo 配置包含不支持的字段")
+        return AliyunProviderSettingsRequest.model_validate(payload)
     if provider == "aliyun":
         return AliyunProviderSettingsRequest.model_validate(payload)
     if provider == "volcengine":
@@ -1313,7 +1322,7 @@ def put_provider_settings(
 
 @app.delete("/api/settings/providers/{provider}")
 def delete_provider_settings(provider: str) -> dict[str, Any]:
-    if provider not in {"aliyun", "volcengine"}:
+    if provider not in {"aliyun", "volcengine", "xiaomi"}:
         raise HTTPException(404, "不支持的供应商")
     provider_settings.clear_provider(provider)
     disabled = 0
@@ -1329,10 +1338,24 @@ def delete_provider_settings(provider: str) -> dict[str, Any]:
 
 
 @app.post("/api/settings/providers/{provider}/test")
-def test_provider_settings(provider: str) -> dict[str, Any]:
-    if provider not in {"aliyun", "volcengine"}:
+def test_provider_settings(provider: str, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    if provider not in {"aliyun", "volcengine", "xiaomi"}:
         raise HTTPException(404, "不支持的供应商")
     config = provider_settings.get_provider(provider)
+    # Validate the unsaved form against stored secrets without persisting it.
+    # The old endpoint ignored the form altogether, reporting missing/old
+    # values even when the user had just filled them. Empty masked secrets
+    # retain the existing secret; ordinary empty fields remove old overrides.
+    if payload:
+        values = _provider_settings_model(provider, payload).model_dump(exclude_unset=True)
+        for key, raw_value in values.items():
+            value = str(raw_value).strip() if raw_value is not None else ""
+            if not value and key in {"api_key", "access_token", "access_key_secret"}:
+                continue
+            if value:
+                config[key] = value
+            else:
+                config.pop(key, None)
     try:
         validate_provider_configuration(provider, config, require_credentials=True)
     except ProviderError as exc:

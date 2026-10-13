@@ -111,7 +111,7 @@ def test_available_providers_never_exposes_credentials(tmp_path: Path) -> None:
     statuses = providers.available_providers(store)
     rendered = repr(statuses)
 
-    assert {item.id for item in statuses} == {"mock", "aliyun", "volcengine"}
+    assert {item.id for item in statuses} == {"mock", "aliyun", "volcengine", "xiaomi"}
     assert next(item for item in statuses if item.id == "aliyun").configured is True
     assert secret not in rendered
     assert "volc-secret-token" not in rendered
@@ -938,7 +938,7 @@ def test_builtin_catalog_is_chinese_friendly_and_model_bound(tmp_path: Path) -> 
     store = settings_store.ProviderSettingsStore(tmp_path / "settings.json")
     catalog = voice_catalog.refresh_voice_catalog(settings_store=store)
 
-    assert {item.provider for item in catalog} == {"mock", "aliyun", "volcengine"}
+    assert {item.provider for item in catalog} == {"mock", "aliyun", "volcengine", "xiaomi"}
     assert all(item.voice_id and item.model for item in catalog)
     assert any(item.gender == "female" and item.age_group == "senior" for item in catalog)
     assert any("zh" in language for item in catalog for language in item.languages)

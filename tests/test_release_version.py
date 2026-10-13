@@ -16,10 +16,14 @@ def test_invalid_or_unrepresentable_release_version_fails(version):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Win32 presence contract")
-def test_installer_guard_keeps_marker_until_last_owner_closes():
+def test_installer_guard_keeps_marker_until_last_owner_closes(monkeypatch):
     import ctypes
     from ctypes import wintypes
-    from desktop.installer_guard import InstallerGuard, MUTEX_NAME
+    import uuid
+    import desktop.installer_guard as guard_module
+    from desktop.installer_guard import InstallerGuard
+    MUTEX_NAME = "Local\\TTS_Installer_Test_" + uuid.uuid4().hex
+    monkeypatch.setattr(guard_module, "MUTEX_NAME", MUTEX_NAME)
 
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
@@ -33,7 +37,7 @@ def test_installer_guard_keeps_marker_until_last_owner_closes():
             kernel.CloseHandle(handle)
         return bool(handle)
 
-    assert not present(), "Close running desktop apps before this isolated test"
+    assert not present()
     first, second = InstallerGuard(), InstallerGuard()
     try:
         assert present()

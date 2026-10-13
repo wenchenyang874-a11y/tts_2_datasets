@@ -23,6 +23,7 @@ def run_smoke(application, destination: Path) -> int:
     from .window import MainWindow
     from .widgets import HelpButton
     from .data_transfer import copy_dataset
+    from .preferences import DesktopPreferences
     destination = destination.resolve()
     if destination.exists():
         raise ValueError("自检输出目录必须不存在，以隔离真实数据")
@@ -53,6 +54,8 @@ def run_smoke(application, destination: Path) -> int:
     def action(page, text):
         matches = [item for item in page.findChildren(QPushButton) if item.text() == text and item.isVisible()]
         assert matches, text
+        page.shell.stack.currentWidget().ensureWidgetVisible(matches[0])
+        application.processEvents()
         QTest.mouseClick(matches[0], Qt.MouseButton.LeftButton)
 
     def check(name):
@@ -72,7 +75,12 @@ def run_smoke(application, destination: Path) -> int:
 
     def start(directory):
         runtime = BusinessRuntime(directory)
-        window = MainWindow(runtime)
+        window = MainWindow(runtime, DesktopPreferences(destination / "desktop_preferences.json"))
+        # Keep this owned test window on the primary screen and above any
+        # unrelated user's window during pointer acceptance. widgetAt() must
+        # identify our actual control; synthetic Help events are not proof.
+        window.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        window.move(application.primaryScreen().availableGeometry().topLeft())
         windows.append(window)
         # Collect errors instead of leaving an unattended modal dialog open.
         window.error = lambda error: result["errors"].append(str(error))
@@ -93,29 +101,72 @@ def run_smoke(application, destination: Path) -> int:
             if not window.grab().save(str(destination / f"page-{index}.png")):
                 raise AssertionError("screenshot save failed")
         check("seven-native-pages-and-help-controls")
-        from PySide6.QtWidgets import QToolTip
-        from PySide6.QtGui import QHelpEvent
-        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QCursor
+        from PySide6.QtWidgets import QLabel
         visible_help = next(item for item in helps if item.isVisible())
-        event = QHelpEvent(QEvent.Type.ToolTip, visible_help.rect().center(), visible_help.mapToGlobal(visible_help.rect().center()))
-        application.sendEvent(visible_help, event)
-        pump_until(lambda: QToolTip.isVisible(), 2)
-        assert QToolTip.text() == visible_help.toolTip()
-        QToolTip.hideText()
-        check("native-tooltip-event-shows-associated-help")
+        window.stack.currentWidget().ensureWidgetVisible(visible_help)
+        window.activateWindow()
+        window.raise_()
+        pump_until(lambda: window.isActiveWindow(), 4)
+        QCursor.setPos(window.mapToGlobal(window.rect().topLeft()))
+        application.processEvents()
+        QTest.mouseMove(visible_help, visible_help.rect().center())
+        QCursor.setPos(visible_help.mapToGlobal(visible_help.rect().center()))
+        application.processEvents()
+        assert application.widgetAt(QCursor.pos()) is visible_help, "Actual cursor is not over the owned help control"
+        try:
+            pump_until(lambda: visible_help.popup is not None and visible_help.popup.isVisible(), 4)
+        except AssertionError:
+            result["hover_debug"] = {"active": window.isActiveWindow(), "window": [window.x(),window.y(),window.width(),window.height()], "hovered": visible_help.hovered, "under_mouse": visible_help.underMouse(), "popup_created": visible_help.popup is not None,
+                                     "widget_at_cursor": type(application.widgetAt(QCursor.pos())).__name__, "cursor": [QCursor.pos().x(), QCursor.pos().y()], "target": [visible_help.mapToGlobal(visible_help.rect().center()).x(), visible_help.mapToGlobal(visible_help.rect().center()).y()]}
+            raise
+        assert visible_help.popup.findChild(QLabel).text() == visible_help.toolTip()
+        visible_help.popup.grab().save(str(destination / "hover-help.png"))
+        QCursor.setPos(window.mapToGlobal(window.rect().topLeft()))
+        pump_until(lambda: not visible_help.popup.isVisible(), 3)
+        visible_help.setFocus(Qt.FocusReason.TabFocusReason)
+        pump_until(lambda: visible_help.popup.isVisible(), 3)
+        visible_help.clearFocus()
+        pump_until(lambda: not visible_help.popup.isVisible(), 3)
+        check("actual-mouse-hover-help-focus-and-leave")
         from PySide6.QtWidgets import QTabWidget
         settings = window.pages[6]
-        settings.findChildren(QTabWidget)[0].setCurrentIndex(1)
-        settings.fields["aliyun"]["api_key"].setText("native-smoke-test-only-key")
+        settings.findChildren(QTabWidget)[0].setCurrentIndex(2)
+        settings.fields["xiaomi"]["api_key"].setText("native-smoke-test-only-key")
+        action(settings, "验证格式")
+        idle(window)
+        assert "格式通过" in window.status.text()
+        assert not runtime.call("/api/settings/providers")["providers"][0]["api_key"]["configured"]
         action(settings, "保存")
         idle(window)
         persisted = (destination / "data/provider_settings.json").read_text(encoding="utf-8")
         assert "native-smoke-test-only-key" not in persisted
         assert "windows-dpapi-user-v1" in persisted
-        assert not settings.fields["aliyun"]["api_key"].text()
+        assert not settings.fields["xiaomi"]["api_key"].text()
+        assert len(runtime.call("/api/voices", params={"provider": "xiaomi"})) == 9
+        assert "已获取 9" in settings.state["xiaomi"].text()
+        action(settings, "验证格式")
+        idle(window)
+        assert "格式通过" in window.status.text()
         check("native-provider-form-save-dpapi-secret-not-returned")
+        check("unsaved-form-validation-retains-saved-secret-and-auto-catalog")
+        new_directory = destination / "自定义 数据目录"
+        settings.data_directory.setText(str(new_directory))
+        action(settings, "保存目录")
+        idle(window)
+        assert window.preferences.data_directory() == new_directory.resolve()
+        assert runtime.data_directory != new_directory.resolve()
+        assert not (new_directory / "tts_dataset.sqlite3").exists()
+        check("custom-data-directory-saved-live-dataset-unchanged")
         window.navigate(0)
         generation = window.pages[0]
+        generation.provider.setCurrentIndex(generation.provider.findData("volcengine"))
+        generation.model.setCurrentIndex(generation.model.findData("seed-tts-2.0"))
+        action(generation, "获取音色列表")
+        idle(window)
+        assert generation.voices.count() >= 2
+        assert all("豆包 2.0" in generation.voices.item(i).text() for i in range(generation.voices.count()))
+        check("visible-catalog-button-and-doubao2-model-filter")
         generation.provider.setCurrentIndex(generation.provider.findData("mock"))
         generation.refresh_catalog()
         idle(window)

@@ -55,7 +55,11 @@ def download_verified(repository, release_id, entries, destination, workers=8):
             # Exception strings may contain an authenticated/signed URL. Never
             # expose those in the caller's traceback or build/release evidence.
             raise RuntimeError(f"Unable to obtain download URL for {name}") from None
-        count = min(workers, max(1, math.ceil(entry["size"] / (4 * 1024 * 1024))))
+        # Keep each range small independently of pool size. Splitting a large
+        # asset into only eight pieces left slow CDN connections transferring
+        # 10+ MiB each; queued 4 MiB ranges keep concurrency bounded while
+        # reducing the tail latency of one throttled connection.
+        count = max(1, math.ceil(entry["size"] / (4 * 1024 * 1024)))
         chunk_size = math.ceil(entry["size"] / count)
         parts = destination / (name + ".parts")
         parts.mkdir()

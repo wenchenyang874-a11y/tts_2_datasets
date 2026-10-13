@@ -3,9 +3,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QHBoxLayout, QVBoxLayout, QPlainTextEdit, QLineEdit,
                                QListWidget, QListWidgetItem, QGroupBox, QCheckBox, QLabel, QWidget)
 from .base import Page
-from .widgets import field, combo, spin, button
+from .widgets import field, combo, spin, button, HelpButton
 
-PROVIDERS = [("火山引擎", "volcengine"), ("阿里云", "aliyun"), ("离线验证 · Mock", "mock")]
+PROVIDERS = [("豆包语音 · 火山引擎", "volcengine"), ("阿里云", "aliyun"), ("小米 MiMo", "xiaomi"), ("离线验证 · Mock", "mock")]
 TARGETS = [("正样本", "positive"), ("负样本", "negative"), ("背景样本", "background")]
 AGES = [("青年", "young"), ("中年", "middle"), ("儿童", "child"), ("老年", "senior"), ("未知", "unknown")]
 
@@ -44,12 +44,21 @@ class GeneratePage(Page):
         filters = QHBoxLayout()
         self.provider = combo(PROVIDERS)
         self.gender = combo([("全部性别", ""), ("女", "female"), ("男", "male")])
+        self.model = combo([("全部模型", ""), ("豆包语音 1.0", "v1"), ("豆包语音 2.0", "seed-tts-2.0")])
+        self.model.currentIndexChanged.connect(self.refresh_voices)
+        self.model.currentIndexChanged.connect(self.update_capabilities)
         self.age = combo([("全部年龄", "")] + AGES)
         for widget in [self.provider, self.gender, self.age]:
             filters.addWidget(widget)
             widget.currentIndexChanged.connect(self.refresh_voices)
         self.provider.currentIndexChanged.connect(self.update_capabilities)
         right.addLayout(filters)
+        catalog_row = QHBoxLayout()
+        catalog_row.addWidget(self.model)
+        self.catalog_button = button("获取音色列表", self.refresh_catalog, True)
+        catalog_row.addWidget(self.catalog_button)
+        catalog_row.addWidget(HelpButton("小米加载官方预置音色快照。豆包远程目录查询使用独立 AK/SK；合成 API Key 不等于目录密钥。显示音色不代表账号已开通对应资源。"))
+        right.addLayout(catalog_row)
         self.voices = QListWidget()
         self.voices.itemChanged.connect(self.voice_changed)
         right.addWidget(self.voices)
@@ -57,7 +66,6 @@ class GeneratePage(Page):
         right.addWidget(self.selection_count)
         voice_actions = QHBoxLayout()
         voice_actions.addWidget(button("清空选择", self.clear_voices))
-        voice_actions.addWidget(button("刷新音色", self.refresh_catalog))
         right.addLayout(voice_actions)
         body.addLayout(right, 4)
         self.layout.addLayout(body)
@@ -156,7 +164,10 @@ class GeneratePage(Page):
         self.sample_rate.blockSignals(True)
         self.audio_format.clear()
         self.sample_rate.clear()
-        for format in capability.get("audio_formats", []):
+        formats = capability.get("audio_formats", [])
+        if provider == "volcengine" and (self.model.currentData() == "seed-tts-2.0" or any(self.voice_rows[v].get("model") == "seed-tts-2.0" for v in self.selected)):
+            formats = [value for value in formats if value != "ogg_opus"]
+        for format in formats:
             self.audio_format.addItem(format.upper(), format)
         for rate in capability.get("sample_rates", []):
             self.sample_rate.addItem(f"{rate} Hz", rate)
@@ -166,12 +177,14 @@ class GeneratePage(Page):
         self.sample_rate.blockSignals(False)
         self.store_audio_options()
         providers = {self.voice_rows[v]["provider"] for v in self.selected} or {provider}
-        pitch_supported = all(self.capabilities.get(name, {}).get("pitch", True) for name in providers)
-        self.pitch.setEnabled(pitch_supported)
-        self.random_fields["pitch"][0].setEnabled(pitch_supported)
-        if not pitch_supported:
-            self.pitch.setValue(1)
-            self.random_fields["pitch"][0].setChecked(False)
+        for name, control, default in (("pitch", self.pitch, 1), ("speed", self.speed, 1), ("volume", self.volume, 50)):
+            supported = all(self.capabilities.get(item, {}).get(name, True) for item in providers)
+            control.setEnabled(supported)
+            self.random_fields[name][0].setEnabled(supported)
+            if not supported:
+                control.setValue(default)
+                self.random_fields[name][0].setChecked(False)
+        self.model.setVisible(provider == "volcengine")
 
     def store_audio_options(self):
         if self.audio_format.currentData() and self.sample_rate.currentData():
@@ -193,15 +206,21 @@ class GeneratePage(Page):
                      callback=lambda result: (self.set_project(result), self.notify("唤醒词已保存")))
 
     def refresh_voices(self):
+        snapshot = (self.provider.currentData(), self.gender.currentData(), self.age.currentData(), self.model.currentData())
         self.request("/api/voices", params={"provider": self.provider.currentData(),
-                     "gender": self.gender.currentData(), "age_group": self.age.currentData()}, callback=self.show_voices)
+                     "gender": self.gender.currentData(), "age_group": self.age.currentData()},
+                     callback=lambda rows: self.show_voices(rows) if snapshot == (self.provider.currentData(), self.gender.currentData(), self.age.currentData(), self.model.currentData()) else None)
 
     def show_voices(self, rows):
+        if self.provider.currentData() == "volcengine" and self.model.currentData():
+            selected_model = self.model.currentData()
+            rows = [row for row in rows if (row["model"] == "seed-tts-2.0") == (selected_model == "seed-tts-2.0")]
         self.voices.blockSignals(True)
         self.voices.clear()
         for row in rows:
             self.voice_rows[row["id"]] = row
-            item = QListWidgetItem(f"{row['name']}  ·  {row.get('model', '')}")
+            model = "豆包 2.0" if row.get("model") == "seed-tts-2.0" else ("豆包 1.0" if row["provider"] == "volcengine" else row.get("model", ""))
+            item = QListWidgetItem(f"{row['name']}  ·  {model}")
             item.setData(Qt.ItemDataRole.UserRole, row["id"])
             item.setToolTip(f"{row['voice_id']}\n{row.get('gender', '')} · {row.get('age_group', '')}")
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -210,8 +229,11 @@ class GeneratePage(Page):
         self.voices.blockSignals(False)
 
     def refresh_catalog(self):
+        self.catalog_button.setEnabled(False)
+        self.notify("正在获取音色列表…")
         self.request("/api/voices/refresh", "POST", json={"provider": self.provider.currentData()},
-                     callback=lambda result: (self.notify("音色目录已刷新" + ("；" + "；".join(result.get("warnings", [])) if result.get("warnings") else "")), self.refresh_voices()))
+                     callback=lambda result: (self.catalog_button.setEnabled(True), self.notify(f"已获取 {result['count']} 个音色" + ("；" + "；".join(result.get("warnings", [])) if result.get("warnings") else "")), self.refresh_voices()),
+                     error=lambda error: (self.catalog_button.setEnabled(True), self.shell.error(error)))
 
     def payload(self):
         result = {"texts": self.texts.toPlainText().splitlines(), "voice_ids": sorted(self.selected),

@@ -2,11 +2,11 @@
 from __future__ import annotations
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QPointF, QEvent
+from PySide6.QtCore import Qt, QPointF, QEvent, QTimer, QPoint
 from PySide6.QtGui import QPainter, QPen, QColor
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                                QComboBox, QSpinBox, QDoubleSpinBox, QTableWidget,
-                               QHeaderView, QToolTip)
+                               QHeaderView, QToolTip, QFrame)
 
 STYLE = """
 QWidget { font-family: 'Segoe UI', 'Microsoft YaHei UI'; font-size: 13px; color: #26334a; }
@@ -45,6 +45,9 @@ QScrollBar:vertical { background: transparent; width: 10px; }
 QScrollBar::handle:vertical { background: #c9cfdd; border-radius: 5px; min-height: 30px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QToolTip { background: #25334b; color: white; border: 0; padding: 9px; }
+QTabWidget::pane { border: 1px solid #e1e6f0; background: white; border-radius: 8px; padding: 8px; }
+QTabBar::tab { background: #e9edf5; border: 0; padding: 9px 18px; margin-right: 4px; border-top-left-radius: 7px; border-top-right-radius: 7px; }
+QTabBar::tab:selected { background: #6563df; color: white; }
 QProgressBar { border: 0; background: #e8ebf4; border-radius: 5px; height: 12px; text-align: center; }
 QProgressBar::chunk { background: #6563df; border-radius: 5px; }
 """
@@ -59,14 +62,68 @@ class HelpButton(QPushButton):
         self.setToolTip(explanation)
         self.setAttribute(Qt.WidgetAttribute.WA_AlwaysShowToolTips)
         self.setAccessibleName("帮助：" + explanation)
+        self.setMouseTracking(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+        self.popup = None
+        self.hovered = False
+        self.hover_timer = QTimer(self)
+        self.hover_timer.setSingleShot(True)
+        self.hover_timer.setInterval(180)
+        self.hover_timer.timeout.connect(self.show_help)
+
+    def show_help(self):
+        if not self.isVisible() or not (self.hovered or self.hasFocus()):
+            return
+        # Do not rely only on QEvent.ToolTip: Windows did not deliver that
+        # delayed event consistently, while the old smoke manually injected it
+        # and falsely passed. Enter/hover and keyboard focus drive an owned
+        # non-activating Qt tooltip window, with plain text and bounded width.
+        if self.popup is None:
+            self.popup = QFrame(self, Qt.WindowType.ToolTip)
+            self.popup.setObjectName("helpPopup")
+            self.popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            self.popup.setStyleSheet("QFrame#helpPopup {background:#25334b; border:1px solid #52617a; border-radius:5px;} QLabel {color:white; background:transparent;}")
+            layout = QVBoxLayout(self.popup)
+            layout.setContentsMargins(12, 10, 12, 10)
+            label = QLabel(self.toolTip())
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setWordWrap(True)
+            label.setFixedWidth(330)
+            layout.addWidget(label)
+        self.popup.adjustSize()
+        position = self.mapToGlobal(QPoint(0, self.height() + 5))
+        screen = self.screen().availableGeometry()
+        position.setX(max(screen.left(), min(position.x(), screen.right() - self.popup.width())))
+        position.setY(max(screen.top(), min(position.y(), screen.bottom() - self.popup.height())))
+        self.popup.move(position)
+        self.popup.show()
+
+    def hide_help(self):
+        self.hover_timer.stop()
+        if self.popup:
+            self.popup.hide()
 
     def focusInEvent(self, event):
         super().focusInEvent(event)
-        QToolTip.showText(self.mapToGlobal(self.rect().bottomLeft()), self.toolTip(), self)
+        self.show_help()
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self.hide_help()
 
     def event(self, event):
-        if event.type() == QEvent.Type.ToolTip:
-            QToolTip.showText(event.globalPos(), self.toolTip(), self)
+        if not hasattr(self, "hover_timer"):
+            return super().event(event)
+        if event.type() in (QEvent.Type.Enter, QEvent.Type.HoverEnter):
+            self.hovered = True
+            self.hover_timer.start()
+        elif event.type() in (QEvent.Type.Leave, QEvent.Type.HoverLeave):
+            self.hovered = False
+            self.hide_help()
+        elif event.type() in (QEvent.Type.Hide, QEvent.Type.WindowDeactivate):
+            self.hide_help()
+        elif event.type() == QEvent.Type.ToolTip:
+            self.show_help()
             return True
         return super().event(event)
 

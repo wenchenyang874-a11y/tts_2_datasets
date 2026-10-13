@@ -64,3 +64,9 @@ Inno Setup [官方 6.7.3](https://github.com/jrsoftware/issrc/releases/tag/is-6_
 GitHub 按标签查询 Release 的接口在草稿阶段返回 404，即使当前用户是创建者；草稿 URL 中的 untagged-* 也不是正式 Tag。publish_release.py 改为分页列出已认证可访问的 Release，按 tag_name 定位并使用数字 ID；重复草稿时停止检查。首版运行中发现此问题，已保留原 Tag 并通过草稿 ID 继续后续上传与回读校验，相关工具修复随开发分支后续提交。
 
 单连接下载过慢时，回读使用最多 8 个 HTTPS Range 请求；原慢下载停止，未完成文件保留在本轮忽略目录。仅在完整回读哈希匹配后公开草稿。下载认证只在内存使用，不将 Authorization 传给重定向后的资产主机，也不记录签名 URL。失败保留草稿，不自动重试或降低 TLS 校验。
+
+## 已安装旧版本时的验证隔离
+
+发现用户正在使用已安装版本时，不覆盖其安装、不关闭其进程、不清理其卸载登记。以同一 installer/windows.iss 和同一运行目录编译仅 AppId/AppMutexName 不同的测试副本，再给 verify_installer.py 传入 --isolated-setup、--app-id、--mutex-name。副本与生产程序运行文件逐一对齐，生产安装器和副本的 PE 版本同时核对；报告明确写入隔离身份与副本哈希，不称为真实用户安装原位升级。正式产物保持固定 AppId；用户自行关闭旧应用后正常升级。
+
+回读采用最多 8 个并行连接，每段至多约 4 MiB，检查完整字节数和 SHA-256 后发布。

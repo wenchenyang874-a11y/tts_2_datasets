@@ -3,6 +3,9 @@
 #ifndef AppId
   #define AppId "{C8EF7556-B9EA-44AF-96C4-5982E4212033}"
 #endif
+#ifndef AppMutexName
+  #define AppMutexName "Local\TTS_Dataset_Studio_Installer_Guard"
+#endif
 #ifndef AppVersion
   #error AppVersion must be supplied
 #endif
@@ -35,7 +38,7 @@ OutputDir={#OutputDir}
 OutputBaseFilename=TTS-Dataset-Studio-{#AppVersion}-windows-x64-setup
 Compression=lzma2
 SolidCompression=yes
-AppMutex=Local\TTS_Dataset_Studio_Installer_Guard
+AppMutex={#AppMutexName}
 ; Never force close a database/audio writer via Restart Manager. The app's
 ; named mutex asks the user to close it cleanly before upgrade or uninstall.
 CloseApplications=no

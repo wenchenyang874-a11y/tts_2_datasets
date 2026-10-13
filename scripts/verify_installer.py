@@ -25,7 +25,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("release_dir", type=Path)
     parser.add_argument("evidence", type=Path)
+    parser.add_argument("--isolated-setup", type=Path)
+    parser.add_argument("--app-id")
+    parser.add_argument("--mutex-name")
     args = parser.parse_args()
+    if any((args.isolated_setup, args.app_id, args.mutex_name)) and not all((args.isolated_setup, args.app_id, args.mutex_name)):
+        parser.error("Isolated validation requires --isolated-setup, --app-id and --mutex-name together")
     release = args.release_dir.resolve()
     evidence = args.evidence.resolve()
     manifest_path = release / "release-manifest.json"
@@ -36,7 +41,10 @@ def main():
             raise RuntimeError("Artifact checksum mismatch")
     if evidence.exists():
         raise RuntimeError("Choose a new evidence directory; never overwrite previous tests")
-    key_name = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{manifest['app_id']}_is1"
+    app_id = args.app_id or manifest["app_id"]
+    if args.isolated_setup and app_id == manifest["app_id"]:
+        raise RuntimeError("Isolated installer must have a different AppId")
+    key_name = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{app_id}_is1"
     registry_flags = winreg.KEY_READ | winreg.KEY_WOW64_64KEY
 
     def registration():
@@ -62,12 +70,15 @@ def main():
     data.mkdir()
     sentinel = data / "preserve-me.txt"
     sentinel.write_text("owned test data - must survive uninstall\n", encoding="utf-8")
-    setup = release / next(item["name"] for item in manifest["assets"] if item["name"].endswith("-setup.exe"))
+    production_setup = release / next(item["name"] for item in manifest["assets"] if item["name"].endswith("-setup.exe"))
+    setup = args.isolated_setup.resolve() if args.isolated_setup else production_setup
     command = [setup, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOICONS", "/TASKS=", f"/DIR={install}"]
     report = {"ok": False, "platform": platform.platform(), "source_commit": manifest["source_commit"],
               "manifest_sha256": digest(manifest_path), "checks": [], "errors": [],
               "windows10_verified": False, "hardware_recording_verified": False, "real_cloud_verified": False,
               "upgrade_fixture": "simulated older installer registration and a damaged app binary"}
+    report["installation_identity"] = "isolated AppId and mutex; same runtime and installer source" if args.isolated_setup else "production"
+    report["test_installer_sha256"] = digest(setup)
     system = sys.getwindowsversion()
     report["windows10_verified"] = system.major == 10 and 17763 <= system.build < 22000
     report["windows11_verified"] = system.major == 10 and system.build >= 22000
@@ -90,7 +101,7 @@ def main():
 
     try:
         import pefile
-        for binary in (setup, ROOT / "dist/TTS Dataset Studio/TTS Dataset Studio.exe"):
+        for binary in (production_setup, setup, ROOT / "dist/TTS Dataset Studio/TTS Dataset Studio.exe"):
             with pefile.PE(str(binary)) as metadata:
                 info = metadata.VS_FIXEDFILEINFO[0]
                 numeric = ".".join(str(part) for part in (info.FileVersionMS >> 16, info.FileVersionMS & 65535, info.FileVersionLS >> 16, info.FileVersionLS & 65535))
@@ -109,6 +120,9 @@ def main():
         # must reject both operations instead of silently terminating writers.
         sys.path.insert(0, str(ROOT))
         from desktop.installer_guard import InstallerGuard
+        if args.mutex_name:
+            import desktop.installer_guard as guard_module
+            guard_module.MUTEX_NAME = args.mutex_name
         guard = InstallerGuard()
         try:
             run([*command, f"/LOG={evidence / 'running-upgrade.log'}"], expect_success=False)
@@ -152,7 +166,7 @@ def main():
             if not smoke["ok"]:
                 raise RuntimeError("Installed native acceptance failed")
             report["native_checks"] = smoke["checks"]
-            run([executable, "--data-dir", data, "--verify-launch", evidence / "normal-launch"])
+            run([executable, "--data-dir", data, "--preferences-file", evidence / "normal-preferences.json", "--verify-launch", evidence / "normal-launch"])
             normal = json.loads((evidence / "normal-launch/result.json").read_text(encoding="utf-8"))
             if not normal["ok"] or not normal["business_process_closed"]:
                 raise RuntimeError("Installed normal startup/exit failed")
@@ -160,6 +174,12 @@ def main():
             os.environ.clear()
             os.environ.update(original)
         report["checks"].append("installed_native_acceptance_and_normal_locked_startup")
+        custom_preferences = evidence / "installed-smoke/desktop_preferences.json"
+        selected_directory = Path(json.loads(custom_preferences.read_text(encoding="utf-8"))["data_directory"])
+        run([executable, "--preferences-file", custom_preferences, "--verify-launch", evidence / "custom-directory-launch"])
+        if not (selected_directory / "tts_dataset.sqlite3").is_file():
+            raise RuntimeError("Cold startup ignored saved custom data directory")
+        report["checks"].append("cold_start_uses_saved_custom_directory_without_command_override")
         report["ok"] = True
     except Exception as error:
         report["errors"].append(str(error))
