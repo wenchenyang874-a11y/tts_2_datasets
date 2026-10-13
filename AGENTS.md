@@ -7,7 +7,7 @@
 - 目标与范围：将 `tts_2_datasets` 的现有 Web 工具迁移为 Windows 原生桌面应用，支持 Windows 10 和 Windows 11。初始化阶段已完成；当前阶段开发、验证 Windows 原生版，满足验收门槛后合入 main。
 - 代码位置：本文件所在 Git 仓库，远程仓库为 `https://github.com/wenchenyang874-a11y/tts_2_datasets`。业务代码和项目文档在本仓库内修改，不依赖仓外文件。
 - 需求入口：`docs/product/windows-app-requirements.md`。
-- 硬约束：使用原生桌面界面，不以嵌入网页或自动打开浏览器代替原生迁移；保留现有业务语义、数据安全和音频/导出契约。已确认 x64、Windows 10 1809 及以上/Windows 11、PySide6 6.8.3 原生控件和包含依赖的便携包；框架兼容与项目实测结论分开记录。
+- 硬约束：使用原生桌面界面，不以嵌入网页或自动打开浏览器代替原生迁移；保留现有业务语义、数据安全和音频/导出契约。已确认 x64、Windows 10 1809 及以上/Windows 11、PySide6 6.8.3 原生控件和包含依赖的便携包与安装包；框架兼容与项目实测结论分开记录。
 - 文档根目录：`docs/`，随代码仓库跟踪；不在工作区另建一套重复的项目文档。
 
 所有相对路径均相对于本文件。只读参考代码、第三方源码和生成物不属于默认修改范围。
@@ -83,7 +83,7 @@
 - 提交信息、共同作者行及交付材料不添加 AI 署名或 AI 辅助编程声明；提交前核对 Git 身份，推送前核对远程仓库和目标分支。
 - 改写已推送历史、移动已发布 Tag 或强制推送，须有针对该操作的明确授权。
 - 本次已授权创建并推送 Web 备份分支和 Windows 开发分支；用户也已授权后续在 Windows 验收通过后合入 `main`。全部验收前不合入。合入采用保留历史的正常合并，不把“覆盖”解释成重写主分支或强制推送。
-- 不自动提高版本号、创建 Tag 或发布 Release；上述发布行为需单独授权。验收、回滚基线和合入步骤见仓内发布文档。
+- 用户于 2026-10-13 已授权每个版本制作安装包、打 Tag 并上传 GitHub Release，无需重复询问。版本统一来自 app_version.py；每个交付版本验证后发布安装包、便携包与校验文件。Win10 尚未实测时保留开发分支并发布预发布版，不合入 main、不标为稳定 Latest；稳定版仍需通过合入门槛。发布流程见仓内 docs/releases/windows-installer-release.md。
 
 ## 可用的代理
 
@@ -107,7 +107,7 @@
 | 架构、分层与公共接口 | `docs/architecture/windows-migration.md`；`app.py`、`providers.py`、`db.py`、`audio_utils.py` |
 | 编码与界面 | 本文件“代码与改动”“Windows 迁移约束”；`CONTRIBUTING.md` |
 | 构建、测试与环境 | `docs/testing/windows-validation.md`；`requirements-dev.txt`、`.github/workflows/ci.yml` |
-| 打包、提交与发布 | `docs/releases/windows-branch-workflow.md`；`LICENSE`、`THIRD_PARTY_NOTICES.md`、`SECURITY.md`、`DISCLAIMER.md` |
+| 打包、提交与发布 | `docs/releases/windows-branch-workflow.md`、`docs/releases/windows-installer-release.md`；`LICENSE`、`THIRD_PARTY_NOTICES.md`、`SECURITY.md`、`DISCLAIMER.md` |
 | 当前状态与遗留问题 | `docs/development/windows-migration-status.md` |
 
 ## 常用命令

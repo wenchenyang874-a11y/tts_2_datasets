@@ -23,4 +23,4 @@
 
 ## 发布边界
 
-当前 Windows 实现、测试与文档在开发分支提交推送，不改动 main。本地构建、打包或合入不等于公开发布；版本号、Tag、Release 需单独授权。构建使用 `scripts/build_windows.ps1`，产物为 `dist/TTS Dataset Studio/` 的便携目录，完整保留目录中的运行依赖；实际验证与未验证边界见测试文档。
+当前 Windows 实现、测试与文档在开发分支提交推送，不改动 main。用户于 2026-10-13 已授权每个版本制作安装包、打 Tag 并上传 GitHub Release；发布行为无需重复询问。Windows 10 尚未实测时可从开发分支发布预发布版，不设置为稳定 Latest，也不提前合入 main。版本、安装器、验证与发布脚本见 [安装与版本发布](windows-installer-release.md)。

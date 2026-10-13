@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 logger = logging.getLogger(__name__)
 
 try:
+    from .app_version import VERSION
     from .audio_utils import (
         AudioError, audio_metrics,
         mix_noise,
@@ -50,6 +51,7 @@ try:
     from .settings_store import ProviderSettingsStore, set_default_settings_store
     from .voice_catalog import builtin_voices, refresh_voice_catalog
 except ImportError:  # Support direct `uvicorn app:app` execution.
+    from app_version import VERSION
     from audio_utils import (  # type: ignore
         AudioError, audio_metrics, mix_noise, normalize_wav, probe_wav, sha256_file,
         spectrum_points, waveform_points,
@@ -140,7 +142,7 @@ executor = ThreadPoolExecutor(max_workers=WORKER_LIMIT)
 
 app = FastAPI(
     title="语音数据集工坊",
-    version="0.1.0",
+    version=VERSION,
     description="Generate, review, augment, and export synthetic wake-word audio.",
 )
 

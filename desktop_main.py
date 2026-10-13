@@ -8,7 +8,9 @@ from pathlib import Path
 
 
 def main() -> int:
+    from app_version import VERSION
     parser = argparse.ArgumentParser()
+    parser.add_argument("--version", action="version", version=VERSION)
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--smoke-test", type=Path, help="Run offline native acceptance in a new isolated directory")
     parser.add_argument("--verify-launch", type=Path, help="Verify normal locked startup/event loop, save evidence and close; requires --data-dir")
@@ -23,10 +25,16 @@ def main() -> int:
     from PySide6.QtGui import QIcon
     application.setWindowIcon(QIcon(str(Path(__file__).resolve().parent / "desktop/assets/app.svg")))
     application.setApplicationName("TTS Dataset Studio")
+    application.setApplicationVersion(VERSION)
     application.setOrganizationName("TTS Dataset Studio")
     if args.smoke_test:
         from desktop.smoke import run_smoke
-        return run_smoke(application, args.smoke_test)
+        from desktop.installer_guard import InstallerGuard
+        guard = InstallerGuard()
+        try:
+            return run_smoke(application, args.smoke_test)
+        finally:
+            guard.close()
     directory = args.data_dir or Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local")) / "TTS Dataset Studio" / "data"
     from PySide6.QtWidgets import QMessageBox
     try:
@@ -55,6 +63,8 @@ def main() -> int:
         QMessageBox.warning(None, "服务不可用", "无法启动或管理业务进程，请检查系统权限与完整程序包。")
         return 1
     try:
+        from desktop.installer_guard import InstallerGuard
+        guard = InstallerGuard()
         window = MainWindow(runtime)
         window.show()
         if args.verify_launch:
@@ -64,6 +74,8 @@ def main() -> int:
     finally:
         runtime.close()
         lock.unlock()
+        if "guard" in locals():
+            guard.close()
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@
 - [imageio-ffmpeg 源码、二进制说明与构建工具](https://github.com/imageio/imageio-ffmpeg)
 - [FFmpeg 许可与源码](https://ffmpeg.org/legal.html)
 
-本轮仅生成本地测试产物，没有发布公开 Release。
+Windows Release 同时包含完整许可目录与依赖清单。安装器使用 Inno Setup 6.7.3，简体中文社区译文源自其 is-6_7_3 标签，保留上游署名；版本与实际分发状态见 docs/releases/。
 
 ## Cloud services
 

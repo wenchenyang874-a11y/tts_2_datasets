@@ -1,6 +1,6 @@
 # Windows 迁移状态
 
-记录日期：2026-10-12。
+记录日期：2026-10-13。
 
 ## 初始化基线
 
@@ -11,7 +11,7 @@
 - 已确认原生 UI、Windows 10/11、简约现代美观界面及带圈问号悬停说明要求。
 - 仓外工作区 `AGENTS.md` 与仓内 `AGENTS.md` 都作为各自作用域的规则入口；仓内文件和文档可独立读取，不依赖仓外资料。
 
-当前不合入 main、不提高版本号、不创建 Tag、不发布 Release。分支与合入规则见 [分支工作流](../releases/windows-branch-workflow.md)。验证范围见 [测试文档](../testing/windows-validation.md)。
+当前不合入 main。用户新增要求每个版本提供安装包、打 Tag 并上传 Release，已作为持续发布授权写入规则；首个桌面版采用 2.0.0-beta.1 预发布。分支与合入规则见 [分支工作流](../releases/windows-branch-workflow.md)。验证范围见 [测试文档](../testing/windows-validation.md)。
 
 ## 已实现
 
@@ -21,6 +21,7 @@
 - 数据目录独立、每数据目录互斥锁、DPAPI 用户绑定凭据、旧 Web 数据复制与路径重定位、退出时进程树清理已实现。
 - 保留音频与导出契约；修复 Windows fchmod 不可用、SQLite 导入句柄未关闭，以及旧/新审核状态筛选兼容问题。
 - 便携构建入口为 `scripts/build_windows.ps1`，包含 Python、Qt、FFmpeg，附实际依赖与许可清单。
+- 已增加每用户安装器、唯一版本来源、运行保护与降级防护；scripts/build_release.ps1、verify_installer.py、publish_release.py 串联构建、实际安装验收与上传回读校验，详细流程见发布文档。
 
 ## 当前验证与后续待办
 

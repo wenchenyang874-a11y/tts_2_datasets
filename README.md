@@ -6,7 +6,7 @@
 
 ## 快速启动
 
-便携包中双击 `TTS Dataset Studio.exe`，保留整个程序文件夹。包中包含运行依赖，无需部署 Docker 或启动浏览器。默认数据目录在当前用户 LocalAppData，与程序目录分离。
+从 [GitHub Releases](https://github.com/wenchenyang874-a11y/tts_2_datasets/releases) 下载安装包或便携包；安装包默认安装到当前用户目录，无需管理员权限。便携包中双击 `TTS Dataset Studio.exe`，保留整个程序文件夹。包中包含运行依赖，无需部署 Docker 或启动浏览器。默认数据目录在当前用户 LocalAppData，与程序目录分离。
 
 从源码运行（仓库根目录，PowerShell）：
 

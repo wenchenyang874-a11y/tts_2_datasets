@@ -13,6 +13,7 @@ a = Analysis([str(root / 'desktop_main.py')], pathex=[str(root)], binaries=[], d
                        'PySide6.QtQuick', 'tkinter', 'pytest'], noarchive=False)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='TTS Dataset Studio',
+          version=str(root / 'build/version_info.txt'),
           icon=str(root / 'build/app.ico'),
           debug=False, bootloader_ignore_signals=False, strip=False, upx=False,
           console=False, disable_windowed_traceback=False)
