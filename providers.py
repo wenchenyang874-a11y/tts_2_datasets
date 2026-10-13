@@ -82,7 +82,7 @@ PROVIDER_CAPABILITIES: dict[str, dict[str, Any]] = {
         "volume": True,
     },
     "volcengine": {
-        "audio_formats": ("wav", "mp3", "ogg_opus"),
+        "audio_formats": ("wav", "mp3"),
         "sample_rates": (8_000, 16_000, 24_000),
         "speed": True,
         "pitch": False,
@@ -579,10 +579,6 @@ def _ali_service_endpoint(config: Mapping[str, Any], service: str) -> str:
     region = str(config.get("region", "cn-beijing")).strip() or "cn-beijing"
     if region not in {"cn-beijing", "ap-southeast-1"}:
         raise ProviderConfigurationError("阿里云区域仅支持 cn-beijing 或 ap-southeast-1")
-    if service == "SpeechSynthesizer" and region != "cn-beijing":
-        raise ProviderConfigurationError(
-            "阿里云 SpeechSynthesizer 当前仅支持北京区域；如官方另行提供地址，请填写合成 endpoint"
-        )
     workspace_id = str(config.get("workspace_id", "")).strip()
     if workspace_id:
         if not re.fullmatch(r"[A-Za-z0-9-]+", workspace_id):
@@ -844,17 +840,8 @@ class XiaomiTTSProvider(BaseTTSProvider):
         return _decode_base64_audio(audio.get("data") if isinstance(audio, dict) else None, "小米 MiMo")
 
 
-def _volc_endpoint(value: str, v2: bool) -> str:
-    route = "/api/v3/tts/unidirectional" if v2 else "/api/v1/tts"
-    base = _validate_vendor_endpoint(value.strip().rstrip("/") or "https://openspeech.bytedance.com", "豆包 Base URL", ("openspeech.bytedance.com",))
-    path = urlparse(base).path
-    if path in ("", "/api", "/api/v3" if v2 else "/api/v1"):
-        return base[:-len(path)] + route if path else base + route
-    return base  # Explicit full request paths are also accepted.
-
-
 class VolcTTSProvider(BaseTTSProvider):
-    """Volcengine OpenSpeech JSON TTS adapter."""
+    """Both Doubao models use V3 HTTP Chunked and new-console API Key auth."""
 
     provider_id = "volcengine"
 
@@ -864,33 +851,17 @@ class VolcTTSProvider(BaseTTSProvider):
         *,
         settings_store: ProviderSettingsStore | None = None,
     ) -> None:
-        self.config = dict(
-            config
-            if config is not None
-            else (settings_store or get_default_settings_store()).get_provider("volcengine")
-        )
-        if config is None:
-            store = settings_store or get_default_settings_store()
-            v2 = store.get_provider("volcengine_v2")
-            # Each model uses its own credential store. The adapter combines
-            # only the fields needed to route an explicitly selected model.
-            for key in ("api_key", "v3_endpoint"):
-                self.config.pop(key, None)
-                if v2.get(key):
-                    self.config[key] = v2[key]
-        self.app_id = str(self.config.get("app_id", "")).strip()
-        configured_token = str(self.config.get("access_token", "")).strip()
-        self.token = re.sub(r"^Bearer;?\s*", "", configured_token, flags=re.I)
-        self.cluster = str(self.config.get("cluster", "volcano_tts")).strip() or "volcano_tts"
-        self.api_key = str(self.config.get("api_key") or "").strip()
-        if not self.api_key and (not self.app_id or not self.token):
-            raise ProviderConfigurationError(
-                "火山引擎未配置：请在设置页面填写 App ID 和 Access Token"
-            )
-        base = str(self.config.get("endpoint", "")).strip()
-        if not base:
-            base = "https://openspeech.bytedance.com/api/v1/tts"
-        self.endpoint = _volc_endpoint(base, False)
+        store = (settings_store or get_default_settings_store()) if config is None else None
+        self.configs = {
+            "volcengine": dict(config if config is not None else store.get_provider("volcengine")),
+            "volcengine_v2": dict(config if config is not None else store.get_provider("volcengine_v2")),
+        }
+        # Model identity and transport version are independent: 1.0 also uses
+        # V3. Never merge the two API Keys or fall back to the other model's key;
+        # doing so can bill the wrong configured service or hide missing setup.
+        if not any(value.get("api_key") for value in self.configs.values()):
+            raise ProviderConfigurationError("豆包未配置 API Key，请在设置页面填写对应版本的 API Key")
+        self.endpoint = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
 
     def synthesize(
         self,
@@ -909,73 +880,28 @@ class VolcTTSProvider(BaseTTSProvider):
         self._validate_input(
             text, voice, audio_format, sample_rate, speed, pitch, volume
         )
-        if model == "seed-tts-2.0":
-            return self._synthesize_v2(text, voice, audio_format, sample_rate, speed, volume, instruction)
-        if not self.app_id or not self.token:
-            raise ProviderConfigurationError("豆包语音 1.0 需要 App ID 和 Access Token；2.0 音色使用 API Key")
-        if len(text.encode("utf-8")) > 1024:
-            raise ProviderRequestError("火山引擎在线短文本接口单次输入不能超过 1024 字节")
-        if model and model not in {
-            "volcano_tts", "seed-tts-1.0", "seed-icl-1.0", "voice-clone-v1",
-        }:
-            raise ProviderRequestError(
-                f"火山引擎 V1 不支持模型 {model}；Seed-TTS 2.0 需要 V3 接口"
-            )
-        request_id = str(uuid.uuid4())
-        payload = {
-            "app": {"appid": self.app_id, "token": self.token, "cluster": self.cluster},
-            "user": {"uid": "kws-tts-dataset-app"},
-            "audio": {
-                "voice_type": voice,
-                "encoding": audio_format,
-                "rate": sample_rate,
-                "speed_ratio": speed,
-                "loudness_ratio": max(0.5, min(2.0, volume / 50.0)),
-            },
-            "request": {
-                "reqid": request_id,
-                "text": text,
-                "text_type": "plain",
-                "operation": "query",
-            },
-        }
-        response = _request(
-            "POST", self.endpoint, provider="火山引擎",
-            headers={
-                "Authorization": f"Bearer;{self.token}",
-                "Content-Type": "application/json",
-            },
-            json_body=payload, secrets=(self.token, self.app_id),
-            max_response_bytes=_max_audio_wire_bytes(),
-            retry_transient=False,
-        )
-        content_type = response.headers.get("content-type", "").lower()
-        if "audio/" in content_type or response.content.startswith((b"RIFF", b"ID3", b"OggS")):
-            return _bounded_audio(response.content, "火山引擎")
-        body = _extract_json(response, "火山引擎", (self.token, self.app_id))
-        code = body.get("code")
-        if code not in (None, 0, "0", 3000, "3000"):
-            message = body.get("message") or "remote request failed"
-            log_id = response.headers.get("x-tt-logid", "")
-            suffix = f"，log_id={_redact(log_id)}" if log_id else ""
-            raise ProviderRequestError(
-                f"火山引擎请求失败：code={_redact(code)}，message={_redact(message, (self.token, self.app_id))}{suffix}"
-            )
-        return _decode_base64_audio(body.get("data"), "火山引擎")
-
-    def _synthesize_v2(self, text, voice, audio_format, sample_rate, speed, volume, instruction):
-        if not self.api_key:
-            raise ProviderConfigurationError("豆包语音 2.0 需要控制台 API Key，请在设置中填写 2.0 API Key")
-        if audio_format == "ogg_opus":
-            raise ProviderRequestError("豆包 2.0 Ogg Opus 需要 48000 Hz；当前兼容参数请使用 WAV 或 MP3")
-        endpoint = _volc_endpoint(str(self.config.get("v3_endpoint") or ""), True)
-        params = {"text": text, "speaker": voice, "audio_params": {"format": audio_format, "sample_rate": sample_rate,
+        resource = {"": "seed-tts-1.0", "volcano_tts": "seed-tts-1.0", "voice-clone-v1": "seed-icl-1.0"}.get(model, model)
+        if resource not in {"seed-tts-1.0", "seed-tts-2.0", "seed-icl-1.0"}:
+            raise ProviderRequestError(f"豆包不支持模型 {model}")
+        service = "volcengine_v2" if resource == "seed-tts-2.0" else "volcengine"
+        label = "豆包 2.0" if service == "volcengine_v2" else "豆包 1.0"
+        api_key = str(self.configs[service].get("api_key") or "").strip()
+        if not api_key:
+            raise ProviderConfigurationError(f"{label} 未配置 API Key，请打开设置 → {label}")
+        if any(ord(char) < 33 or ord(char) > 126 for char in api_key):
+            raise ProviderConfigurationError(f"{label} API Key 不应包含空白或非 ASCII 字符")
+        if instruction.strip() and resource != "seed-tts-2.0":
+            raise ProviderRequestError("豆包 1.0 不支持风格指令，请留空或选择豆包 2.0")
+        # V3 can repeat WAV headers in audio chunks. Request raw PCM for WAV,
+        # assemble all segments, then write one container header locally. Blind
+        # concatenation of chunk WAVs creates a truncated/invalid training file.
+        params = {"text": text, "speaker": voice, "audio_params": {"format": "pcm" if audio_format == "wav" else audio_format, "sample_rate": sample_rate,
                   "speech_rate": round((speed - 1) * 100), "loudness_rate": round((max(.5, min(2., volume / 50.)) - 1) * 100)}}
         if instruction.strip():
             params["additions"] = json.dumps({"context_texts": [instruction.strip()]}, ensure_ascii=False)
-        response = _request("POST", endpoint, provider="豆包语音 2.0",
-                            headers={"X-Api-Key": self.api_key, "X-Api-Resource-Id": "seed-tts-2.0", "X-Api-Request-Id": str(uuid.uuid4()), "Content-Type": "application/json"},
-                            json_body={"req_params": params}, secrets=(self.api_key,),
+        response = _request("POST", self.endpoint, provider=label,
+                            headers={"X-Api-Key": api_key, "X-Api-Resource-Id": resource, "X-Api-Request-Id": str(uuid.uuid4()), "X-Control-Require-Usage-Tokens-Return": "*", "Content-Type": "application/json"},
+                            json_body={"req_params": params}, secrets=(api_key,),
                             max_response_bytes=_max_audio_wire_bytes(), retry_transient=False)
         # HTTP Chunked transport carries newline-separated JSON records, not a
         # single V1 JSON body. Collect bounded decoded segments; discard all
@@ -984,6 +910,8 @@ class VolcTTSProvider(BaseTTSProvider):
         body = response.text
         offset = 0
         output = bytearray()
+        finished = False
+        last_usage = None
         try:
             while offset < len(body):
                 while offset < len(body) and body[offset].isspace():
@@ -992,24 +920,46 @@ class VolcTTSProvider(BaseTTSProvider):
                     break
                 record, offset = decoder.raw_decode(body, offset)
                 if not isinstance(record, dict):
-                    raise ProviderRequestError("豆包 2.0 返回了无效音频分段")
+                    raise ProviderRequestError(f"{label} 返回了无效音频分段")
+                if finished:
+                    raise ProviderRequestError(f"{label} 完成标记后仍返回音频分段")
                 code = record.get("code")
                 if code not in (0, 20000000):
-                    raise ProviderRequestError("豆包 2.0 合成失败：" + _redact(record.get("message", "未知错误"), (self.api_key,)))
+                    raise ProviderRequestError(f"{label} 合成失败：" + _redact(record.get("message", "未知错误"), (api_key,)))
+                finished = code == 20000000
+                last_usage = record.get("usage")
                 if record.get("data"):
-                    output.extend(_decode_base64_audio(record["data"], "豆包 2.0"))
+                    output.extend(_decode_base64_audio(record["data"], label))
                     if len(output) > _max_audio_bytes():
-                        raise ProviderRequestError("豆包 2.0 音频超过大小限制")
+                        raise ProviderRequestError(f"{label} 音频超过大小限制")
         except (ValueError, json.JSONDecodeError) as error:
-            raise ProviderRequestError("豆包 2.0 返回了不完整或无效的音频分段 JSON") from error
-        return _bounded_audio(bytes(output), "豆包 2.0")
+            raise ProviderRequestError(f"{label} 返回了不完整或无效的音频分段 JSON") from error
+        # The current HTTP guide shows code=0 with final request usage, while
+        # the V3 transport reference also documents a 20000000 finish record.
+        # Request usage explicitly; a bare audio chunk followed by EOF must
+        # not silently pass as a complete synthesis after transport truncation.
+        usage_complete = isinstance(last_usage, dict) and type(last_usage.get("text_words")) is int and last_usage["text_words"] >= 0
+        if not finished and not usage_complete:
+            raise ProviderRequestError(f"{label} 音频流缺少完成标记，已丢弃不完整音频")
+        audio = _bounded_audio(bytes(output), label)
+        if audio_format == "wav":
+            if len(audio) % 2:
+                raise ProviderRequestError(f"{label} 返回的 PCM16 数据长度无效")
+            output_wav = io.BytesIO()
+            with wave.open(output_wav, "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(sample_rate)
+                wav.writeframes(audio)
+            audio = output_wav.getvalue()
+        return _bounded_audio(audio, label)
 
 
 class VolcVoiceCatalogClient:
     """Volcengine OpenAPI client for public and account speaker catalogs.
 
-    This uses an Access Key pair, which is separate from the AppID/Access Token
-    accepted by the legacy V1 synthesis endpoint. Public speakers and legacy
+    This uses an Access Key pair, which is separate from the API Key used for
+    V3 synthesis. Public speakers and AppID-bound account
     AppID-bound cloned speakers use different API versions and signing regions.
     """
 
@@ -1212,7 +1162,7 @@ def _cloud_configured(
     if provider_id in {"aliyun", "xiaomi"}:
         return bool(config.get("api_key"))
     if provider_id == "volcengine":
-        return bool(config.get("api_key") or (config.get("app_id") and config.get("access_token")))
+        return bool(config.get("api_key"))
     return True
 
 
@@ -1225,11 +1175,20 @@ def validate_provider_configuration(
     """Validate stored configuration without making a billable cloud request."""
 
     normalized = name.strip().lower().replace("-", "_")
-    if normalized == "volcengine_v2":
-        _volc_endpoint(str(config.get("v3_endpoint") or ""), True)
+    if normalized in {"volcengine", "volcengine_v2", "volc", "doubao", "bytedance"}:
+        label = "豆包 2.0" if normalized == "volcengine_v2" else "豆包 1.0"
+        api_key = str(config.get("api_key") or "").strip()
+        if api_key and any(ord(char) < 33 or ord(char) > 126 for char in api_key):
+            raise ProviderConfigurationError(f"{label} API Key 不应包含空白或非 ASCII 字符")
         if require_credentials and not config.get("api_key"):
-            raise ProviderConfigurationError("豆包 2.0 未配置 API Key，请打开设置 → 豆包 2.0")
-        validate_provider_configuration("volcengine", {key: value for key, value in config.items() if key not in {"app_id", "access_token"}}, require_credentials=False)
+            raise ProviderConfigurationError(f"{label} 未配置 API Key，请打开设置 → {label}")
+        if config.get("access_key_id") or config.get("access_key_secret"):
+            VolcVoiceCatalogClient(config=config)
+        # Direct adapter callers may validate an explicit diagnostic endpoint;
+        # desktop settings never expose or persist these overrides.
+        for key, host in (("endpoint", "openspeech.bytedance.com"), ("v3_endpoint", "openspeech.bytedance.com"), ("catalog_endpoint", "open.volcengineapi.com")):
+            if config.get(key):
+                _validate_vendor_endpoint(str(config[key]), label, (host,))
         return
     if normalized in {"xiaomi", "mimo"}:
         _mimo_endpoint(config)
@@ -1241,9 +1200,9 @@ def validate_provider_configuration(
         if workspace_id and not re.fullmatch(r"[A-Za-z0-9-]+", workspace_id):
             raise ProviderConfigurationError("阿里云 Workspace ID 格式无效")
         region = str(config.get("region", "cn-beijing")).strip() or "cn-beijing"
-        if region != "cn-beijing":
+        if region not in {"cn-beijing", "ap-southeast-1"}:
             raise ProviderConfigurationError(
-                "阿里云 SpeechSynthesizer 当前仅支持 cn-beijing"
+                "阿里云地域仅支持 cn-beijing 或 ap-southeast-1"
             )
         for field, label in (
             ("endpoint", "阿里云合成"),
@@ -1256,37 +1215,6 @@ def validate_provider_configuration(
                 )
         if require_credentials:
             AlibabaTTSProvider(config=config)
-        return
-    if normalized in {"volcengine", "volc", "doubao", "bytedance"}:
-        if config.get("api_key") and any(ord(c) < 33 or ord(c) > 126 for c in str(config["api_key"])):
-            raise ProviderConfigurationError("豆包 2.0 API Key 不应包含空白或非 ASCII 字符")
-        for field, label, allowed_hosts in (
-            ("endpoint", "火山引擎合成", ("openspeech.bytedance.com",)),
-            ("v3_endpoint", "豆包 2.0 合成", ("openspeech.bytedance.com",)),
-            (
-                "catalog_endpoint",
-                "火山引擎音色目录",
-                ("open.volcengineapi.com",),
-            ),
-        ):
-            endpoint = str(config.get(field, "")).strip()
-            if endpoint:
-                _validate_vendor_endpoint(endpoint, label, allowed_hosts)
-        if require_credentials:
-            synthesis_present = bool(config.get("app_id") or config.get("access_token"))
-            catalog_present = bool(
-                config.get("access_key_id") or config.get("access_key_secret")
-            )
-            if not synthesis_present and not catalog_present and not config.get("api_key"):
-                raise ProviderConfigurationError(
-                    "火山引擎未配置：合成需要 App ID/Access Token，目录需要 AK/SK"
-                )
-            if synthesis_present:
-                if not config.get("app_id") or not config.get("access_token"):
-                    raise ProviderConfigurationError("豆包语音 1.0 的 App ID 与 Access Token 应同时填写")
-                VolcTTSProvider(config=config)
-            if catalog_present:
-                VolcVoiceCatalogClient(config=config)
         return
     raise ProviderConfigurationError(f"不支持的 TTS 供应商：{_redact(name)}")
 
@@ -1317,7 +1245,7 @@ def available_providers(
             available=volc_configured, supports_voice_query=volc_catalog_configured,
             supports_seed=False,
             detail=(
-                "1.0 合成使用 App ID/Access Token，2.0 使用 API Key；音色目录使用独立 AK/SK"
+                "1.0/2.0 均使用 V3 与独立 API Key；音色列表查询使用 AK/SK"
             ),
             synthesis_configured=volc_configured,
             catalog_configured=volc_catalog_configured,

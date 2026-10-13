@@ -61,10 +61,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1
 
 ## 小米与豆包模型
 
-小米 MiMo 填写开放平台 API Key，Base URL 默认 https://api.xiaomimimo.com/v1，程序自动补齐调用路径。当前支持 mimo-v2.5-tts 与 9 款官方预置音色，可用高级参数中的风格指令控制表达；不发送不支持的数值语速、音高或音量字段。请求使用 24 kHz WAV/MP3，入库仍归一化为 16 kHz mono PCM16 WAV。未配置报价不显示为零费用，真实合成仍需确认费用责任。
+小米 MiMo 只需填写开放平台 API Key，官方地址由程序内置。当前支持 mimo-v2.5-tts 与 9 款官方预置音色，可用高级参数中的风格指令控制表达；不发送不支持的数值语速、音高或音量字段。请求使用 24 kHz WAV/MP3，入库仍归一化为 16 kHz mono PCM16 WAV。未配置报价不显示为零费用，真实合成仍需确认费用责任。
 
-设置与音色选择分别提供“豆包 1.0”和“豆包 2.0”。1.0 填 App ID / Access Token，2.0 填 API Key，两者独立保存、清空和估价。Base URL 默认 https://openspeech.bytedance.com，程序分别补齐 1.0/2.0 请求路径。切换服务会清除原音色选择，创建任务前检查所选版本凭据；缺失时直接显示原因，可点击“去配置”。
+设置与音色选择分别提供“豆包 1.0”和“豆包 2.0”。两者均填写新版语音控制台 API Key，独立保存、清空和估价，不再使用 Access Token 或 Cluster。按用户指定的 [单向流式语音合成 HTTP 文档](https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-text-to-speech-http?lang=zh)，统一调用 V3，程序自动设置对应资源 ID；1.0 使用 seed-tts-1.0 字符版，2.0 使用 seed-tts-2.0 字符版。地址内置，不提供 URL 输入框。切换服务会清除原音色选择，创建任务前检查所选版本凭据；缺失时直接显示原因，可点击“去配置”。
 
-高级设置使用火山官方名称：`Access Key ID (AK)`、`Secret Access Key (SK)` 和“服务地址”。AK/SK 从控制台 [API 访问密钥](https://www.volcengine.com/docs/6257/64983?lang=zh) 获取，用于签名调用 [大模型音色列表接口 ListSpeakers](https://api.volcengine.com/api-docs/view?action=ListSpeakers&serviceCode=speech_saas_prod&version=2025-05-20)。服务地址默认为 `https://open.volcengineapi.com`，留空也使用该地址；它与语音合成的 Base URL 和凭据独立。未配置 AK/SK 时仅加载维护的官方预置音色列表，不代表账号已开通资源。2.0 仅显示 WAV/MP3 与支持的请求采样率。当前开发阶段不迁移旧版合并配置，需要在各独立页填写凭据。
+高级设置使用火山官方名称：`Access Key ID (AK)` 和 `Secret Access Key (SK)`。AK/SK 从控制台 [API 访问密钥](https://www.volcengine.com/docs/6257/64983?lang=zh) 获取，用于签名调用 [大模型音色列表接口 ListSpeakers](https://api.volcengine.com/api-docs/view?action=ListSpeakers&serviceCode=speech_saas_prod&version=2025-05-20)，服务地址内置。未配置 AK/SK 时仅加载维护的官方预置音色列表，不代表账号已开通资源。“复刻应用 ID”仅在查询账号复刻音色时需要，合成不需要。两版本提供 WAV/MP3；WAV 由 PCM 分段生成完整文件。当前开发阶段不迁移旧配置，需要在各独立页填写 API Key。
+
+阿里云选择 API Key 所属地域：华北2（北京）或新加坡，地址由程序自动生成。高级设置可填写该地域的 Workspace ID，自动使用业务空间专属域名，留空使用对应 DashScope 官方域名。不同地域的 API Key 与模型权限不能混用；地域选项不证明账号已开通某模型。参考 [官方地域说明](https://www.alibabacloud.com/help/zh/model-studio/regions/) 和 [HTTP 合成文档](https://www.alibabacloud.com/help/zh/model-studio/non-realtime-tts-user-guide)。
 
 任务中心直接显示失败原因，选中任务可看文本明细，无需先打开 JSON。再次合成需确认可能重复计费；配置检查和预检只检查本地格式与必填项，不能证明真实账号可调用。

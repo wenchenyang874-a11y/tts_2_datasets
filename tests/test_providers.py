@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import gzip
 import io
+import json
 import sys
 import wave
 from pathlib import Path
@@ -30,6 +31,10 @@ def _response(
     if payload is not None:
         return httpx.Response(status, json=payload, headers={"content-type": content_type}, request=request)
     return httpx.Response(status, content=content or b"", headers={"content-type": content_type}, request=request)
+
+
+def _volc_response(audio: bytes) -> httpx.Response:
+    return _response(content=(json.dumps({"code": 0, "data": base64.b64encode(audio).decode()}) + "\n" + json.dumps({"code": 20000000})).encode())
 
 
 def test_mock_provider_outputs_deterministic_kws_wav() -> None:
@@ -64,7 +69,7 @@ def test_provider_capability_contract_is_public_and_copy_safe() -> None:
     }
     volc = providers.get_provider_capabilities("doubao")
     assert volc == {
-        "audio_formats": ["wav", "mp3", "ogg_opus"],
+        "audio_formats": ["wav", "mp3"],
         "sample_rates": [8_000, 16_000, 24_000],
         "speed": True,
         "pitch": False,
@@ -102,7 +107,7 @@ def test_available_providers_never_exposes_credentials(tmp_path: Path) -> None:
         "volcengine",
         {
             "app_id": "app-secret-id",
-            "access_token": "volc-secret-token",
+            "api_key": "volc-secret-token",
             "access_key_id": "fixture-catalog-access-id",
             "access_key_secret": "volc-catalog-secret",
         },
@@ -375,10 +380,10 @@ def test_custom_provider_endpoint_requires_explicit_server_opt_in(
     )
 
 
-def test_alibaba_saved_configuration_only_accepts_beijing_region() -> None:
+def test_alibaba_saved_configuration_rejects_unsupported_region() -> None:
     with pytest.raises(providers.ProviderConfigurationError, match="cn-beijing"):
         providers.validate_provider_configuration(
-            "aliyun", {"region": "ap-southeast-1"}, require_credentials=False,
+            "aliyun", {"region": "invalid-region"}, require_credentials=False,
         )
 
 
@@ -496,10 +501,9 @@ def test_alibaba_region_endpoint_rules() -> None:
 
     assert workspace_endpoint.startswith("https://ws-unit.ap-southeast-1.maas.aliyuncs.com/")
     assert shared_endpoint.startswith("https://dashscope-intl.aliyuncs.com/")
-    with pytest.raises(providers.ProviderConfigurationError, match="仅支持北京"):
-        providers._ali_service_endpoint(
-            {"region": "ap-southeast-1"}, "SpeechSynthesizer"
-        )
+    assert providers._ali_service_endpoint(
+        {"region": "ap-southeast-1"}, "SpeechSynthesizer"
+    ).startswith("https://dashscope-intl.aliyuncs.com/")
 
 
 @pytest.mark.parametrize(
@@ -539,34 +543,26 @@ def test_volc_payload_and_base64_audio(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def fake_request(method: str, url: str, **kwargs):
         captured.update(kwargs)
-        return _response(payload={
-            "reqid": "request-1",
-            "code": 3000,
-            "message": "Success",
-            "data": base64.b64encode(b"RIFF-volc-test").decode("ascii"),
-        })
+        captured["url"] = url
+        return _volc_response(b"ID3-volc-test")
 
     monkeypatch.setattr(providers, "_request", fake_request)
     audio = providers.VolcTTSProvider({
-        "app_id": "unit-app",
-        "access_token": "unit-token",
-        "endpoint": "https://openspeech.bytedance.com/api/v1/tts",
+        "api_key": "unit-token",
     }).synthesize(
         text="你好，小助手", voice="zh_female_cancan_mars_bigtts",
-        audio_format="ogg_opus", sample_rate=8_000,
+        audio_format="mp3", sample_rate=8_000,
         speed=1.2, pitch=1.0, volume=50,
     )
 
     payload = captured["json_body"]
-    assert audio == b"RIFF-volc-test"
-    assert payload["audio"]["encoding"] == "ogg_opus"
-    assert payload["audio"]["rate"] == 8_000
-    assert payload["audio"]["speed_ratio"] == 1.2
-    assert payload["audio"]["loudness_ratio"] == 1.0
-    assert "volume_ratio" not in payload["audio"]
-    assert "pitch_ratio" not in payload["audio"]
-    assert payload["request"]["operation"] == "query"
-    assert captured["headers"]["Authorization"] == "Bearer;unit-token"
+    assert audio == b"ID3-volc-test"
+    assert payload["req_params"]["audio_params"] == {"format": "mp3", "sample_rate": 8_000, "speech_rate": 20, "loudness_rate": 0}
+    assert "app" not in payload and "request" not in payload
+    assert captured["url"] == "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+    assert captured["headers"]["X-Api-Key"] == "unit-token"
+    assert captured["headers"]["X-Api-Resource-Id"] == "seed-tts-1.0"
+    assert "Authorization" not in captured["headers"]
     assert captured["retry_transient"] is False
 
 
@@ -582,7 +578,7 @@ def test_volc_v1_rejects_pitch_before_remote_request(
 
     monkeypatch.setattr(providers, "_request", fake_request)
     adapter = providers.VolcTTSProvider({
-        "app_id": "unit-app", "access_token": "unit-token",
+        "app_id": "unit-app", "api_key": "unit-token",
     })
 
     with pytest.raises(providers.ProviderRequestError, match="0 st"):
@@ -611,7 +607,7 @@ def test_volc_rejects_unsupported_audio_contract_before_request(
     )
     adapter = providers.VolcTTSProvider({
         "app_id": "fixture-app-id",
-        "access_token": "fixture-synthesis-token",
+        "api_key": "fixture-synthesis-token",
     })
 
     with pytest.raises(providers.ProviderRequestError, match=message):
@@ -623,7 +619,7 @@ def test_volc_rejects_unsupported_audio_contract_before_request(
         )
 
 
-@pytest.mark.parametrize(("volume", "expected"), [(0, 0.5), (100, 2.0)])
+@pytest.mark.parametrize(("volume", "expected"), [(0, -50), (100, 100)])
 def test_volc_v1_maps_volume_to_loudness_boundary(
     monkeypatch: pytest.MonkeyPatch, volume: int, expected: float,
 ) -> None:
@@ -631,17 +627,14 @@ def test_volc_v1_maps_volume_to_loudness_boundary(
 
     def fake_request(method: str, url: str, **kwargs):
         captured.update(kwargs)
-        return _response(payload={
-            "code": 3000,
-            "data": base64.b64encode(b"RIFF-volume-test").decode("ascii"),
-        })
+        return _volc_response(b"\0\0" * 100)
 
     monkeypatch.setattr(providers, "_request", fake_request)
     providers.VolcTTSProvider({
-        "app_id": "unit-app", "access_token": "unit-token",
+        "app_id": "unit-app", "api_key": "unit-token",
     }).synthesize(text="你好，小助手", voice="unit-voice", volume=volume)
 
-    assert captured["json_body"]["audio"]["loudness_ratio"] == expected
+    assert captured["json_body"]["req_params"]["audio_params"]["loudness_rate"] == expected
 
 
 def test_volc_catalog_signs_and_paginates_without_synthesis_credentials(
@@ -814,21 +807,20 @@ def test_volc_account_voice_mapping_only_enables_compatible_ready_voice(
 
     def fake_synthesis_request(method: str, url: str, **kwargs):
         captured.update(kwargs)
-        return _response(payload={
-            "code": 3000,
-            "data": base64.b64encode(b"RIFF-clone-test").decode("ascii"),
-        })
+        return _volc_response(b"\0\0" * 100)
 
     monkeypatch.setattr(providers, "_request", fake_synthesis_request)
     ready = by_id["S_ready"]
     audio = providers.VolcTTSProvider({
-        "app_id": "unit-app", "access_token": "unit-token",
+        "app_id": "unit-app", "api_key": "unit-token",
     }).synthesize(
         text="你好，小助手", voice=ready.voice_id, model=ready.model,
     )
 
-    assert audio == b"RIFF-clone-test"
-    assert captured["json_body"]["audio"]["voice_type"] == "S_ready"
+    with wave.open(io.BytesIO(audio)) as wav:
+        assert wav.readframes(wav.getnframes()) == b"\0\0" * 100
+    assert captured["json_body"]["req_params"]["speaker"] == "S_ready"
+    assert captured["headers"]["X-Api-Resource-Id"] == "seed-icl-1.0"
 
 
 @pytest.mark.parametrize("failed_source", ["public", "account"])
@@ -838,7 +830,7 @@ def test_volc_catalog_partial_failure_keeps_successful_snapshot(
     store = settings_store.ProviderSettingsStore(tmp_path / "settings.json")
     store.update_provider("volcengine", {
         "app_id": "unit-app",
-        "access_token": "unit-token",
+        "api_key": "unit-token",
         "access_key_id": "fixture-catalog-access-id",
         "access_key_secret": "fixture-catalog-secret",
     })
@@ -889,7 +881,7 @@ def test_volc_catalog_raises_when_both_dynamic_queries_fail(
     store = settings_store.ProviderSettingsStore(tmp_path / "settings.json")
     store.update_provider("volcengine", {
         "app_id": "unit-app",
-        "access_token": "unit-token",
+        "api_key": "unit-token",
         "access_key_id": "fixture-catalog-access-id",
         "access_key_secret": "fixture-catalog-secret",
     })

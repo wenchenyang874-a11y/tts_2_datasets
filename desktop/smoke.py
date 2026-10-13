@@ -209,9 +209,31 @@ def run_smoke(application, destination: Path) -> int:
         idle(window)
         assert window.stack.currentIndex() == 6 and window.pages[6].tabs.currentIndex() == 1
         assert "access_token" not in window.pages[6].fields["volcengine_v2"]
-        assert "api_key" not in window.pages[6].fields["volcengine_v1"]
+        assert "api_key" in window.pages[6].fields["volcengine_v1"]
+        for service, controls in window.pages[6].fields.items():
+            assert not set(controls) & {"endpoint", "v3_endpoint", "catalog_endpoint", "customization_endpoint", "access_token", "cluster"}
         window.grab().save(str(destination / "doubao2-settings.png"))
         check("separate-doubao-settings-and-missing-v2-key-blocks-before-task-creation")
+        settings = window.pages[6]
+        settings.select_service("aliyun")
+        region = settings.fields["aliyun"]["region"]
+        assert [region.itemData(i) for i in range(region.count())] == ["cn-beijing", "ap-southeast-1"]
+        region.setCurrentIndex(region.findData("ap-southeast-1"))
+        settings.fields["aliyun"]["api_key"].setText("native-region-fixture")
+        action(settings, "检查配置")
+        idle(window)
+        assert "配置格式通过" in settings.state["aliyun"].text()
+        assert settings.form_payload("aliyun")["region"] == "ap-southeast-1"
+        # Save only via the internal config API: UI save intentionally fetches
+        # the real account catalog, which an offline acceptance must not call.
+        runtime.call("/api/settings/providers/aliyun", "PUT", json={"api_key": "native-region-fixture", "region": "ap-southeast-1", "workspace_id": "ws-native-fixture"})
+        settings.dirty.discard("aliyun")
+        settings.refresh()
+        idle(window)
+        assert region.currentData() == "ap-southeast-1"
+        window.grab().save(str(destination / "region-settings.png"))
+        runtime.call("/api/settings/providers/aliyun", "DELETE")
+        check("native-region-dropdown-validation-and-persistence-no-cloud")
         window.navigate(0)
         idle(window)
         generation.provider.setCurrentIndex(generation.provider.findData("mock"))

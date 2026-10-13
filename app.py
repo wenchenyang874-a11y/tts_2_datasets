@@ -48,7 +48,7 @@ try:
         validate_provider_configuration,
     )
     from .project_settings import ProjectSettingsStore, normalize_display_text
-    from .settings_store import ProviderSettingsStore, set_default_settings_store
+    from .settings_store import PROVIDER_FIELDS, ProviderSettingsStore, set_default_settings_store
     from .voice_catalog import builtin_voices, refresh_voice_catalog
 except ImportError:  # Support direct `uvicorn app:app` execution.
     from app_version import VERSION
@@ -62,7 +62,7 @@ except ImportError:  # Support direct `uvicorn app:app` execution.
         get_provider_capabilities, validate_provider_configuration,
     )
     from project_settings import ProjectSettingsStore, normalize_display_text  # type: ignore
-    from settings_store import ProviderSettingsStore, set_default_settings_store  # type: ignore
+    from settings_store import PROVIDER_FIELDS, ProviderSettingsStore, set_default_settings_store  # type: ignore
     from voice_catalog import builtin_voices, refresh_voice_catalog  # type: ignore
 
 
@@ -299,26 +299,21 @@ class ProjectSettingsRequest(BaseModel):
 
 
 class AliyunProviderSettingsRequest(BaseModel):
+    model_config = {"extra": "forbid"}
     api_key: str | None = None
     workspace_id: str | None = None
     region: str | None = None
-    endpoint: str | None = None
-    customization_endpoint: str | None = None
     pricing_unit: str | None = Field(None, pattern="^(per_call|per_1k_chars)$")
     pricing_rate: float | None = Field(None, ge=0)
     pricing_currency: str | None = None
 
 
 class VolcengineProviderSettingsRequest(BaseModel):
+    model_config = {"extra": "forbid"}
     api_key: str | None = None
-    v3_endpoint: str | None = None
     app_id: str | None = None
-    access_token: str | None = None
-    cluster: str | None = None
-    endpoint: str | None = None
     access_key_id: str | None = None
     access_key_secret: str | None = None
-    catalog_endpoint: str | None = None
     pricing_unit: str | None = Field(None, pattern="^(per_call|per_1k_chars)$")
     pricing_rate: float | None = Field(None, ge=0)
     pricing_currency: str | None = None
@@ -619,8 +614,6 @@ def _validate_provider_audio(
 ) -> None:
     for provider_name in {str(voice["provider"]) for voice in voices}:
         _provider_audio_for(request, provider_name)
-    if any(voice.get("model") == "seed-tts-2.0" for voice in voices) and _provider_audio_for(request, "volcengine")["format"] == "ogg_opus":
-        raise HTTPException(400, "豆包 2.0 请使用 WAV 或 MP3")
 
 
 def _generation_config_id(voice):
@@ -635,8 +628,6 @@ def _validate_synthesis_credentials(selected):
         if name == "mock":
             continue
         config = provider_settings.get_provider(name)
-        if name == "volcengine" and not all(config.get(key) for key in ("app_id", "access_token")):
-            raise HTTPException(400, "豆包 1.0 未配置 App ID / Access Token，请打开设置 → 豆包 1.0")
         try:
             validate_provider_configuration(name, config, require_credentials=True)
         except ProviderError as exc:
@@ -1307,20 +1298,20 @@ def provider_capabilities() -> dict[str, dict[str, Any]]:
 def _provider_settings_model(
     provider: str, payload: dict[str, Any]
 ) -> AliyunProviderSettingsRequest | VolcengineProviderSettingsRequest:
+    if provider in PROVIDER_FIELDS and set(payload) - PROVIDER_FIELDS[provider]:
+        raise HTTPException(400, "供应商配置包含不支持的字段")
     if provider == "xiaomi":
         # MiMo shares API key/pricing fields with Alibaba, but not the
         # workspace/region options. Reject unsupported fields explicitly.
-        if set(payload) - {"api_key", "endpoint", "pricing_unit", "pricing_rate", "pricing_currency"}:
+        if set(payload) - {"api_key", "pricing_unit", "pricing_rate", "pricing_currency"}:
             raise HTTPException(400, "小米 MiMo 配置包含不支持的字段")
         return AliyunProviderSettingsRequest.model_validate(payload)
     if provider == "aliyun":
         return AliyunProviderSettingsRequest.model_validate(payload)
     if provider == "volcengine":
-        if set(payload) & {"api_key", "v3_endpoint"}:
-            raise HTTPException(400, "豆包 2.0 请使用独立配置")
         return VolcengineProviderSettingsRequest.model_validate(payload)
     if provider == "volcengine_v2":
-        if set(payload) - {"api_key", "v3_endpoint", "access_key_id", "access_key_secret", "catalog_endpoint", "pricing_unit", "pricing_rate", "pricing_currency"}:
+        if set(payload) - {"api_key", "access_key_id", "access_key_secret", "pricing_unit", "pricing_rate", "pricing_currency"}:
             raise HTTPException(400, "豆包 2.0 配置包含不支持的字段")
         return VolcengineProviderSettingsRequest.model_validate(payload)
     raise HTTPException(404, "不支持的供应商")
@@ -1396,8 +1387,6 @@ def test_provider_settings(provider: str, payload: dict[str, Any] = Body(default
             else:
                 config.pop(key, None)
     try:
-        if provider == "volcengine" and not all(config.get(key) for key in ("app_id", "access_token")):
-            raise ProviderConfigurationError("豆包 1.0 需要 App ID 和 Access Token")
         validate_provider_configuration(provider, config, require_credentials=True)
     except ProviderError as exc:
         raise HTTPException(400, str(exc)) from exc

@@ -56,8 +56,8 @@ def test_mimo_rejects_missing_partial_or_invalid_audio(monkeypatch, payload):
 
 def test_doubao2_v3_header_parameter_mapping_and_chunk_assembly(monkeypatch):
     calls = []
-    audio = wav_bytes()
-    records = [{"code": 0, "data": base64.b64encode(audio[:100]).decode()}, {"code": 0, "data": base64.b64encode(audio[100:]).decode()}, {"code": 20000000, "data": None}]
+    pcm = b"\0\0" * 2400
+    records = [{"code": 0, "data": base64.b64encode(pcm[:100]).decode()}, {"code": 0, "data": base64.b64encode(pcm[100:]).decode()}, {"code": 20000000, "data": None}]
 
     def request(method, url, **options):
         calls.append((url, options))
@@ -65,13 +65,17 @@ def test_doubao2_v3_header_parameter_mapping_and_chunk_assembly(monkeypatch):
 
     monkeypatch.setattr(providers, "_request", request)
     adapter = providers.VolcTTSProvider({"api_key": "fixture-v3-key"})
-    assert adapter.synthesize(text="请开灯", voice="zh_female_vv_uranus_bigtts", model="seed-tts-2.0", speed=1.5, volume=75, instruction="轻快一些") == audio
+    audio = adapter.synthesize(text="请开灯", voice="zh_female_vv_uranus_bigtts", model="seed-tts-2.0", speed=1.5, volume=75, instruction="轻快一些")
+    with wave.open(io.BytesIO(audio)) as wav:
+        assert wav.getnchannels() == 1 and wav.getsampwidth() == 2 and wav.getframerate() == 16000
+        assert wav.readframes(wav.getnframes()) == pcm
     url, options = calls[0]
     assert url.endswith("/api/v3/tts/unidirectional")
     assert options["headers"]["X-Api-Key"] == "fixture-v3-key"
     assert options["headers"]["X-Api-Resource-Id"] == "seed-tts-2.0"
     assert options["retry_transient"] is False
     params = options["json_body"]["req_params"]
+    assert params["audio_params"]["format"] == "pcm"
     assert params["audio_params"]["speech_rate"] == 50
     assert params["audio_params"]["loudness_rate"] == 50
     assert json.loads(params["additions"])["context_texts"] == ["轻快一些"]
@@ -114,26 +118,75 @@ def test_public_catalog_queries_both_model_resources(monkeypatch, tmp_path):
     assert any(voice.model == "seed-tts-2.0" for voice in builtin_voices("volcengine"))
 
 
-@pytest.mark.parametrize("base", ["https://openspeech.bytedance.com", "https://openspeech.bytedance.com/", "https://openspeech.bytedance.com/api/v3"])
-def test_doubao2_base_url_expands_to_request_path(base):
-    assert providers._volc_endpoint(base, True) == "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
-
-
-def test_all_base_url_forms_expand_without_breaking_full_legacy_urls():
+def test_direct_adapter_base_url_forms_expand():
     assert providers._ali_service_endpoint({"endpoint":"https://dashscope.aliyuncs.com/api/v1"}, "SpeechSynthesizer").endswith("/api/v1/services/audio/tts/SpeechSynthesizer")
     assert providers._ali_service_endpoint({"endpoint":"https://dashscope.aliyuncs.com/api/v1"}, "customization").endswith("/api/v1/services/audio/tts/customization")
-    assert providers._volc_endpoint("https://openspeech.bytedance.com", False).endswith("/api/v1/tts")
     assert providers._mimo_endpoint({"endpoint":"https://api.xiaomimimo.com/v1"}).endswith("/v1/chat/completions")
-    full = "https://openspeech.bytedance.com/api/v1/tts"
-    assert providers._volc_endpoint(full, False) == full
 
 
 def test_doubao_configuration_clear_is_independent(tmp_path):
     store = ProviderSettingsStore(tmp_path / "settings.json")
-    store.update_provider("volcengine", {"app_id":"fixture-app", "access_token":"fixture-v1-token"})
+    store.update_provider("volcengine", {"api_key":"fixture-v1-key"})
     store.update_provider("volcengine_v2", {"api_key":"fixture-v2-key"})
     store.clear_provider("volcengine_v2")
     store = ProviderSettingsStore(store.path)
     assert store.get_provider("volcengine_v2") == {}
     adapter = providers.VolcTTSProvider(settings_store=store)
-    assert adapter.api_key == "" and adapter.token == "fixture-v1-token"
+    assert adapter.configs["volcengine"]["api_key"] == "fixture-v1-key"
+    assert not adapter.configs["volcengine_v2"].get("api_key")
+
+
+@pytest.mark.parametrize("resource,key", [("seed-tts-1.0", "fixture-v1-key"), ("seed-tts-2.0", "fixture-v2-key")])
+def test_both_doubao_models_use_v3_with_their_own_api_key(monkeypatch, tmp_path, resource, key):
+    store = ProviderSettingsStore(tmp_path / "settings.json")
+    store.update_provider("volcengine", {"api_key": "fixture-v1-key"})
+    store.update_provider("volcengine_v2", {"api_key": "fixture-v2-key"})
+    calls = []
+    def request(method, url, **options):
+        calls.append((url, options))
+        # Match the current official HTTP guide's code=0 + usage response.
+        return httpx.Response(200, json={"code": 0, "message": "OK", "data": base64.b64encode(b"ID3-complete").decode(), "usage": {"text_words": 2}})
+    monkeypatch.setattr(providers, "_request", request)
+    audio = providers.VolcTTSProvider(settings_store=store).synthesize(text="测试", voice="fixture", model=resource, audio_format="mp3")
+    assert audio == b"ID3-complete"
+    url, options = calls[0]
+    assert url == "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+    assert options["headers"]["X-Api-Key"] == key
+    assert options["headers"]["X-Api-Resource-Id"] == resource
+    assert options["headers"]["X-Api-Request-Id"]
+    assert set(options["json_body"]) == {"req_params"}
+    assert options["retry_transient"] is False
+
+
+@pytest.mark.parametrize("missing_model,configured_service", [("seed-tts-1.0", "volcengine_v2"), ("seed-tts-2.0", "volcengine")])
+def test_doubao_never_falls_back_to_other_models_key(monkeypatch, tmp_path, missing_model, configured_service):
+    store = ProviderSettingsStore(tmp_path / "settings.json")
+    store.update_provider(configured_service, {"api_key": "fixture-only-other-model"})
+    monkeypatch.setattr(providers, "_request", lambda *a, **k: pytest.fail("Must block before HTTP"))
+    with pytest.raises(providers.ProviderConfigurationError, match="API Key"):
+        providers.VolcTTSProvider(settings_store=store).synthesize(text="测试", voice="fixture", model=missing_model)
+
+
+@pytest.mark.parametrize("resource", ["seed-tts-1.0", "seed-tts-2.0"])
+def test_doubao_discards_unfinished_valid_json_chunks(monkeypatch, resource):
+    monkeypatch.setattr(providers, "_request", lambda *a, **k: httpx.Response(200, json={"code": 0, "data": "AAAA"}))
+    with pytest.raises(providers.ProviderRequestError, match="缺少完成标记"):
+        providers.VolcTTSProvider({"api_key": "fixture"}).synthesize(text="测试", voice="fixture", model=resource)
+
+
+@pytest.mark.parametrize("region,workspace,host", [("cn-beijing", "", "dashscope.aliyuncs.com"), ("ap-southeast-1", "", "dashscope-intl.aliyuncs.com"), ("cn-beijing", "ws-fixture", "ws-fixture.cn-beijing.maas.aliyuncs.com"), ("ap-southeast-1", "ws-fixture", "ws-fixture.ap-southeast-1.maas.aliyuncs.com")])
+def test_region_selection_routes_synthesis_and_catalog_together(monkeypatch, region, workspace, host):
+    calls = []
+    def request(method, url, **options):
+        calls.append(url)
+        if url.endswith("customization"):
+            return httpx.Response(200, json={"output": {"voice_list": []}})
+        return httpx.Response(200, headers={"content-type": "audio/wav"}, content=wav_bytes())
+    monkeypatch.setattr(providers, "_request", request)
+    config = {"api_key": "fixture", "region": region, "workspace_id": workspace}
+    providers.validate_provider_configuration("aliyun", config)
+    adapter = providers.AlibabaTTSProvider(config)
+    adapter.synthesize(text="测试", voice="longxiaoxia", model="cosyvoice-v2")
+    adapter.list_custom_voices()
+    assert calls[0] == f"https://{host}/api/v1/services/audio/tts/SpeechSynthesizer"
+    assert all(url == f"https://{host}/api/v1/services/audio/tts/customization" for url in calls[1:])

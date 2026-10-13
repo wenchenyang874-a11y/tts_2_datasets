@@ -78,3 +78,11 @@ Inno Setup 的每用户安装器将程序放在 LocalAppData/Programs，应用�
 beta.3 的两套豆包配置分别存于 volcengine / volcengine_v2，独立保存、清空和估价。桌面服务 ID 为 volcengine_v1 / volcengine_v2，语音行按对应模型过滤；目录刷新只更新对应范围，不能禁用另一版本音色。实际合成前进行模型对应凭据预检，缺失不创建任务，不发请求。当前阶段不做旧配置转换。
 
 Base URL 与请求路径分离：小米 /v1 → /v1/chat/completions，豆包基础主机分别补齐 /api/v1/tts 和 /api/v3/tts/unidirectional，阿里 /api/v1 → /api/v1/services/audio/tts/SpeechSynthesizer。主机允许列表与 HTTPS 校验仍执行，完整路径为显式高级配置。阿里路由依据[官方 HTTP 文档](https://www.alibabacloud.com/help/en/model-studio/audio-generation-api)，不通过修改标签而继续向基础主机根路径发送合成请求。
+
+## beta.4 统一 V3 与地域路由
+
+用户要求取消地址输入，并指定 [当前 HTTP 单向流式文档](https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-text-to-speech-http?lang=zh)。本节替代 beta.3 的地址表单和旧 1.0 合成方式。两个豆包模型使用同一固定 V3 地址，通过 X-Api-Key、X-Api-Resource-Id 与随机请求 ID 调用；资源与独立凭据按所选模型绑定，不能在一套密钥缺失时借用另一套。1.0 字符版资源为 seed-tts-1.0，2.0 字符版为 seed-tts-2.0；账号复刻 1.0 使用 seed-icl-1.0。复刻音色管理仍有独立 AK/SK 与应用 ID，不能将其误作合成要求。
+
+WAV 请求使用 PCM，分段组装后一次写入单声道 PCM16 WAV 文件头，避免 V3 流式 WAV 重复文件头导致损坏。请求显式要求用量；支持官方当前示例的 code=0 与最终 usage，以及 V3 传输参考的 20000000 完成记录。任何错误分段、无音频或缺失完成信息都不返回部分结果，计费 POST 不隐式重试。此处理是当前云端协议的响应解析，不是旧应用配置兼容。
+
+供应商配置持久化不再接受 endpoint/v3_endpoint/catalog_endpoint/customization_endpoint、Access Token 或 Cluster。阿里云地域枚举为 cn-beijing/ap-southeast-1，合成和音色查询共用同一地域与可选 Workspace ID；按官方域名规则生成两个完整路径。界面默认北京，问号说明密钥与地域一致；格式预检不发云请求，也不把地域切换视为账号授权成功。

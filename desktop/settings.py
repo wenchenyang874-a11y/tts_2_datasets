@@ -5,18 +5,18 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLineEdit, QTabWidget,
                                QWidget, QFileDialog, QLabel, QMessageBox)
 from .base import Page
 from .widgets import field, button, combo, Card, Disclosure
-from .services import BASE_URLS, settings_id
+from .services import settings_id
 
 FIELDS = {
-    "volcengine_v1": [("app_id", "App ID", False), ("access_token", "Access Token", True), ("endpoint", "Base URL", False)],
-    "volcengine_v2": [("api_key", "API Key", True), ("v3_endpoint", "Base URL", False)],
-    "xiaomi": [("api_key", "API Key", True), ("endpoint", "Base URL", False)],
-    "aliyun": [("api_key", "API Key", True), ("endpoint", "Base URL", False)],
+    "volcengine_v1": [("api_key", "API Key", True)],
+    "volcengine_v2": [("api_key", "API Key", True)],
+    "xiaomi": [("api_key", "API Key", True)],
+    "aliyun": [("region", "地域", False), ("api_key", "API Key", True)],
 }
 EXTRA_FIELDS = {
-    "volcengine_v1": [("cluster", "Cluster", False), ("access_key_id", "Access Key ID (AK)", False), ("access_key_secret", "Secret Access Key (SK)", True), ("catalog_endpoint", "服务地址", False)],
-    "volcengine_v2": [("access_key_id", "Access Key ID (AK)", False), ("access_key_secret", "Secret Access Key (SK)", True), ("catalog_endpoint", "服务地址", False)],
-    "aliyun": [("workspace_id", "Workspace ID", False), ("region", "地域", False), ("customization_endpoint", "音色 Base URL", False)],
+    "volcengine_v1": [("access_key_id", "Access Key ID (AK)", False), ("access_key_secret", "Secret Access Key (SK)", True), ("app_id", "复刻应用 ID", False)],
+    "volcengine_v2": [("access_key_id", "Access Key ID (AK)", False), ("access_key_secret", "Secret Access Key (SK)", True)],
+    "aliyun": [("workspace_id", "Workspace ID", False)],
     "xiaomi": [],
 }
 
@@ -87,30 +87,28 @@ class SettingsPage(Page):
         self.layout.addStretch()
 
     def make_field(self, service, key, secret):
+        if key == "region":
+            widget = combo([("华北2（北京）", "cn-beijing"), ("新加坡", "ap-southeast-1")])
+            widget.activated.connect(lambda index, s=service: self.dirty.add(s))
+            return widget
         widget = QLineEdit()
         if secret:
             widget.setEchoMode(QLineEdit.EchoMode.Password)
-        if key in {"endpoint", "v3_endpoint"}:
-            widget.setText(BASE_URLS[service])
-        if key == "catalog_endpoint":
-            widget.setPlaceholderText("https://open.volcengineapi.com")
         widget.textEdited.connect(lambda text, s=service: self.dirty.add(s))
         return widget
 
     def tip(self, service, key, secret):
-        # ListSpeakers is a signed Volcengine OpenAPI request, independent of
-        # the speech synthesis Base URL and its Token/API Key. Use the vendor's
-        # service-address and AK/SK names so users can map this form to its docs;
-        # leaving the service address blank uses the client's official default.
-        if key == "catalog_endpoint":
-            return "火山引擎 OpenAPI 服务地址，默认 https://open.volcengineapi.com；用于调用大模型音色列表接口 ListSpeakers，留空使用默认地址。"
+        if key == "region":
+            return "选择 API Key 所属地域，程序自动使用对应官方地址；不同地域的 API Key 和可用模型不能混用。"
+        if key == "workspace_id":
+            return "可选：百炼业务空间 ID。填写后自动使用所选地域的业务空间专属域名，留空使用官方 DashScope 域名。"
+        if key == "app_id":
+            return "仅用于 AK/SK 查询账号复刻音色；语音合成使用 API Key，不需要 App ID 或 Access Token。"
         if key in {"access_key_id", "access_key_secret"}:
             purpose = "火山引擎 API 访问密钥，用于签名调用大模型音色列表接口 ListSpeakers；在控制台“API访问密钥”中获取，与语音合成凭据独立。"
             return purpose + ("已保存的 SK 不回显，留空保留，由 Windows 当前用户加密保护。" if secret else "未填写 AK/SK 时仅加载内置音色列表。")
         if secret:
-            return "密钥由 Windows 当前用户加密保护；已保存的密钥不回显，留空保留。" + ("豆包 2.0 使用 API Key，不使用 1.0 的 Access Token。" if service == "volcengine_v2" and key == "api_key" else "")
-        if key in {"endpoint", "v3_endpoint", "customization_endpoint"}:
-            return "基础地址，程序自动补齐接口路径；默认使用官方 HTTPS 地址。也可填写完整请求地址。"
+            return "密钥由 Windows 当前用户加密保护；已保存的密钥不回显，留空保留。" + ("豆包 1.0/2.0 均使用新版语音控制台的 API Key。" if service.startswith("volcengine") and key == "api_key" else "")
         return ""
 
     def select_service(self, service):
@@ -129,17 +127,13 @@ class SettingsPage(Page):
     def show_provider(self, service, provider):
         for key, widget in self.fields[service].items():
             value = provider.get(key, "")
+            if key == "region":
+                widget.setCurrentIndex(max(0, widget.findData(value or "cn-beijing")))
+                continue
             if isinstance(value, dict):
                 widget.clear()
                 widget.setPlaceholderText("已保存 · 留空保留" if value.get("configured") else "请输入密钥")
             else:
-                if key in {"endpoint", "v3_endpoint"}:
-                    if not value and service == "aliyun" and provider.get("workspace_id"):
-                        value = "https://" + provider["workspace_id"] + ".cn-beijing.maas.aliyuncs.com/api/v1"
-                    value = value or BASE_URLS[service]
-                    for route in ("/chat/completions", "/api/v3/tts/unidirectional", "/api/v1/tts", "/services/audio/tts/SpeechSynthesizer"):
-                        if str(value).endswith(route):
-                            value = str(value)[:-len(route)]
                 widget.setText(str(value))
         self.units[service].setCurrentIndex(max(0, self.units[service].findData(provider.get("pricing_unit"))))
         self.state[service].setText("已配置" if provider.get("synthesis_configured") else "尚未配置")
@@ -148,7 +142,7 @@ class SettingsPage(Page):
         payload = {}
         secret_names = {key for key, _, secret in FIELDS[service] + EXTRA_FIELDS[service] if secret}
         for key, widget in self.fields[service].items():
-            value = widget.text().strip()
+            value = widget.currentData() if key == "region" else widget.text().strip()
             if key in secret_names and not value:
                 continue
             payload[key] = value or None

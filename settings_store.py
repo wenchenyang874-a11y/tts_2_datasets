@@ -29,27 +29,22 @@ MAX_PRICING_RATE_LENGTH = 64
 MAX_PRICING_CURRENCY_LENGTH = 16
 
 PROVIDER_FIELDS: dict[str, frozenset[str]] = {
-    "volcengine_v2": frozenset({"api_key", "v3_endpoint", "access_key_id", "access_key_secret", "catalog_endpoint", *PRICING_FIELDS}),
-    "xiaomi": frozenset({"api_key", "endpoint", *PRICING_FIELDS}),
+    "volcengine_v2": frozenset({"api_key", "access_key_id", "access_key_secret", *PRICING_FIELDS}),
+    "xiaomi": frozenset({"api_key", *PRICING_FIELDS}),
     "aliyun": frozenset(
         {
             "api_key",
             "workspace_id",
             "region",
-            "endpoint",
-            "customization_endpoint",
             *PRICING_FIELDS,
         }
     ),
     "volcengine": frozenset(
         {
             "app_id",
-            "access_token",
-            "cluster",
-            "endpoint",
+            "api_key",
             "access_key_id",
             "access_key_secret",
-            "catalog_endpoint",
             *PRICING_FIELDS,
         }
     ),
@@ -58,13 +53,13 @@ SECRET_FIELDS: dict[str, frozenset[str]] = {
     "volcengine_v2": frozenset({"api_key", "access_key_secret"}),
     "xiaomi": frozenset({"api_key"}),
     "aliyun": frozenset({"api_key"}),
-    "volcengine": frozenset({"access_token", "access_key_secret"}),
+    "volcengine": frozenset({"api_key", "access_key_secret"}),
 }
 REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "volcengine_v2": frozenset({"api_key"}),
     "xiaomi": frozenset({"api_key"}),
     "aliyun": frozenset({"api_key"}),
-    "volcengine": frozenset({"app_id", "access_token"}),
+    "volcengine": frozenset({"api_key"}),
 }
 
 
@@ -246,7 +241,7 @@ class ProviderSettingsStore:
         }
         if provider == "volcengine":
             result["v1_configured"] = all(
-                config.get(key) for key in ("app_id", "access_token")
+                config.get(key) for key in ("api_key",)
             )
             result["synthesis_configured"] = result["v1_configured"]
             result["configured"] = result["synthesis_configured"]

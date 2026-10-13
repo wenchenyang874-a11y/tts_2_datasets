@@ -188,8 +188,6 @@ class GeneratePage(Page):
         self.audio_format.clear()
         self.sample_rate.clear()
         formats = capability.get("audio_formats", [])
-        if provider == "volcengine_v2":
-            formats = [value for value in formats if value != "ogg_opus"]
         for format in formats:
             self.audio_format.addItem(format.upper(), format)
         for rate in capability.get("sample_rates", []):

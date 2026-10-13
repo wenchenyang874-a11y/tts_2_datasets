@@ -40,18 +40,18 @@ def test_empty_secret_preserves_value_and_delete_clears_provider(tmp_path: Path)
     store = settings_store.ProviderSettingsStore(tmp_path / "provider_settings.json")
     store.update_provider("volcengine", {
         "app_id": "app-id",
-        "access_token": "synthesis-token",
+        "api_key": "synthesis-token",
         "access_key_id": "catalog-ak",
         "access_key_secret": "catalog-sk",
     })
     store.update_provider("volcengine", {
-        "access_token": "",
+        "api_key": "",
         "access_key_secret": "",
         "app_id": "changed-app",
     })
 
     stored = store.get_provider("volcengine")
-    assert stored["access_token"] == "synthesis-token"
+    assert stored["api_key"] == "synthesis-token"
     assert stored["access_key_secret"] == "catalog-sk"
     assert stored["app_id"] == "changed-app"
     public = store.public_provider("volcengine")

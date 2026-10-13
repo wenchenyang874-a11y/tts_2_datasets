@@ -75,7 +75,7 @@ def test_current_provider_form_validation_is_non_persisting_and_keeps_saved_secr
     from settings_store import ProviderSettingsStore
     store = ProviderSettingsStore(tmp_path / "settings.json")
     monkeypatch.setattr(app_module, "provider_settings", store)
-    result = client.post("/api/settings/providers/xiaomi/test", json={"api_key": "unsaved-fixture-key", "endpoint": "https://api.xiaomimimo.com/v1"})
+    result = client.post("/api/settings/providers/xiaomi/test", json={"api_key": "unsaved-fixture-key"})
     assert result.status_code == 200 and result.json()["remote_verified"] is False
     assert "unsaved-fixture-key" not in result.text and store.get_provider("xiaomi") == {}
     client.put("/api/settings/providers/xiaomi", json={"api_key": "saved-fixture-key"})
@@ -227,7 +227,7 @@ def test_provider_settings_api_masks_secrets_and_separates_volc_credentials(
     client.delete("/api/settings/providers/volcengine")
 
     unsupported_region = client.put("/api/settings/providers/aliyun", json={
-        "region": "ap-southeast-1",
+        "region": "invalid-region",
     })
     assert unsupported_region.status_code == 400
     assert "cn-beijing" in unsupported_region.json()["detail"]
@@ -261,8 +261,7 @@ def test_provider_settings_api_masks_secrets_and_separates_volc_credentials(
 
     synthesis_only = client.put("/api/settings/providers/volcengine", json={
         "app_id": "volc-app",
-        "access_token": "volc-synthesis-secret",
-        "cluster": "volcano_tts",
+        "api_key": "volc-synthesis-secret",
     })
     assert synthesis_only.status_code == 200
     assert synthesis_only.json()["synthesis_configured"] is True
@@ -1600,7 +1599,7 @@ def test_materialize_unexpected_error_finishes_task(
 def test_doubao_versions_have_independent_credentials_and_preflight(client):
     client.delete("/api/settings/providers/volcengine")
     client.delete("/api/settings/providers/volcengine_v2")
-    assert client.put("/api/settings/providers/volcengine", json={"app_id":"fixture-app", "access_token":"fixture-token"}).status_code == 200
+    assert client.put("/api/settings/providers/volcengine", json={"app_id":"fixture-app", "api_key":"fixture-token"}).status_code == 200
     v1 = client.get("/api/voices", params={"provider":"volcengine_v1"}).json()[0]
     v2 = client.get("/api/voices", params={"provider":"volcengine_v2"}).json()[0]
     before = app_module.db.one("SELECT COUNT(*) AS n FROM tasks")["n"]
