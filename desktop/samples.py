@@ -1,7 +1,7 @@
 """Sample review with stable cross-page selections and API-owned provenance."""
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QHBoxLayout, QLineEdit, QLabel, QTableWidgetItem,
-                               QDialog, QVBoxLayout, QDialogButtonBox, QFormLayout)
+                               QDialog, QVBoxLayout, QDialogButtonBox, QFormLayout, QHeaderView)
 from .base import Page
 from .widgets import combo, spin, button, Plot, field, Disclosure
 from .services import SERVICES
@@ -30,12 +30,14 @@ class SamplesPage(Page):
         self.task_filter = combo([("全部来源任务", "")])
         self.gender = combo([("全部性别", ""), ("女", "female"), ("男", "male"), ("未知", "unknown")])
         self.age = combo([("全部年龄", "")] + AGES)
+        for control in (self.provider, self.quality, self.kind, self.variant, self.keyword, self.task_filter, self.split, self.gender, self.age):
+            control.setMinimumContentsLength(4)
         more = Disclosure("更多筛选")
         for index, widgets in enumerate(([self.search, self.provider, self.quality, self.kind, self.variant],
                         [self.keyword, self.task_filter, self.split, self.gender, self.age])):
             row = QHBoxLayout()
             for widget in widgets:
-                row.addWidget(widget)
+                row.addWidget(widget, 2 if widget is self.search else 1)
             (self.layout if index == 0 else more.body).addLayout(row)
         self.layout.addWidget(more)
         for widget in [self.provider, self.quality, self.kind, self.variant, self.split, self.gender, self.age, self.keyword, self.task_filter]:
@@ -44,13 +46,19 @@ class SamplesPage(Page):
         self.actions(("筛选", self.search_first, True), ("全选筛选结果", self.select_filtered, False),
                      ("清空选择", self.clear_selection, False), ("导出所选", lambda: shell.navigate(5), False))
         self.grid = table(["选择", "文本", "来源 / 音色", "类型", "审核", "时长", "划分"])
+        header = self.grid.horizontalHeader()
+        for column, width in ((0, 44), (3, 60), (4, 80), (5, 70), (6, 80)):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+            self.grid.setColumnWidth(column, width)
+        self.grid.setWordWrap(True)
         self.grid.setMinimumHeight(270)
         self.grid.itemChanged.connect(self.selection_changed)
-        self.grid.cellDoubleClicked.connect(lambda row, column: self.review(row) if column == 4 else self.analyze(row))
+        self.grid.cellDoubleClicked.connect(lambda row, column: self.play_row(row))
         self.layout.addWidget(self.grid)
         row = self.actions(("试听", self.play, False), ("音频分析", self.analyze_current, False),
                            ("切换审核", self.review_current, False), ("编辑元数据", self.edit, False),
                            ("删除所选", self.delete, False), ("撤销最近删除", self.restore, False))
+        self.add_playback_controls()
         self.summary = QLabel()
         self.summary.setObjectName("muted")
         self.layout.addWidget(self.summary)
@@ -119,12 +127,13 @@ class SamplesPage(Page):
             values = [row["text"], f"{source_name} / {row['voice_name']}",
                       "增强" if row.get("variant_kind") == "augmented" else "原音",
                       QUALITY.get(row.get("quality_status"), row.get("quality_status", "")),
-                      f"{row['duration']:.2f}s", row.get("split", "")]
+                      f"{row['duration']:.2f}s", {"unassigned": "未分配"}.get(row.get("split"), row.get("split", ""))]
             for column, value in enumerate(values, 1):
                 item = QTableWidgetItem(str(value))
                 item.setToolTip(str(value))
                 self.grid.setItem(index, column, item)
         self.grid.blockSignals(False)
+        self.grid.resizeRowsToContents()
         self.page_number.setValue(result["page"])
         self.summary.setText(f"共 {result['total']} 条 · 第 {result['page']} 页 · 已选 {len(self.selected)} 条")
 
@@ -151,8 +160,13 @@ class SamplesPage(Page):
         return self.rows[index] if 0 <= index < len(self.rows) else None
 
     def play(self):
-        row = self.current()
-        if row:
+        self.play_row(self.grid.currentRow())
+
+    def play_row(self, index):
+        # Double-click explicitly uses the clicked row, even if the current
+        # cell changed during selection. It never changes review status.
+        if 0 <= index < len(self.rows):
+            row = self.rows[index]
             self.shell.play_resource("samples", row["id"], row["text"])
 
     def analyze_current(self):

@@ -36,6 +36,7 @@ class RecordingPage(Page):
         self.actions(("开始录音", self.start, True), ("停止", self.stop, False),
                      ("试听录音", self.preview, False), ("重录", self.rerecord, False),
                      ("刷新设备", self.reload_devices, False))
+        self.add_playback_controls()
         self.clock = QLabel("00:00")
         self.layout.addWidget(self.clock)
         self.level = QProgressBar()

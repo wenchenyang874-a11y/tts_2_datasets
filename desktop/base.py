@@ -26,6 +26,19 @@ class Page(QWidget):
         self.layout.addLayout(row)
         return row
 
+    def add_playback_controls(self):
+        self.playback_controls = QWidget()
+        row = QHBoxLayout(self.playback_controls)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.playback_label = QLabel()
+        from PySide6.QtCore import Qt
+        self.playback_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.playback_label.setObjectName("muted")
+        row.addWidget(self.playback_label, 1)
+        row.addWidget(button("停止播放", self.shell.stop_playback))
+        self.layout.addWidget(self.playback_controls)
+        self.playback_controls.hide()
+
     def refresh(self):
         pass
 

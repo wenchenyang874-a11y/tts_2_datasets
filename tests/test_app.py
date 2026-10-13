@@ -71,6 +71,68 @@ def _first_mock_voice(client: TestClient) -> dict:
     return voices[0]
 
 
+def test_voice_language_filters_handle_bilingual_foreign_and_unknown(client):
+    chinese = client.get("/api/voices", params={"provider": "xiaomi", "language_group": "chinese"}).json()
+    foreign = client.get("/api/voices", params={"provider": "xiaomi", "language_group": "foreign"}).json()
+    unknown = client.get("/api/voices", params={"provider": "xiaomi", "language_group": "unknown"}).json()
+    assert {row["voice_id"] for row in chinese} == {"冰糖", "茉莉", "苏打", "白桦"}
+    assert {row["voice_id"] for row in foreign} == {"Mia", "Chloe", "Milo", "Dean"}
+    assert [row["voice_id"] for row in unknown] == ["mimo_default"]
+    aliyun_chinese = client.get("/api/voices", params={"provider": "aliyun", "language_group": "chinese"}).json()
+    aliyun_foreign = client.get("/api/voices", params={"provider": "aliyun", "language_group": "foreign"}).json()
+    assert {row["id"] for row in aliyun_chinese} & {row["id"] for row in aliyun_foreign}
+    assert client.get("/api/voices", params={"language_group": "invalid"}).status_code == 400
+
+
+def test_voice_capability_filter_matches_exact_models_and_languages(client):
+    from voice_features import ALI_FIXED_VOICES
+    supported = client.get("/api/voices", params={"provider": "aliyun", "capability": "instruction", "language_group": "foreign"}).json()
+    assert {(row["model"], row["voice_id"]) for row in supported} == ALI_FIXED_VOICES
+    emotions = client.get("/api/voices", params={"provider": "aliyun", "capability": "emotion"}).json()
+    assert {row["id"] for row in emotions} == {row["id"] for row in supported}
+    unsupported = client.get("/api/voices", params={"provider": "aliyun", "capability": "no_instruction"}).json()
+    assert unsupported and all(row["expression_features"]["instruction"] == "none" for row in unsupported)
+    assert not ({row["id"] for row in unsupported} & {row["id"] for row in supported})
+    assert client.get("/api/voices", params={"capability": "invalid"}).status_code == 400
+
+
+def test_unsupported_expression_blocks_task_and_batch_before_creation(client, monkeypatch, tmp_path):
+    from settings_store import ProviderSettingsStore
+    store = ProviderSettingsStore(tmp_path / "expression-settings.json")
+    store.update_provider("volcengine", {"api_key": "fixture"})
+    monkeypatch.setattr(app_module, "provider_settings", store)
+    voices = client.get("/api/voices", params={"provider": "volcengine_v1"}).json()
+    voice = next(row for row in voices if not row["expression_features"]["emotions"])
+    monkeypatch.setattr(app_module, "_submit", lambda *args: pytest.fail("No task may be submitted"))
+    before = app_module.db.one("SELECT COUNT(*) AS n FROM tasks")["n"]
+    for path in ("/api/generation/preflight", "/api/tasks/generate", "/api/tasks/generate-batch"):
+        response = client.post(path, json={"voice_ids": [voice["id"]], "texts": ["测试"], "instruction": "开心一些", "cost_acknowledged": True})
+        assert response.status_code == 400 and "不支持表达指令" in response.json()["detail"]
+    assert app_module.db.one("SELECT COUNT(*) AS n FROM tasks")["n"] == before
+
+
+def test_emotion_participates_in_dedup_and_sample_metadata(client):
+    voice = _first_mock_voice(client)
+    base = {"voice_ids": [voice["id"]], "text": "情感去重验收", "label": "情感去重验收", "keyword_id": "emotion_dedup_fixture", "seed": 826519}
+    ids = []
+    for emotion in ("happy", "sad", "happy"):
+        result = client.post("/api/tasks/generate", json={**base, "emotion": emotion})
+        assert result.status_code == 200
+        task = _wait_for_task(client, result.json()["id"])
+        assert task["status"] == "completed"
+        ids.append(result.json()["id"])
+    rows = app_module.db.all("SELECT metadata_json FROM samples WHERE keyword_id=? AND deleted_at IS NULL", (base["keyword_id"],))
+    assert len(rows) == 2
+    assert {json.loads(row["metadata_json"])["emotion"] for row in rows} == {"happy", "sad"}
+    assert all("provider_expression_request" in json.loads(row["metadata_json"]) for row in rows)
+    owned = app_module.db.all("SELECT file_path FROM samples WHERE keyword_id=?", (base["keyword_id"],))
+    for row in owned:
+        path = Path(row["file_path"]).resolve()
+        assert path.is_relative_to(TEST_DATA_DIR.resolve())
+        path.unlink(missing_ok=True)
+    app_module.db.execute("DELETE FROM samples WHERE keyword_id=?", (base["keyword_id"],))
+
+
 def test_current_provider_form_validation_is_non_persisting_and_keeps_saved_secret(client, monkeypatch, tmp_path):
     from settings_store import ProviderSettingsStore
     store = ProviderSettingsStore(tmp_path / "settings.json")

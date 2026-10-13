@@ -16,7 +16,7 @@ from pathlib import Path
 
 
 def run_smoke(application, destination: Path) -> int:
-    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtCore import Qt, QTimer, QPoint
     from PySide6.QtWidgets import QPushButton
     from PySide6.QtTest import QTest
     from .runtime import BusinessRuntime, RuntimeErrorDetail
@@ -193,6 +193,113 @@ def run_smoke(application, destination: Path) -> int:
         assert runtime.call("/api/settings/providers")["providers"]
         window.navigate(0)
         generation = window.pages[0]
+        idle(window)
+        # Open the real shared Qt popup at different current selections. Its
+        # anchor must remain fixed rather than centering the selected menu row.
+        popup_positions = []
+        for selection in (0, 3, generation.age.count() - 1):
+            generation.age.setCurrentIndex(selection)
+            idle(window)
+            window.stack.currentWidget().ensureWidgetVisible(generation.age)
+            application.processEvents()
+            QTest.mouseClick(generation.age, Qt.MouseButton.LeftButton, pos=QPoint(generation.age.width() - 14, generation.age.height() // 2))
+            application.processEvents()
+            popup = generation.age.view().window()
+            assert popup.isVisible(), {"selection": selection, "age_visible": generation.age.isVisible(), "enabled": generation.age.isEnabled(), "size": (generation.age.width(), generation.age.height()), "popup": (popup.x(), popup.y()), "active": window.isActiveWindow()}
+            popup_positions.append((popup.x(), popup.y(), popup.width()))
+            assert popup.width() == generation.age.width()
+            popup.grab().save(str(destination / f"dropdown-{selection}.png"))
+            QTest.keyClick(generation.age.view(), Qt.Key.Key_Escape)
+            application.processEvents()
+        assert len(set(popup_positions)) == 1, popup_positions
+        generation.age.setCurrentIndex(0)
+        idle(window)
+        QTest.mouseClick(generation.age, Qt.MouseButton.LeftButton)
+        view = generation.age.view()
+        row_index = view.model().index(1, 0)
+        QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=view.visualRect(row_index).center())
+        assert generation.age.currentData() == "young" and not view.window().isVisible()
+        generation.age.setCurrentIndex(0)
+        idle(window)
+        QTest.mouseClick(generation.age, Qt.MouseButton.LeftButton)
+        QTest.keyClick(view, Qt.Key.Key_Down)
+        QTest.keyClick(view, Qt.Key.Key_Return)
+        assert generation.age.currentData() == "young"
+        generation.age.setCurrentIndex(0)
+        idle(window)
+        check("dropdown-stable-anchor-width-first-middle-last-and-keyboard-close")
+        generation.provider.setCurrentIndex(generation.provider.findData("xiaomi"))
+        idle(window)
+        generation.language.setCurrentIndex(generation.language.findData("foreign"))
+        idle(window)
+        assert generation.voices.count() == 4
+        item = generation.voices.item(0)
+        bounds = generation.voices.visualItemRect(item)
+        # Clicking the name/blank side and the actual checkbox each toggles
+        # once. The same row rectangle survives every visual selection state.
+        from PySide6.QtCore import QPoint
+        for x in (bounds.center().x(), bounds.left() + 18, bounds.right() - 12):
+            before = item.checkState()
+            QTest.mouseClick(generation.voices.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(x, bounds.center().y()))
+            assert item.checkState() != before
+            assert generation.voices.visualItemRect(item) == bounds
+        assert item.text() == generation.voice_rows[item.data(Qt.ItemDataRole.UserRole)]["name"]
+        assert item.data(Qt.ItemDataRole.UserRole + 1)["language"] == "外语"
+        QTest.keyClick(generation.voices, Qt.Key.Key_Space)
+        assert item.checkState() == Qt.CheckState.Unchecked
+        check("formatted-voice-rows-whole-row-checkbox-keyboard-toggle-no-inset-change")
+        generation.voices.item(0).setCheckState(Qt.CheckState.Checked)
+        generation.instruction.setText("轻快自然，强调关键词")
+        generation.emotion.setCurrentIndex(generation.emotion.findData("happy"))
+        assert generation.payload()["emotion"] == "happy"
+        assert generation.instruction.isEnabled() and not generation.scale_field.isVisible()
+        window.grab().save(str(destination / "voice-foreign-expression.png"))
+        generation.language.setCurrentIndex(generation.language.findData("chinese"))
+        idle(window)
+        assert generation.voices.count() == 4 and not generation.selected
+        assert generation.instruction.text() == "轻快自然，强调关键词"
+        generation.language.setCurrentIndex(0)
+        generation.provider.setCurrentIndex(generation.provider.findData("aliyun"))
+        generation.capability_filter.setCurrentIndex(generation.capability_filter.findData("instruction"))
+        idle(window)
+        assert generation.voices.count() == 5
+        generation.capability_filter.setCurrentIndex(0)
+        idle(window)
+        check("voice-language-capability-filters-and-visible-emotion-controls")
+        generation.provider.setCurrentIndex(generation.provider.findData("volcengine_v1"))
+        idle(window)
+        generation.voices.item(0).setCheckState(Qt.CheckState.Checked)
+        generation.voices.item(1).setCheckState(Qt.CheckState.Checked)
+        selected_before = set(generation.selected)
+        tasks_before = len(runtime.call("/api/tasks"))
+        modal_text = []
+        def dismiss_expression_warning():
+            dialog = application.activeModalWidget()
+            if isinstance(dialog, QMessageBox):
+                modal_text.append(dialog.text())
+                dialog.grab().save(str(destination / "expression-warning.png"))
+                dialog.accept()
+        QTimer.singleShot(200, dismiss_expression_warning)
+        action(generation, "开始合成")
+        idle(window)
+        assert modal_text and "不支持表达指令" in modal_text[0]
+        assert generation.voices.item(0).text() in modal_text[0]
+        assert generation.voices.item(1).text() in modal_text[0]
+        assert generation.selected == selected_before and generation.instruction.text() == "轻快自然，强调关键词"
+        assert len(runtime.call("/api/tasks")) == tasks_before and not generation.submitting
+        generation.instruction.clear()
+        check("start-expression-modal-preserves-form-before-submission")
+        original_size = window.size()
+        window.resize(980, 680)
+        pump_until(lambda: generation.width() <= window.stack.currentWidget().viewport().width(), 3)
+        window.grab().save(str(destination / "generation-minimum-window.png"))
+        for control in (generation.provider, generation.age, generation.capability_filter, generation.voices):
+            point = control.mapTo(window, control.rect().topRight())
+            assert point.x() < window.width() - 10, (point, window.width(), generation.width(), generation.minimumSizeHint(), generation.body_layout.minimumSize())
+        window.grab().save(str(destination / "generation-minimum-window.png"))
+        window.resize(original_size)
+        pump_until(lambda: generation.width() <= window.stack.currentWidget().viewport().width(), 3)
+        check("minimum-window-width-voice-filters-without-horizontal-clipping")
         generation.provider.setCurrentIndex(generation.provider.findData("volcengine_v2"))
         action(generation, "获取音色列表")
         idle(window)
@@ -282,10 +389,40 @@ def run_smoke(application, destination: Path) -> int:
         idle(window)
         first_playback = window.player.source().toLocalFile()
         assert Path(first_playback).is_file()
-        action(library, "试听")
+        cell = library.grid.visualItemRect(library.grid.item(0, 2))
+        window.stack.currentWidget().ensureWidgetVisible(library.grid)
+        application.processEvents()
+        QTest.mouseClick(library.grid.viewport(), Qt.MouseButton.LeftButton, pos=cell.center())
+        QTest.mouseDClick(library.grid.viewport(), Qt.MouseButton.LeftButton, pos=cell.center())
         idle(window)
         assert window.player.source().toLocalFile() != first_playback
         assert Path(window.player.source().toLocalFile()).is_file()
+        assert library.grid.columnWidth(0) == 44
+        from PySide6.QtWidgets import QStyledItemDelegate
+        assert isinstance(library.grid.itemDelegate(), QStyledItemDelegate)
+        # Long display fixture on a real sample ID; compare row height before
+        # and after focus, with both screenshots for visual wrap acceptance.
+        display_rows = [dict(row) for row in library.rows]
+        display_rows[0]["voice_name"] = "音色名称较长的换行显示验收：选中后保留全部信息"
+        library.show_rows({"items": display_rows, "page": 1, "total": len(display_rows)})
+        library.grid.clearSelection()
+        application.processEvents()
+        height_before = library.grid.rowHeight(0)
+        window.grab().save(str(destination / "sample-long-unselected.png"))
+        library.grid.setCurrentCell(0, 2)
+        application.processEvents()
+        assert library.grid.rowHeight(0) == height_before and height_before > 43
+        window.grab().save(str(destination / "sample-long-selected.png"))
+        library.load_page(1)
+        idle(window)
+        window.navigate(0)
+        idle(window)
+        assert not any(item.text() == "停止播放" and item.isVisible() for item in window.findChildren(QPushButton))
+        from PySide6.QtMultimedia import QMediaPlayer
+        assert window.player.playbackState() == QMediaPlayer.PlaybackState.StoppedState
+        window.navigate(1)
+        idle(window)
+        check("sample-double-click-playback-compact-check-column-wrap-stable-local-controls")
         library.selected.update(row["id"] for row in samples)
         library.load_page(2)
         idle(window)

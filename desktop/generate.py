@@ -1,10 +1,11 @@
 """Native batch generation preserving provider capability and billing guards."""
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QEvent
 from PySide6.QtWidgets import (QHBoxLayout, QVBoxLayout, QPlainTextEdit, QLineEdit,
-                               QListWidget, QListWidgetItem, QGroupBox, QCheckBox, QLabel, QWidget)
+                               QListWidgetItem, QGroupBox, QCheckBox, QLabel, QWidget, QMessageBox, QBoxLayout)
 from .base import Page
-from .widgets import field, combo, spin, button, HelpButton, Card, Disclosure
+from .widgets import field, combo, spin, button, HelpButton, Card, Disclosure, CheckableVoiceList
 from .services import SERVICES, audio_provider
+from voice_features import expression_features, language_groups, resolve_expression
 
 PROVIDERS = SERVICES
 TARGETS = [("正样本", "positive"), ("负样本", "negative"), ("背景样本", "background")]
@@ -31,6 +32,8 @@ class GeneratePage(Page):
         project_row.addWidget(button("保存唤醒词", self.save_project), 0, Qt.AlignmentFlag.AlignBottom)
         self.layout.addLayout(project_row)
         body = QHBoxLayout()
+        self.body_layout = body
+        self.shell.installEventFilter(self)
         body.setSpacing(16)
         text_card, voice_card = Card("01  合成文本"), Card("02  选择音色")
         self.texts = QPlainTextEdit("你好，小助手")
@@ -54,14 +57,25 @@ class GeneratePage(Page):
         self.search.setPlaceholderText("搜索音色")
         self.gender = combo([("全部性别", ""), ("女", "female"), ("男", "male")])
         self.age = combo([("全部年龄", "")] + AGES)
-        for widget in [self.search, self.gender, self.age]:
+        self.language = combo([("全部语言", ""), ("中文", "chinese"), ("外语", "foreign"), ("语言未知", "unknown")])
+        for control in (self.language, self.gender, self.age):
+            control.setMinimumContentsLength(4)
+        self.capability_filter = combo([("全部能力", ""), ("支持指令", "instruction"), ("支持情感", "emotion"), ("无指令控制", "no_instruction")])
+        self.capability_filter.setMaximumWidth(160)
+        search_row = QHBoxLayout()
+        search_row.addWidget(self.search, 1)
+        search_row.addWidget(self.capability_filter)
+        voice_card.body.addLayout(search_row)
+        for widget in [self.language, HelpButton("按音色支持的语言筛选。多语种音色会同时出现在中文和外语中；供应商未提供语言信息时列为语言未知。切换语言分类会清空已选音色。"), self.gender, self.age]:
             filters.addWidget(widget)
         voice_card.body.addLayout(filters)
         self.provider.currentIndexChanged.connect(self.provider_changed)
         self.gender.currentIndexChanged.connect(self.refresh_voices)
         self.age.currentIndexChanged.connect(self.refresh_voices)
+        self.language.currentIndexChanged.connect(self.selection_filter_changed)
+        self.capability_filter.currentIndexChanged.connect(self.selection_filter_changed)
         self.search.textChanged.connect(self.refresh_voices)
-        self.voices = QListWidget()
+        self.voices = CheckableVoiceList()
         self.voices.setMinimumHeight(210)
         self.voices.itemChanged.connect(self.voice_changed)
         voice_card.body.addWidget(self.voices, 1)
@@ -79,6 +93,22 @@ class GeneratePage(Page):
         self.selection_count = QLabel("0 条文本 · 0 个音色 · 0 次合成")
         self.selection_count.setObjectName("batchSummary")
         self.layout.addWidget(self.selection_count)
+        expression = Card()
+        expression.body.setContentsMargins(16, 12, 16, 12)
+        expression_row = QHBoxLayout()
+        self.emotion = combo([("默认情感", "")])
+        self.emotion.currentIndexChanged.connect(self.update_expression_scale)
+        self.emotion_scale = spin(1, 5, 4, True)
+        self.instruction = QLineEdit()
+        self.instruction.setMaxLength(500)
+        self.instruction.setPlaceholderText("例如：轻快、自然，重点强调唤醒词")
+        expression_row.addWidget(field("情感", self.emotion, "只列出已选音色共同支持的情感；豆包多情感音色使用官方参数，其余支持指令的音色使用自然语言控制。"), 1)
+        self.scale_field = field("强度", self.emotion_scale, "仅用于音色支持的豆包情感参数，范围 1–5；不是所有音色都支持。")
+        expression_row.addWidget(self.scale_field, 0)
+        expression_row.addWidget(field("表达指令", self.instruction, "豆包 2.0 与小米可填写自然语言要求。阿里云部分系统音色须用固定格式，如：你说话的情感是happy。选择多个音色时，指令须被全部已选音色支持。"), 3)
+        expression.body.addLayout(expression_row)
+        self.expression_panel = expression
+        self.layout.addWidget(expression)
         parameters = Disclosure("合成参数")
         controls = QHBoxLayout()
         self.speed, self.pitch, self.volume = spin(.5, 2, 1, True), spin(.5, 2, 1, True), spin(0, 100, 50)
@@ -110,9 +140,6 @@ class GeneratePage(Page):
         audio_row.addWidget(field("请求采样率", self.sample_rate, "入库与导出统一为 16 kHz mono。"))
         randoms.body.addLayout(audio_row)
         parameters.body.addWidget(randoms)
-        self.instruction = QLineEdit()
-        self.instruction.setPlaceholderText("例如：轻快、自然")
-        parameters.body.addWidget(field("风格指令", self.instruction, "仅供支持风格指令的服务使用。"))
         self.layout.addWidget(parameters)
         self.billing = QCheckBox("我已了解云合成费用由当前账号承担")
         self.layout.addWidget(self.billing)
@@ -127,6 +154,16 @@ class GeneratePage(Page):
         issue.addWidget(self.configure_button)
         self.layout.addLayout(issue)
         self.layout.addStretch()
+
+    def eventFilter(self, watched, event):
+        if watched is self.shell and event.type() == QEvent.Type.Resize:
+            # Three parameter columns and voice filters need more room than a
+            # 980px window can offer side by side. Stack the cards before the
+            # page's minimum width clips the right controls; vertical scrolling
+            # already belongs to the shell's QScrollArea.
+            direction = QBoxLayout.Direction.TopToBottom if event.size().width() < 1120 else QBoxLayout.Direction.LeftToRight
+            self.body_layout.setDirection(direction)
+        return super().eventFilter(watched, event)
 
     def update_summary(self):
         if not hasattr(self, "selection_count"):
@@ -144,6 +181,14 @@ class GeneratePage(Page):
         self.configure_button.hide()
         self.update_summary()
         self.update_capabilities()
+        self.refresh_voices()
+
+    def selection_filter_changed(self):
+        # Switching language categories must not keep invisible voices selected
+        # and unexpectedly send them in a foreign-language batch.
+        self.selected.clear()
+        self.update_summary()
+        self.update_expression()
         self.refresh_voices()
 
     def select_all(self):
@@ -206,9 +251,44 @@ class GeneratePage(Page):
                 control.setValue(default)
                 self.random_fields[name][0].setChecked(False)
         self.billing.setVisible(provider != "mock")
-        self.instruction.setEnabled(provider != "volcengine_v1")
-        if provider == "volcengine_v1":
-            self.instruction.clear()
+        self.update_expression()
+
+    def update_expression(self):
+        if not hasattr(self, "expression_panel"):
+            return
+        selected = [self.voice_rows[identifier] for identifier in self.selected if identifier in self.voice_rows]
+        features = [row.get("expression_features", expression_features(row)) for row in selected]
+        # Keep the draft editable across selection changes. Clearing/disabling
+        # it when an unsupported voice is checked destroys the user's work and
+        # hides the conflict. Validate the exact batch on Start instead.
+        self.instruction.setEnabled(True)
+        self.instruction.setPlaceholderText("例如：你说话的情感是happy。" if any(item["instruction"] == "fixed" for item in features) else "例如：轻快、自然，重点强调唤醒词")
+        # A batch uses one expression setting. Intersect exact voice capabilities
+        # instead of advertising every provider's global emotions for each voice.
+        common = set(item["value"] for item in features[0]["emotions"]) if features else set()
+        for item in features[1:]:
+            common &= {option["value"] for option in item["emotions"]}
+        previous = self.emotion.currentData()
+        self.emotion.blockSignals(True)
+        self.emotion.clear()
+        self.emotion.addItem("默认情感", "")
+        for option in features[0]["emotions"] if features else []:
+            if option["value"] in common:
+                self.emotion.addItem(option["label"], option["value"])
+        self.emotion.setCurrentIndex(max(0, self.emotion.findData(previous)))
+        self.emotion.blockSignals(False)
+        self.emotion.setEnabled(bool(common))
+        self.supports_emotion_scale = bool(features) and all(item["emotion_scale"] for item in features)
+        self.scale_field.setVisible(self.supports_emotion_scale)
+        self.update_expression_scale()
+        self.expression_panel.setVisible(True)
+
+    def update_expression_scale(self):
+        supported = getattr(self, "supports_emotion_scale", False) and bool(self.emotion.currentData())
+        if hasattr(self, "emotion_scale"):
+            self.emotion_scale.setEnabled(supported)
+            if not supported:
+                self.emotion_scale.setValue(4)
 
     def store_audio_options(self):
         if self.audio_format.currentData() and self.sample_rate.currentData():
@@ -230,9 +310,9 @@ class GeneratePage(Page):
                      callback=lambda result: (self.set_project(result), self.notify("唤醒词已保存")))
 
     def refresh_voices(self):
-        snapshot = (self.provider.currentData(), self.gender.currentData(), self.age.currentData(), self.search.text())
-        self.request("/api/voices", params={"provider": self.provider.currentData(), "gender": self.gender.currentData(), "age_group": self.age.currentData()},
-                     callback=lambda rows: self.show_voices(rows) if snapshot == (self.provider.currentData(), self.gender.currentData(), self.age.currentData(), self.search.text()) else None)
+        snapshot = (self.provider.currentData(), self.gender.currentData(), self.age.currentData(), self.search.text(), self.language.currentData(), self.capability_filter.currentData())
+        self.request("/api/voices", params={"provider": self.provider.currentData(), "gender": self.gender.currentData(), "age_group": self.age.currentData(), "language_group": self.language.currentData(), "capability": self.capability_filter.currentData()},
+                     callback=lambda rows: self.show_voices(rows) if snapshot == (self.provider.currentData(), self.gender.currentData(), self.age.currentData(), self.search.text(), self.language.currentData(), self.capability_filter.currentData()) else None)
 
     def show_voices(self, rows):
         self.voices.blockSignals(True)
@@ -243,14 +323,23 @@ class GeneratePage(Page):
             if query and query not in (row["name"] + " " + row["voice_id"]).casefold():
                 continue
             gender = {"female": "女", "male": "男", "unknown": ""}.get(row.get("gender"), "")
-            item = QListWidgetItem(row['name'] + ("  ·  " + gender if gender else ""))
+            groups = language_groups(row)
+            language = "中/外语" if len(groups) == 2 else "中文" if "chinese" in groups else "外语" if "foreign" in groups else "语言未知"
+            features = row["expression_features"]
+            instruction = {"free": "指令", "fixed": "固定指令", "none": "无指令"}[features["instruction"]]
+            traits = instruction + ("/情感" if features["emotions"] else "")
+            item = QListWidgetItem(row['name'])
+            age = dict((value, label) for label, value in AGES).get(row.get("age_group"), "")
+            item.setData(Qt.ItemDataRole.UserRole + 1, {"demographics": " · ".join(value for value in (gender, age) if value), "language": language,
+                         "capability": traits, "supported": features["instruction"] != "none" or bool(features["emotions"])})
             item.setData(Qt.ItemDataRole.UserRole, row["id"])
-            item.setToolTip(f"{row['voice_id']}\n{row.get('model', '')}")
+            item.setToolTip(f"{row['voice_id']}\n{row.get('model', '')}\n语言：{', '.join(row.get('languages', [])) or '未知'}\n表达能力：{traits}")
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked if row["id"] in self.selected else Qt.CheckState.Unchecked)
             self.voices.addItem(item)
         self.voices.blockSignals(False)
         self.update_summary()
+        self.update_expression()
 
     def refresh_catalog(self):
         self.catalog_button.setEnabled(False)
@@ -265,7 +354,8 @@ class GeneratePage(Page):
                   "target_kind": self.kind.currentData(), "count": self.count.value(),
                   "concurrency": self.concurrency.value(), "speed": self.speed.value(),
                   "pitch": self.pitch.value(), "volume": self.volume.value(), "seed": self.seed.value(),
-                  "instruction": self.instruction.text(), "cost_acknowledged": self.billing.isChecked()}
+                  "instruction": self.instruction.text(), "emotion": self.emotion.currentData() or "",
+                  "emotion_scale": self.emotion_scale.value(), "cost_acknowledged": self.billing.isChecked()}
         for name, (enable, start, end) in self.random_fields.items():
             result.update({"random_" + name: enable.isChecked(), name + "_min": start.value(), name + "_max": end.value()})
         service = self.provider.currentData()
@@ -281,6 +371,26 @@ class GeneratePage(Page):
         if not self.texts.toPlainText().strip():
             self.creation_failed("请输入至少一条合成文本")
             return
+        # Reject incompatible expression controls synchronously, before the
+        # credentials preflight, billing confirmation or any task submission.
+        # The backend repeats this check against authoritative catalog rows;
+        # this UI check preserves the form and explains all conflicting voices.
+        conflicts = []
+        for identifier in sorted(self.selected):
+            voice = self.voice_rows.get(identifier)
+            if voice is None:
+                conflicts.append("音色信息尚未载入，请获取音色列表后重试")
+                continue
+            try:
+                resolve_expression(voice, self.instruction.text(), self.emotion.currentData() or "", self.emotion_scale.value())
+            except ValueError as error:
+                reason = str(error).removeprefix(f"音色 {voice['name']} ")
+                conflicts.append(f"{voice['name']}：{reason}")
+        if conflicts:
+            message = "\n".join(conflicts) + "\n\n请取消这些音色，或调整表达指令／情感。已填写内容和勾选音色均已保留。"
+            self.creation_failed("所选音色与表达设置不匹配")
+            QMessageBox.warning(self, "请调整音色或表达设置", message)
+            return
         cloud = self.provider.currentData() != "mock"
         if cloud and not self.billing.isChecked():
             self.creation_failed("请确认云合成费用")
@@ -294,8 +404,13 @@ class GeneratePage(Page):
         self.configure_button.hide()
         self.submitting = True
         self.start_button.setEnabled(False)
-        self.request("/api/generation/preflight", "POST", json={"voice_ids": payload["voice_ids"]},
-                     callback=lambda result: self.preflight_ready(payload, cloud), error=self.creation_failed)
+        self.request("/api/generation/preflight", "POST", json={key: payload[key] for key in ("voice_ids", "instruction", "emotion", "emotion_scale")},
+                     callback=lambda result: self.preflight_ready(payload, cloud), error=self.preflight_failed)
+
+    def preflight_failed(self, error):
+        self.creation_failed(error)
+        if "指令" in str(error) or "情感" in str(error):
+            QMessageBox.warning(self, "请调整音色或表达设置", str(error) + "\n\n已填写内容和勾选音色均已保留。")
 
     def preflight_ready(self, payload, cloud):
         calls = len([t for t in payload["texts"] if t.strip()]) * len(payload["voice_ids"]) * payload["count"]

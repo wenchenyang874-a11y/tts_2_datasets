@@ -34,6 +34,7 @@ class MainWindow(QMainWindow):
         self.project = {}
         self.ready = False
         self.closing = False
+        self.playback_epoch = 0
         self.cache = tempfile.TemporaryDirectory(prefix="tts-desktop-media-")
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="desktop-commands")
         # Serialize UI-originated commands. Core generation still uses its real
@@ -98,16 +99,7 @@ class MainWindow(QMainWindow):
         self.output.setVolume(.7)
         self.player.setAudioOutput(self.output)
         self.player.errorOccurred.connect(lambda error, message: self.set_status("音频播放失败，请检查输出设备与文件", True))
-        footer = QHBoxLayout()
-        self.playback = QLabel("")
-        self.playback.setTextFormat(Qt.TextFormat.PlainText)
-        self.playback.setObjectName("muted")
-        footer.addWidget(self.playback)
-        footer.addStretch()
-        stop = QPushButton("停止播放")
-        stop.clicked.connect(self.player.stop)
-        footer.addWidget(stop)
-        main.addLayout(footer)
+        self.player.playbackStateChanged.connect(self.update_playback_controls)
         outer.addLayout(main, 1)
         self.setCentralWidget(center)
         self.stack.setEnabled(False)
@@ -192,6 +184,8 @@ class MainWindow(QMainWindow):
     def navigate(self, index):
         if self.switching:
             return
+        if index != self.stack.currentIndex():
+            self.stop_playback()
         self.stack.setCurrentIndex(index)
         for i, item in enumerate(self.nav_buttons):
             item.setChecked(i == index)
@@ -238,7 +232,6 @@ class MainWindow(QMainWindow):
         self.enable_after_switch()
         self.selected_samples = set()
         self.project = {}
-        self.playback.clear()
         self.build_pages()
         self.navigate(6)
         self.pages[0].refresh()
@@ -258,14 +251,31 @@ class MainWindow(QMainWindow):
         # backend can still hold the old file while it releases its source.
         # Replacing the same cache filename made repeated/hot playback fail.
         path = Path(self.cache.name) / (identifier + "-" + uuid.uuid4().hex + ".wav")
+        self.playback_epoch += 1
+        page, epoch, playback_epoch = self.stack.currentIndex(), self.epoch, self.playback_epoch
         self.submit(lambda: self.runtime.call(op="copy", kind=kind, id=identifier, destination=str(path)),
-                    lambda result: self.play_file(Path(result), label))
+                    lambda result: self.play_file(Path(result), label) if page == self.stack.currentIndex() and epoch == self.epoch and playback_epoch == self.playback_epoch else None)
 
     def play_file(self, path, label="录音"):
         self.player.stop()
         self.player.setSource(QUrl.fromLocalFile(str(path)))
         self.player.play()
-        self.playback.setText("试听 · " + label[:35])
+        page = self.pages[self.stack.currentIndex()]
+        if hasattr(page, "playback_label"):
+            page.playback_label.setText("试听 · " + label[:35])
+
+    def stop_playback(self):
+        # Invalidate queued copies too. Leaving and returning to the same page
+        # before a copy finishes must not restart audio after the user stopped.
+        self.playback_epoch += 1
+        self.player.stop()
+        self.update_playback_controls()
+
+    def update_playback_controls(self, *args):
+        active = self.player.playbackState() != QMediaPlayer.PlaybackState.StoppedState
+        for index, page in enumerate(self.pages):
+            if hasattr(page, "playback_controls"):
+                page.playback_controls.setVisible(active and index == self.stack.currentIndex())
 
     def closeEvent(self, event):
         if self.switching:

@@ -21,6 +21,7 @@ class NoisesPage(Page):
         self.layout.addWidget(self.grid)
         self.actions(("导入噪声", self.upload, True), ("试听", self.play, False), ("编辑", self.edit, False),
                      ("删除 / 恢复", self.delete_restore, False), ("加入背景样本", self.materialize, False))
+        self.add_playback_controls()
         row = QHBoxLayout()
         self.count = spin(1, 100, 1)
         self.seed = spin(0, 2**31 - 1, 20260804)

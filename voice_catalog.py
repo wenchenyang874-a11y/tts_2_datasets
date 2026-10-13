@@ -73,7 +73,7 @@ def _voice(
         model=model,
         gender=gender,
         age_group=age_group,
-        languages=languages or ["zh-CN"],
+        languages=languages if languages is not None else ["zh-CN"],
         metadata=metadata,
     )
 
@@ -122,7 +122,7 @@ _BUILTIN_VOICES: tuple[Voice, ...] = (
                description="小米 MiMo 官方预置音色；实际可用性由账号和集群决定。", languages=languages,
                source_url="https://mimo.mi.com/docs/zh-CN/api/audio/tts")
         for identifier, name, gender, languages in (
-            ("mimo_default", "MiMo 默认", "unknown", ["zh-CN", "en"]),
+            ("mimo_default", "MiMo 默认", "unknown", ["und"]),
             ("冰糖", "冰糖", "female", ["zh-CN"]), ("茉莉", "茉莉", "female", ["zh-CN"]),
             ("苏打", "苏打", "male", ["zh-CN"]), ("白桦", "白桦", "male", ["zh-CN"]),
             ("Mia", "Mia", "female", ["en"]), ("Chloe", "Chloe", "female", ["en"]),
@@ -155,7 +155,7 @@ _BUILTIN_VOICES: tuple[Voice, ...] = (
         _voice(
             "aliyun", voice_id, name, model, gender, age_group,
             description="阿里云 CosyVoice 官方系统音色，具体语言和调用权限以控制台为准。",
-            languages=["zh-CN"], source_url=_ALIYUN_SOURCE, age_range=age_range,
+            languages=["zh-CN", "en"], source_url=_ALIYUN_SOURCE, age_range=age_range,
         )
         for voice_id, name, model, gender, age_group, age_range in _ALIYUN_SYSTEM_VOICES
     ),
@@ -280,7 +280,7 @@ def query_alibaba_custom_voices(
         model = _infer_custom_model(voice_id, item)
         synthesis_compatible = _speech_synthesizer_compatible(model)
         gender, age_group = _classify_custom_voice(item)
-        language = str(item.get("language") or "zh-CN").strip()
+        language = str(item.get("language") or "").strip()
         status = str(item.get("status") or "OK").upper()
         metadata = {
             "catalog_version": CATALOG_VERSION,
@@ -301,7 +301,7 @@ def query_alibaba_custom_voices(
                 model=model,
                 gender=gender,
                 age_group=age_group,
-                languages=[language],
+                languages=[language] if language else [],
                 source="account_custom",
                 enabled=(
                     synthesis_compatible
@@ -376,7 +376,7 @@ def query_volc_public_voices(
                 model=str(item.get("ResourceID") or "seed-tts-1.0"),
                 gender=_volc_gender(item.get("Gender")),
                 age_group=_volc_age_group(item.get("Age")),
-                languages=languages or ["zh-cn"],
+                languages=languages,
                 source="provider_catalog",
                 enabled=True,
                 metadata=metadata,

@@ -86,3 +86,17 @@ Base URL 与请求路径分离：小米 /v1 → /v1/chat/completions，豆包基
 WAV 请求使用 PCM，分段组装后一次写入单声道 PCM16 WAV 文件头，避免 V3 流式 WAV 重复文件头导致损坏。请求显式要求用量；支持官方当前示例的 code=0 与最终 usage，以及 V3 传输参考的 20000000 完成记录。任何错误分段、无音频或缺失完成信息都不返回部分结果，计费 POST 不隐式重试。此处理是当前云端协议的响应解析，不是旧应用配置兼容。
 
 供应商配置持久化不再接受 endpoint/v3_endpoint/catalog_endpoint/customization_endpoint、Access Token 或 Cluster。阿里云地域枚举为 cn-beijing/ap-southeast-1，合成和音色查询共用同一地域与可选 Workspace ID；按官方域名规则生成两个完整路径。界面默认北京，问号说明密钥与地域一致；格式预检不发云请求，也不把地域切换视为账号授权成功。
+
+## beta.5 音色能力与交互
+
+`voice_features.py` 是 UI 和后端共同使用的纯规则模块。语言来自音色目录，中文方言代码归中文，其他明确语言归外语，未知保持未知；多语言可属于两类。`GET /api/voices` 增加 language_group / capability 筛选和 expression_features 元数据，能力按供应商、模型、音色及目录情感声明共同判定。
+
+合成按钮同步校验全部已选音色，弹窗保留表单；后端预检、单任务和批任务创建再次验证数据库中的实际音色，拒绝请求发生在任务提交之前。指令草稿不会在勾选不支持的音色时被清空。固定句式与阿里云字符计数也在共享规则中验证，不能把 unsupported 当作 harmless no-op。
+
+豆包 2.0 自由指令使用 additions.context_texts；原生情感只依据该音色 ListSpeakers.Emotions 的 Value/Label，发送 audio_params.emotion / emotion_scale。没有原生枚举的 2.0 音色、MiMo 和支持自由指令的阿里云复刻音色，将 UI 情感预设转为自然语言表达要求；阿里云系统音色使用官方固定句式。情感预设不插入待朗读文本。样本元数据同时保存原始设置和实际供应商表达参数，去重条件包含 emotion / emotion_scale，避免不同情感误用旧音频。
+
+共享 AnchoredComboBox 使用独立 Fusion 代理风格和明确列表样式，固定控件宽度及屏幕边界。Windows 6.8.3 在页面即时重建与反复打开时出现 private popup 未显示问题，每次打开重置为顶层窗口拥有的 Qt.Popup，再按固定位置显示；仍保留 Qt 选择和键盘处理。代理样式不能共享 QApplication.style() 的所有权。实际首／中／末选项、鼠标点选、方向键与 Enter、Escape 和即时切换后的重复打开均需回归。
+
+音色列表使用轻量绘制委托，名称、人口信息、语言、能力分层固定坐标绘制；鼠标整行切换 checkbox 状态，禁止同时交给默认 checkbox 编辑器造成双重切换。样本表格改用 QStyledItemDelegate 保持选中前后的换行，选择列和短状态列固定宽，文本／来源列伸展，长内容按行高显示。
+
+播放控制属于样本、录音、噪声页面，仅播放状态可见。导航停止音频并使尚在复制的试听请求过期，即使立即返回同一页也不能偷偷重启；新试听继续使用独立缓存快照，保留 Windows 文件句柄释放边界。样本双击直接播放指定行，不执行审核或分析操作。

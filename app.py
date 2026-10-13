@@ -50,6 +50,7 @@ try:
     from .project_settings import ProjectSettingsStore, normalize_display_text
     from .settings_store import PROVIDER_FIELDS, ProviderSettingsStore, set_default_settings_store
     from .voice_catalog import builtin_voices, refresh_voice_catalog
+    from .voice_features import expression_features, language_groups, resolve_expression
 except ImportError:  # Support direct `uvicorn app:app` execution.
     from app_version import VERSION
     from audio_utils import (  # type: ignore
@@ -64,6 +65,7 @@ except ImportError:  # Support direct `uvicorn app:app` execution.
     from project_settings import ProjectSettingsStore, normalize_display_text  # type: ignore
     from settings_store import PROVIDER_FIELDS, ProviderSettingsStore, set_default_settings_store  # type: ignore
     from voice_catalog import builtin_voices, refresh_voice_catalog  # type: ignore
+    from voice_features import expression_features, language_groups, resolve_expression  # type: ignore
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -185,7 +187,9 @@ class GenerateRequest(BaseModel):
     pitch: float = Field(1.0, ge=0.5, le=2.0)
     volume: int = Field(50, ge=0, le=100)
     seed: int = Field(20260804, ge=0, le=2**31 - 1)
-    instruction: str = ""
+    instruction: str = Field("", max_length=500)
+    emotion: str = Field("", max_length=64)
+    emotion_scale: float = Field(4, ge=1, le=5)
     target_kind: str = "positive"
     provider_audio: dict[str, dict[str, Any]] = Field(default_factory=dict)
     cost_acknowledged: bool = False
@@ -217,7 +221,9 @@ class GenerateBatchRequest(BaseModel):
     pitch: float = Field(1.0, ge=0.5, le=2.0)
     volume: int = Field(50, ge=0, le=100)
     seed: int = Field(20260804, ge=0, le=2**31 - 1)
-    instruction: str = ""
+    instruction: str = Field("", max_length=500)
+    emotion: str = Field("", max_length=64)
+    emotion_scale: float = Field(4, ge=1, le=5)
     random_speed: bool = False
     speed_min: float = Field(0.8, ge=0.5, le=2.0)
     speed_max: float = Field(1.2, ge=0.5, le=2.0)
@@ -634,12 +640,21 @@ def _validate_synthesis_credentials(selected):
             raise HTTPException(400, str(exc)) from exc
 
 
+def _validate_expressions(request, selected):
+    for voice in selected:
+        try:
+            resolve_expression(voice, request.get("instruction", ""), request.get("emotion", ""), request.get("emotion_scale", 4))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+
 @app.post("/api/generation/preflight")
 def generation_preflight(request: GenerateRequest):
     selected = _select_voices(request.voice_ids)
     if not selected:
         raise HTTPException(400, "请选择至少一个可用音色")
     _validate_synthesis_credentials(selected)
+    _validate_expressions(request.model_dump(), selected)
     return {"ok": True, "remote_verified": False}
 
 
@@ -794,6 +809,7 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                 / f"{sample_id}.wav"
             )
             try:
+                expression = resolve_expression(voice, request.get("instruction", ""), request.get("emotion", ""), request.get("emotion_scale", 4))
                 existing = db.one(
                     """
                     SELECT id FROM samples
@@ -802,6 +818,8 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                       AND target_kind=?
                       AND speed=? AND pitch=? AND volume=? AND seed=?
                       AND COALESCE(json_extract(metadata_json, '$.instruction'), '')=?
+                      AND COALESCE(json_extract(metadata_json, '$.emotion'), '')=?
+                      AND COALESCE(json_extract(metadata_json, '$.emotion_scale'), 4)=?
                       AND COALESCE(json_extract(metadata_json, '$.provider_audio_request.format'), 'wav')=?
                       AND COALESCE(json_extract(metadata_json, '$.provider_audio_request.sample_rate'), 16000)=?
                     """,
@@ -810,6 +828,7 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                         request["label"], request["keyword_id"], request.get("target_kind", "positive"),
                         speed, pitch, volume, item_seed,
                         request.get("instruction", ""),
+                        request.get("emotion", ""), request.get("emotion_scale", 4),
                         provider_audio["format"], provider_audio["sample_rate"],
                     ),
                 )
@@ -821,12 +840,15 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                         message=f"已复用 {duplicates} 个已有样本",
                     )
                     continue
+                expression_args = {"instruction": expression["instruction"]}
+                if expression["emotion"]:
+                    expression_args.update(emotion=expression["emotion"], emotion_scale=expression["emotion_scale"])
                 audio = provider.synthesize(
                     text=request["text"], voice=voice["voice_id"], model=voice["model"],
                     audio_format=provider_audio["format"],
                     sample_rate=provider_audio["sample_rate"],
                     speed=speed, pitch=pitch, volume=volume,
-                    seed=item_seed, instruction=request.get("instruction", ""),
+                    seed=item_seed, **expression_args,
                 )
                 raw_path.parent.mkdir(parents=True, exist_ok=True)
                 raw_path.write_bytes(audio)
@@ -864,6 +886,8 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                     "quality_status": quality,
                     "metadata": {
                         "voice_db_id": voice["id"], "instruction": request.get("instruction", ""),
+                        "emotion": request.get("emotion", ""), "emotion_scale": request.get("emotion_scale", 4),
+                        "provider_expression_request": expression,
                         "gender": voice.get("gender", "unknown"),
                         "age_group": voice.get("age_group", "unknown"),
                         "provider_audio_request": provider_audio,
@@ -1401,7 +1425,7 @@ def test_provider_settings(provider: str, payload: dict[str, Any] = Body(default
 
 @app.get("/api/voices")
 def voices(
-    provider: str = "", gender: str = "", age_group: str = "", enabled: bool = True,
+    provider: str = "", gender: str = "", age_group: str = "", enabled: bool = True, language_group: str = "", capability: str = "",
 ) -> list[dict[str, Any]]:
     clauses, params = [], []
     if enabled:
@@ -1416,7 +1440,27 @@ def voices(
     if age_group:
         clauses.append("age_group=?"); params.append(age_group)
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
-    return [_json_row(row) for row in db.all(f"SELECT * FROM voices{where} ORDER BY provider,name", tuple(params))]
+    if language_group not in {"", "chinese", "foreign", "unknown"}:
+        raise HTTPException(400, "音色语言分类无效")
+    if capability not in {"", "instruction", "emotion", "no_instruction"}:
+        raise HTTPException(400, "音色能力分类无效")
+    result = []
+    for row in db.all(f"SELECT * FROM voices{where} ORDER BY provider,name", tuple(params)):
+        value = _json_row(row)
+        groups = language_groups(value)
+        matches = not groups if language_group == "unknown" else language_group in groups
+        if language_group and not matches:
+            continue
+        value["expression_features"] = expression_features(value)
+        features = value["expression_features"]
+        if capability == "instruction" and features["instruction"] == "none":
+            continue
+        if capability == "emotion" and not features["emotions"]:
+            continue
+        if capability == "no_instruction" and features["instruction"] != "none":
+            continue
+        result.append(value)
+    return result
 
 
 @app.post("/api/voices/refresh")
@@ -1647,6 +1691,7 @@ def create_generate_task(request: GenerateRequest) -> dict[str, Any]:
     _require_cost_acknowledgement(selected, request.cost_acknowledged)
     _validate_synthesis_credentials(selected)
     _validate_provider_audio(payload, selected)
+    _validate_expressions(payload, selected)
     estimate = _estimate_generation_cost(payload["text"], selected, request.count)
     task_id = _create_task(
         "generate", len(selected) * request.count, payload,
@@ -1690,6 +1735,7 @@ def create_generate_batch(request: GenerateBatchRequest) -> dict[str, Any]:
     _require_cost_acknowledgement(selected, request.cost_acknowledged)
     _validate_synthesis_credentials(selected)
     _validate_provider_audio(payload, selected)
+    _validate_expressions(payload, selected)
     applied_concurrency = min(request.concurrency, WORKER_LIMIT, len(request.texts))
     child_estimates = [
         _estimate_generation_cost(text, selected, request.count) for text in request.texts

@@ -876,6 +876,8 @@ class VolcTTSProvider(BaseTTSProvider):
         volume: int = 50,
         seed: int = 0,
         instruction: str = "",
+        emotion: str = "",
+        emotion_scale: float = 4,
     ) -> bytes:
         self._validate_input(
             text, voice, audio_format, sample_rate, speed, pitch, volume
@@ -897,6 +899,10 @@ class VolcTTSProvider(BaseTTSProvider):
         # concatenation of chunk WAVs creates a truncated/invalid training file.
         params = {"text": text, "speaker": voice, "audio_params": {"format": "pcm" if audio_format == "wav" else audio_format, "sample_rate": sample_rate,
                   "speech_rate": round((speed - 1) * 100), "loudness_rate": round((max(.5, min(2., volume / 50.)) - 1) * 100)}}
+        if emotion:
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", emotion) or not 1 <= emotion_scale <= 5:
+                raise ProviderRequestError("豆包情感参数或强度无效")
+            params["audio_params"].update(emotion=emotion, emotion_scale=emotion_scale)
         if instruction.strip():
             params["additions"] = json.dumps({"context_texts": [instruction.strip()]}, ensure_ascii=False)
         response = _request("POST", self.endpoint, provider=label,
