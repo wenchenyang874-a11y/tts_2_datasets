@@ -51,3 +51,7 @@
 当前交付只本地提交和安装包，等待用户验收及明确发布通知。不得创建本地或远程 Tag、Release 草稿或上传资产；main 与 Web 备份不变。
 
 本地 beta.3 最终构建源为 `a8da6b4d083c3a2dc8cc1097e31f2eac4fa14309`，完整产物/哈希和验证边界见 [beta.3 本地记录](../releases/v2.0.0-beta.3.md)。最终证据为 `artifacts/beta3-unlocked-150/result.json` 与 `artifacts/installer-beta3-unlocked/result.json`，均 ok=true；此前锁屏下的非鼠标子集保持失败状态，不替代最终验收。Windows 10、真实云与真实麦克风仍待实测；安装升级仅覆盖隔离模拟夹具，用户 beta.2 安装保持原状态。
+
+## beta.3 交付后的设置用词修正
+
+用户要求使用火山官方名称。源码已将两个豆包设置页的“目录 Base URL”改为“服务地址”，提示官方默认地址；AK/SK 使用 `Access Key ID (AK)`、`Secret Access Key (SK)`，问号说明控制台 API 访问密钥入口和 ListSpeakers 用途。两个实际 Qt 设置页的标签、地址占位提示、SK 遮蔽和截图已核对，证据为 `artifacts/volc-official-labels/result.json`。只修改界面文字与帮助，未调用云端、未读取用户数据；未变更版本、重建或替换已交付 beta.3 安装包，此修正待后续构建交付。

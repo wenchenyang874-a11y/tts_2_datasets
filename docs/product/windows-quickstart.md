@@ -65,6 +65,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1
 
 设置与音色选择分别提供“豆包 1.0”和“豆包 2.0”。1.0 填 App ID / Access Token，2.0 填 API Key，两者独立保存、清空和估价。Base URL 默认 https://openspeech.bytedance.com，程序分别补齐 1.0/2.0 请求路径。切换服务会清除原音色选择，创建任务前检查所选版本凭据；缺失时直接显示原因，可点击“去配置”。
 
-可选 AK/SK 在高级设置中，用于远程音色目录查询，与合成凭据分开。未配置时使用维护的官方预置目录，不代表账号已开通资源。2.0 仅显示 WAV/MP3 与支持的请求采样率。当前开发阶段不迁移旧版合并配置，需要在各独立页填写凭据。
+高级设置使用火山官方名称：`Access Key ID (AK)`、`Secret Access Key (SK)` 和“服务地址”。AK/SK 从控制台 [API 访问密钥](https://www.volcengine.com/docs/6257/64983?lang=zh) 获取，用于签名调用 [大模型音色列表接口 ListSpeakers](https://api.volcengine.com/api-docs/view?action=ListSpeakers&serviceCode=speech_saas_prod&version=2025-05-20)。服务地址默认为 `https://open.volcengineapi.com`，留空也使用该地址；它与语音合成的 Base URL 和凭据独立。未配置 AK/SK 时仅加载维护的官方预置音色列表，不代表账号已开通资源。2.0 仅显示 WAV/MP3 与支持的请求采样率。当前开发阶段不迁移旧版合并配置，需要在各独立页填写凭据。
 
 任务中心直接显示失败原因，选中任务可看文本明细，无需先打开 JSON。再次合成需确认可能重复计费；配置检查和预检只检查本地格式与必填项，不能证明真实账号可调用。

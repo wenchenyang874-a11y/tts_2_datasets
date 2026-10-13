@@ -14,8 +14,8 @@ FIELDS = {
     "aliyun": [("api_key", "API Key", True), ("endpoint", "Base URL", False)],
 }
 EXTRA_FIELDS = {
-    "volcengine_v1": [("cluster", "Cluster", False), ("access_key_id", "Access Key ID", False), ("access_key_secret", "Access Key Secret", True), ("catalog_endpoint", "目录 Base URL", False)],
-    "volcengine_v2": [("access_key_id", "Access Key ID", False), ("access_key_secret", "Access Key Secret", True), ("catalog_endpoint", "目录 Base URL", False)],
+    "volcengine_v1": [("cluster", "Cluster", False), ("access_key_id", "Access Key ID (AK)", False), ("access_key_secret", "Secret Access Key (SK)", True), ("catalog_endpoint", "服务地址", False)],
+    "volcengine_v2": [("access_key_id", "Access Key ID (AK)", False), ("access_key_secret", "Secret Access Key (SK)", True), ("catalog_endpoint", "服务地址", False)],
     "aliyun": [("workspace_id", "Workspace ID", False), ("region", "地域", False), ("customization_endpoint", "音色 Base URL", False)],
     "xiaomi": [],
 }
@@ -92,16 +92,25 @@ class SettingsPage(Page):
             widget.setEchoMode(QLineEdit.EchoMode.Password)
         if key in {"endpoint", "v3_endpoint"}:
             widget.setText(BASE_URLS[service])
+        if key == "catalog_endpoint":
+            widget.setPlaceholderText("https://open.volcengineapi.com")
         widget.textEdited.connect(lambda text, s=service: self.dirty.add(s))
         return widget
 
     def tip(self, service, key, secret):
+        # ListSpeakers is a signed Volcengine OpenAPI request, independent of
+        # the speech synthesis Base URL and its Token/API Key. Use the vendor's
+        # service-address and AK/SK names so users can map this form to its docs;
+        # leaving the service address blank uses the client's official default.
+        if key == "catalog_endpoint":
+            return "火山引擎 OpenAPI 服务地址，默认 https://open.volcengineapi.com；用于调用大模型音色列表接口 ListSpeakers，留空使用默认地址。"
+        if key in {"access_key_id", "access_key_secret"}:
+            purpose = "火山引擎 API 访问密钥，用于签名调用大模型音色列表接口 ListSpeakers；在控制台“API访问密钥”中获取，与语音合成凭据独立。"
+            return purpose + ("已保存的 SK 不回显，留空保留，由 Windows 当前用户加密保护。" if secret else "未填写 AK/SK 时仅加载内置音色列表。")
         if secret:
             return "密钥由 Windows 当前用户加密保护；已保存的密钥不回显，留空保留。" + ("豆包 2.0 使用 API Key，不使用 1.0 的 Access Token。" if service == "volcengine_v2" and key == "api_key" else "")
         if key in {"endpoint", "v3_endpoint", "customization_endpoint"}:
             return "基础地址，程序自动补齐接口路径；默认使用官方 HTTPS 地址。也可填写完整请求地址。"
-        if key in {"access_key_id", "catalog_endpoint"}:
-            return "可选：用于账号音色目录查询，与合成凭据独立；未配置时使用官方预置音色。"
         return ""
 
     def select_service(self, service):
