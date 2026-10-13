@@ -81,6 +81,14 @@ Windows 10、真实麦克风录音/拒绝权限/设备拔插、真实云账号�
 
 现有 CI 运行于 Ubuntu，不能用 Linux CI 成功证明 Windows 10/11 支持。Windows 构建、安装包命令在框架和打包方式确定后补入，不执行模板命令。
 
+## CI 依赖契约与缺失 PySide6 排障
+
+2026-10-13，PR #16 的 [失败运行 38386588921](https://github.com/wenchenyang874-a11y/tts_2_datasets/actions/runs/38386588921) 在 pytest 收集阶段退出 2：`tests/test_desktop_session.py` → `desktop/session.py` → `PySide6.QtCore.QLockFile`，错误为 `ModuleNotFoundError: No module named 'PySide6'`。当时 CI 只安装 `requirements-dev.txt`，该文件只包含后端依赖及 pytest，本机已有桌面依赖掩盖了遗漏。Starlette TestClient 的弃用提示是警告，不是该次失败原因；不修改 TestClient 导入，也不通过跳过桌面测试绕过收集错误。
+
+修复后依赖链为 `requirements-dev.txt` → `requirements-desktop.txt` → `requirements.txt`，完整测试安装会包含固定的 PySide6 6.8.3；生产后端与 Docker 继续只安装 `requirements.txt`。CI 使用 `python -m pytest -q`，pip 缓存键覆盖三个依赖入口。[checkout v5](https://github.com/actions/checkout/tree/v5) 与 [setup-python v6](https://github.com/actions/setup-python/tree/v6) 使用 Node.js 24，消除旧 Actions 运行时警告；Python 测试版本仍为 3.11。
+
+本地 Windows 11 回归 200 项通过、1 条原有上游弃用提示；YAML 解析、QtCore 导入和离线 pip dry-run 依赖解析通过。实际 Linux 干净环境验证由 PR CI 执行，本地已有依赖的通过不替代该验证。此次仅修复开发依赖／CI 和说明，不改变应用版本、发布 Tag 或用户已验收安装包，不合入 main。
+
 ## 合入 main 的必要证据
 
 - 现有业务回归及新增桌面入口检查通过：Mock 批量生成、任务并发/失败、导入、审核、软删除/恢复、增强和全部导出格式。

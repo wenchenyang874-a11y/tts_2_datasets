@@ -1,2 +1,5 @@
--r requirements.txt
+# The suite imports desktop.session -> PySide6.QtCore. A backend-only install
+# aborts pytest collection in clean CI; include the real desktop dependencies
+# rather than skipping these tests or relying on a developer's existing Qt.
+-r requirements-desktop.txt
 pytest>=8,<10

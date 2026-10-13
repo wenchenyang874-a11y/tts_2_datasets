@@ -14,12 +14,14 @@ source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
 ```
 
+`requirements-dev.txt` 包含桌面依赖和测试工具；全套测试会导入 `PySide6.QtCore`，只安装后端 `requirements.txt` 会导致收集失败，不应通过跳过桌面测试绕过。无需为离线锁／数据目录回归打开 GUI；真实原生窗口验收另见测试文档。
+
 需要系统安装 `ffmpeg`，前端 JavaScript 语法检查需要 Node.js。
 
 ## 验证
 
 ```bash
-pytest -q
+python -m pytest -q
 python -m compileall -q .
 node --check static/app.js
 bash scripts/check_public_release.sh
