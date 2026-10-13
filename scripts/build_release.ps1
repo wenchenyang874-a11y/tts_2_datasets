@@ -15,12 +15,12 @@ try {
     $Iscc = (Resolve-Path -LiteralPath $Iscc).Path
     $status = & git status --porcelain
     if ($LASTEXITCODE -ne 0 -or $status) { throw "Commit the release source first; build requires a clean Git tree." }
-    & ./scripts/build_windows.ps1 -Python $Python
     $infoText = & $Python scripts/release_artifacts.py prepare
     if ($LASTEXITCODE -ne 0) { throw "Version preparation failed." }
     $info = $infoText | ConvertFrom-Json
     $output = Join-Path (Get-Location) "dist/releases/$($info.version)"
     if (Test-Path -LiteralPath $output) { throw "Version output already exists; preserve it or choose a new version." }
+    & ./scripts/build_windows.ps1 -Python $Python
     New-Item -ItemType Directory -Path $output | Out-Null
     & $Iscc "/DAppVersion=$($info.version)" "/DNumericVersion=$($info.numeric)" "/DOutputDir=$output" "/DBundleDir=$((Resolve-Path -LiteralPath 'dist/TTS Dataset Studio').Path)" installer/windows.iss
     if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed." }

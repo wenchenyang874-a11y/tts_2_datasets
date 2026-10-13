@@ -58,13 +58,23 @@ Source: "{#BundleDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 Name: "{group}\TTS Dataset Studio"; Filename: "{app}\TTS Dataset Studio.exe"; WorkingDir: "{app}"
 Name: "{autodesktop}\TTS Dataset Studio"; Filename: "{app}\TTS Dataset Studio.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
-[Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Uninstall\{{#AppId}_is1"; ValueType: string; ValueName: "TDSNumericVersion"; ValueData: "{#NumericVersion}"; Flags: uninsdeletevalue
-
 [Run]
 Filename: "{app}\TTS Dataset Studio.exe"; Description: "{cm:LaunchProgram,TTS Dataset Studio}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    // Inno rewrites its uninstall key AFTER processing [Registry]. Writing our
+    // version in that section silently loses it, disabling downgrade checks.
+    // ssPostInstall runs after registration is complete; uninstall deletes the
+    // same owned key without needing a separate persistent registry location.
+    if not RegWriteStringValue(HKCU64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppId}_is1', 'TDSNumericVersion', '{#NumericVersion}') then
+      RaiseException('Unable to save installed version information.');
+  end;
+end;
+
 function InitializeSetup(): Boolean;
 var
   PreviousVersion: String;

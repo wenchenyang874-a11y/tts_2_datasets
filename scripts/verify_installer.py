@@ -42,7 +42,12 @@ def main():
     def registration():
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_name, 0, registry_flags) as key:
-                return {name: winreg.QueryValueEx(key, name)[0] for name in ("InstallLocation", "DisplayVersion", "TDSNumericVersion")}
+                values = {name: winreg.QueryValueEx(key, name)[0] for name in ("InstallLocation", "DisplayVersion")}
+                try:
+                    values["TDSNumericVersion"] = winreg.QueryValueEx(key, "TDSNumericVersion")[0]
+                except FileNotFoundError:
+                    values["TDSNumericVersion"] = ""
+                return values
         except FileNotFoundError:
             return None
 
@@ -93,6 +98,8 @@ def main():
                     raise RuntimeError("PE file version differs from release version")
         report["checks"].append("installer_and_app_pe_version_match")
         run([*command, f"/LOG={evidence / 'install.log'}"])
+        user_file = install / "user-retained.txt"
+        user_file.write_text("unknown files must not be deleted\n", encoding="utf-8")
         values = owned_registration()
         if values["DisplayVersion"] != manifest["version"] or values["TDSNumericVersion"] != manifest["numeric_version"]:
             raise RuntimeError("Incorrect installed version metadata")
@@ -110,8 +117,6 @@ def main():
             guard.close()
         same_runtime()
         report["checks"].append("running_app_blocks_upgrade_and_uninstall")
-        user_file = install / "user-retained.txt"
-        user_file.write_text("unknown files must not be deleted\n", encoding="utf-8")
         owned_registration()
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_name, 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as key:
             winreg.SetValueEx(key, "TDSNumericVersion", 0, winreg.REG_SZ, "1.9.0.65535")

@@ -17,6 +17,18 @@ def main() -> int:
     args = parser.parse_args()
     if args.verify_launch and (not args.data_dir or args.verify_launch.exists()):
         parser.error("--verify-launch requires --data-dir and a new evidence directory")
+    from desktop.installer_guard import InstallerGuard
+    # Hold the marker before importing Qt or spawning the business process.
+    # Acquiring it only after startup leaves a race where an upgrade replaces
+    # DLLs while the application is still loading them.
+    guard = InstallerGuard()
+    try:
+        return run_application(args, VERSION)
+    finally:
+        guard.close()
+
+
+def run_application(args, version) -> int:
     from PySide6.QtWidgets import QApplication
     from desktop.runtime import BusinessRuntime
     from desktop.window import MainWindow
@@ -25,16 +37,11 @@ def main() -> int:
     from PySide6.QtGui import QIcon
     application.setWindowIcon(QIcon(str(Path(__file__).resolve().parent / "desktop/assets/app.svg")))
     application.setApplicationName("TTS Dataset Studio")
-    application.setApplicationVersion(VERSION)
+    application.setApplicationVersion(version)
     application.setOrganizationName("TTS Dataset Studio")
     if args.smoke_test:
         from desktop.smoke import run_smoke
-        from desktop.installer_guard import InstallerGuard
-        guard = InstallerGuard()
-        try:
-            return run_smoke(application, args.smoke_test)
-        finally:
-            guard.close()
+        return run_smoke(application, args.smoke_test)
     directory = args.data_dir or Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local")) / "TTS Dataset Studio" / "data"
     from PySide6.QtWidgets import QMessageBox
     try:
@@ -63,8 +70,6 @@ def main() -> int:
         QMessageBox.warning(None, "服务不可用", "无法启动或管理业务进程，请检查系统权限与完整程序包。")
         return 1
     try:
-        from desktop.installer_guard import InstallerGuard
-        guard = InstallerGuard()
         window = MainWindow(runtime)
         window.show()
         if args.verify_launch:
@@ -74,8 +79,6 @@ def main() -> int:
     finally:
         runtime.close()
         lock.unlock()
-        if "guard" in locals():
-            guard.close()
 
 
 if __name__ == "__main__":

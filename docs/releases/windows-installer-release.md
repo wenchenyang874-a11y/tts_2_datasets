@@ -49,6 +49,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_release.ps1 -I
 
 ## 工具与第三方来源
 
-Inno Setup [官方 6.7.3](https://github.com/jrsoftware/issrc/releases/tag/is-6_7_3)，安装器 SHA-256 `9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732`。简体中文译文取自同一标签 `Files/Languages/Unofficial/ChineseSimplified.isl`，保留上游署名，随项目存于 `installer/`；属于社区译文。安装器 API 根据[官方文档](https://jrsoftware.org/ishelp/)实现。
+Inno Setup [官方 6.7.3](https://github.com/jrsoftware/issrc/releases/tag/is-6_7_3)，安装器 SHA-256 `9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732`。简体中文译文取自同一标签 `Files/Languages/Unofficial/ChineseSimplified.isl`，保留上游署名，仅规范化尾随空格，随项目存于 `installer/`；属于社区译文。安装器 API 根据[官方文档](https://jrsoftware.org/ishelp/)实现。
 
 包内保留项目与实际依赖许可、版本清单、FFmpeg `-L/-version/-buildconf` 和对应上游源码入口。Qt DLL 可替换，FFmpeg 为独立可执行文件；项目 Apache-2.0 许可不替代第三方许可。改变依赖或分发方式时重新核对实际内容。
