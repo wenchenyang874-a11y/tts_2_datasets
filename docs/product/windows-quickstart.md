@@ -69,7 +69,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1
 
 ## 音色选择与表达
 
-点击音色整行即可勾选／取消，空格键也可切换。名称、性别／年龄、语言和能力标签分开展示，较长名称可悬停查看。语言筛选提供中文、外语、语言未知；同时支持中文和其他语言的音色会出现在两个分类中。MiMo 默认音色的语言由服务部署决定，列为未知。能力筛选提供支持指令、支持情感和无指令控制；切换语言／能力分类会清空音色选择，指令草稿继续保留。
+创作页无需上下翻页。左侧通过“文本／表达／参数／音频”填写；中间浏览音色，右侧始终显示已选音色，底部显示批次数量和开始合成。提交后保留草稿，按需进入任务中心查看进度。
+
+点击音色整行即可勾选／取消，空格键也可切换。选择范围覆盖全部供应商；切换供应商、语言、能力或搜索均保留选择。右侧点击音色定位到目录，点击叉号或按 Delete 移除。“全选当前”只添加当前筛选结果，“清空已选”清除整个批次。名称、性别／年龄、供应商、语言和能力分开展示。语言筛选提供中文、外语、语言未知；同时支持中文和其他语言的音色会出现在两个分类中。MiMo 默认音色的语言由服务部署决定，列为未知。
+
+全局参数仅开放所有已选供应商共同支持的项；“音频”页签逐供应商设置请求格式与采样率，入库均统一为 16 kHz mono PCM16 WAV。每份都会真实调用并独立入库，相同设置、随机种子或相同音频都不跳过；再次导入相同文件也作为新样本保存。
 
 | 音色类型 | 表达指令 | 情感控制 |
 | --- | --- | --- |
@@ -84,7 +88,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1
 
 情感下拉框只展示所有已勾选音色共同支持的选项。表达指令不会因重新勾选而清空；点击“开始合成”时，有不支持或格式不符的音色会立即弹窗，列出冲突音色并保留整个表单。此时不创建任务，也不调用云端。云端实际表达效果与账号权限仍需使用者验证。
 
-设置与音色选择分别提供“豆包 1.0”和“豆包 2.0”。两者均填写新版语音控制台 API Key，独立保存、清空和估价，不再使用 Access Token 或 Cluster。按用户指定的 [单向流式语音合成 HTTP 文档](https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-text-to-speech-http?lang=zh)，统一调用 V3，程序自动设置对应资源 ID；1.0 使用 seed-tts-1.0 字符版，2.0 使用 seed-tts-2.0 字符版。地址内置，不提供 URL 输入框。切换服务会清除原音色选择，创建任务前检查所选版本凭据；缺失时直接显示原因，可点击“去配置”。
+设置与音色选择分别提供“豆包 1.0”和“豆包 2.0”。两者均填写新版语音控制台 API Key，独立保存、清空和估价，不再使用 Access Token 或 Cluster。按用户指定的 [单向流式语音合成 HTTP 文档](https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-text-to-speech-http?lang=zh)，统一调用 V3，程序自动设置对应资源 ID；1.0 使用 seed-tts-1.0 字符版，2.0 使用 seed-tts-2.0 字符版。地址内置，不提供 URL 输入框。创建任务前检查全部所选音色的对应凭据；缺失时直接显示原因，可点击“去配置”。
 
 高级设置使用火山官方名称：`Access Key ID (AK)` 和 `Secret Access Key (SK)`。AK/SK 从控制台 [API 访问密钥](https://www.volcengine.com/docs/6257/64983?lang=zh) 获取，用于签名调用 [大模型音色列表接口 ListSpeakers](https://api.volcengine.com/api-docs/view?action=ListSpeakers&serviceCode=speech_saas_prod&version=2025-05-20)，服务地址内置。未配置 AK/SK 时仅加载维护的官方预置音色列表，不代表账号已开通资源。“复刻应用 ID”仅在查询账号复刻音色时需要，合成不需要。两版本提供 WAV/MP3；WAV 由 PCM 分段生成完整文件。当前开发阶段不迁移旧配置，需要在各独立页填写 API Key。
 

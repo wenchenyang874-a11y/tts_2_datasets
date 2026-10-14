@@ -767,7 +767,7 @@ def _deterministic_generation_parameters(
 
 
 def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str, Any]]) -> None:
-    completed = failed = duplicates = 0
+    completed = failed = 0
     errors: list[str] = []
 
     def remember_error(label: str, exc: Exception) -> str:
@@ -810,36 +810,10 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
             )
             try:
                 expression = resolve_expression(voice, request.get("instruction", ""), request.get("emotion", ""), request.get("emotion_scale", 4))
-                existing = db.one(
-                    """
-                    SELECT id FROM samples
-                    WHERE deleted_at IS NULL AND provider=? AND voice_id=? AND model=?
-                      AND text=? AND label=? AND keyword_id=?
-                      AND target_kind=?
-                      AND speed=? AND pitch=? AND volume=? AND seed=?
-                      AND COALESCE(json_extract(metadata_json, '$.instruction'), '')=?
-                      AND COALESCE(json_extract(metadata_json, '$.emotion'), '')=?
-                      AND COALESCE(json_extract(metadata_json, '$.emotion_scale'), 4)=?
-                      AND COALESCE(json_extract(metadata_json, '$.provider_audio_request.format'), 'wav')=?
-                      AND COALESCE(json_extract(metadata_json, '$.provider_audio_request.sample_rate'), 16000)=?
-                    """,
-                    (
-                        provider_name, voice["voice_id"], voice["model"], request["text"],
-                        request["label"], request["keyword_id"], request.get("target_kind", "positive"),
-                        speed, pitch, volume, item_seed,
-                        request.get("instruction", ""),
-                        request.get("emotion", ""), request.get("emotion_scale", 4),
-                        provider_audio["format"], provider_audio["sample_rate"],
-                    ),
-                )
-                if existing:
-                    duplicates += 1
-                    completed += 1
-                    _update_task(
-                        task_id, completed=completed, failed=failed,
-                        message=f"已复用 {duplicates} 个已有样本",
-                    )
-                    continue
+                # Every requested take must call the provider and become its own
+                # sample. Matching parameters or PCM bytes are valid repetitions;
+                # never reuse cached rows or delete a successful take by SHA.
+                # Keep hashes for integrity/export, not sample identity.
                 expression_args = {"instruction": expression["instruction"]}
                 if expression["emotion"]:
                     expression_args.update(emotion=expression["emotion"], emotion_scale=expression["emotion_scale"])
@@ -854,23 +828,6 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                 raw_path.write_bytes(audio)
                 info = normalize_wav(raw_path, wav_path, 16000)
                 digest = sha256_file(wav_path)
-                if db.one(
-                    """
-                    SELECT id FROM samples
-                    WHERE sha256=? AND keyword_id=? AND target_kind=?
-                      AND deleted_at IS NULL
-                    """,
-                    (
-                        digest, request["keyword_id"],
-                        request.get("target_kind", "positive"),
-                    ),
-                ):
-                    duplicates += 1
-                    wav_path.unlink(missing_ok=True)
-                    completed += 1
-                    _update_task(task_id, completed=completed, failed=failed,
-                                 message=f"已跳过 {duplicates} 个重复音频")
-                    continue
                 quality = "pass" if 0.25 <= info["duration"] <= 10.0 else "review"
                 _insert_sample({
                     "id": sample_id, "provider": provider_name, "voice_id": voice["voice_id"],
@@ -906,11 +863,11 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                 raw_path.unlink(missing_ok=True)
             _update_task(task_id, completed=completed, failed=failed)
     status = "completed" if failed == 0 else ("partial" if completed else "failed")
-    summary = f"完成 {completed}，失败 {failed}，重复 {duplicates}"
+    summary = f"完成 {completed}，失败 {failed}"
     if errors:
         summary += f"；首个错误：{errors[0]}"
     result = _task_result(task_id)
-    result.update({"errors": errors, "duplicates": duplicates})
+    result.update({"errors": errors})
     _update_task(task_id, status=status, completed=completed, failed=failed,
                  message=summary[:1000], result_json=result)
 
@@ -932,7 +889,7 @@ def _augment_task(task_id: str, request: dict[str, Any], samples: list[dict[str,
         raise RuntimeError("没有可用背景噪声，请先上传并启用噪声")
     weights = [max(0.001, float(item["weight"])) for item in noises]
     rng = random.Random(request["seed"])
-    completed = failed = duplicates = 0
+    completed = failed = 0
     errors: list[str] = []
     for sample_index, sample in enumerate(samples):
         source_metadata = db.decode_json_fields(dict(sample)).get("metadata", {})
@@ -945,25 +902,8 @@ def _augment_task(task_id: str, request: dict[str, Any], samples: list[dict[str,
             try:
                 info = mix_noise(sample["file_path"], noise["file_path"], target, snr, item_seed)
                 digest = sha256_file(target)
-                if db.one(
-                    """
-                    SELECT id FROM samples
-                    WHERE sha256=? AND keyword_id=? AND target_kind=?
-                      AND deleted_at IS NULL
-                    """,
-                    (
-                        digest, sample["keyword_id"],
-                        sample.get("target_kind", "positive"),
-                    ),
-                ):
-                    target.unlink(missing_ok=True)
-                    duplicates += 1
-                    completed += 1
-                    _update_task(
-                        task_id, completed=completed, failed=failed,
-                        message=f"已复用 {duplicates} 个已有增强样本",
-                    )
-                    continue
+                # A repeated augmentation request is a new sample, even with
+                # the same deterministic seed and identical normalized audio.
                 _insert_sample({
                     **sample, "id": new_id, "file_path": str(target), "sha256": digest,
                     "duration": info["duration"], "sample_rate": info["sample_rate"],
@@ -995,9 +935,9 @@ def _augment_task(task_id: str, request: dict[str, Any], samples: list[dict[str,
             _update_task(task_id, completed=completed, failed=failed)
     status = "completed" if failed == 0 else ("partial" if completed else "failed")
     result = _task_result(task_id)
-    result.update({"errors": errors, "duplicates": duplicates})
+    result.update({"errors": errors})
     _update_task(task_id, status=status, completed=completed, failed=failed,
-                 message=f"增强完成 {completed}，失败 {failed}，重复 {duplicates}",
+                 message=f"增强完成 {completed}，失败 {failed}",
                  result_json=result)
 
 
@@ -2069,7 +2009,6 @@ async def upload_samples(
         raise HTTPException(400, "单次最多上传 500 个文件")
 
     imported: list[str] = []
-    duplicates: list[str] = []
     failures: list[dict[str, str]] = []
     for upload in files:
         sample_id = uuid.uuid4().hex
@@ -2089,17 +2028,8 @@ async def upload_samples(
             info = await asyncio.to_thread(normalize_wav, temp, target, 16000)
             _validate_duration(info, *REAL_SAMPLE_DURATION_RANGE, "真人样本")
             digest = await asyncio.to_thread(sha256_file, target)
-            if db.one(
-                """
-                SELECT id FROM samples
-                WHERE sha256=? AND keyword_id=? AND target_kind=?
-                  AND deleted_at IS NULL
-                """,
-                (digest, effective_keyword_id, target_kind),
-            ):
-                target.unlink(missing_ok=True)
-                duplicates.append(upload.filename or sample_id)
-                continue
+            # Each explicitly imported file owns a new UUID/path. Audio hashes
+            # do not decide whether a recording is allowed into the library.
             _insert_sample({
                 "id": sample_id, "provider": "real", "voice_id": speaker_id,
                 "voice_name": speaker_id, "model": "recording", "text": effective_text,
@@ -2124,7 +2054,7 @@ async def upload_samples(
             temp.unlink(missing_ok=True)
     return {
         "imported": len(imported), "sample_ids": imported,
-        "duplicates": duplicates, "failures": failures,
+        "failures": failures,
     }
 
 
@@ -2322,21 +2252,10 @@ def _materialize_noise_task(
     task_id: str, request: dict[str, Any], selected: list[dict[str, Any]],
 ) -> None:
     created: list[str] = []
-    duplicates: list[str] = []
     failed = 0
     for noise in selected:
-        existing = db.one(
-            """
-            SELECT id FROM samples
-            WHERE deleted_at IS NULL AND provider='noise' AND voice_id=?
-              AND keyword_id=? AND target_kind='background'
-            """,
-            (noise["id"], request["keyword_id"]),
-        )
-        if existing:
-            duplicates.append(existing["id"])
-            _update_task(task_id, completed=len(created) + len(duplicates), failed=failed)
-            continue
+        # Adding the same noise again creates another independent sample;
+        # sample identity belongs to this action, not to the source noise ID.
         sample_id = uuid.uuid4().hex
         source = _safe_file(noise["file_path"])
         target = (
@@ -2377,16 +2296,16 @@ def _materialize_noise_task(
                 task_id, noise["id"], type(exc).__name__,
             )
             raise RuntimeError("噪声物化发生内部错误，请查看服务器日志") from exc
-        _update_task(task_id, completed=len(created) + len(duplicates), failed=failed)
-    completed = len(created) + len(duplicates)
+        _update_task(task_id, completed=len(created), failed=failed)
+    completed = len(created)
     status_value = "completed" if failed == 0 else ("partial" if completed else "failed")
     result = {
-        "sample_ids": created, "duplicate_sample_ids": duplicates,
+        "sample_ids": created,
         **_local_cost_result(),
     }
     _update_task(
         task_id, status=status_value, completed=completed, failed=failed,
-        message=f"已物化 {len(created)}，复用 {len(duplicates)}，失败 {failed}",
+        message=f"已物化 {len(created)}，失败 {failed}",
         result_json=result,
     )
 
@@ -2424,7 +2343,6 @@ def materialize_noises(request: NoiseMaterializeRequest) -> dict[str, Any]:
         "id": task_id, "task_id": task_id, "status": task_row["status"],
         "created": len(task_result.get("sample_ids", [])),
         "sample_ids": task_result.get("sample_ids", []),
-        "duplicates": task_result.get("duplicate_sample_ids", []),
         "failed": task_row["failed"],
     }
 

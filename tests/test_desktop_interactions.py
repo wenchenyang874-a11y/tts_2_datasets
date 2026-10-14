@@ -302,3 +302,67 @@ def test_removed_billing_checkbox_acknowledges_only_confirmed_snapshot(applicati
     assert requests[-1][1]["json"]["instruction"] == "ASMR"
     page.close()
     shell.close()
+
+
+def test_composer_keeps_cross_supplier_basket_and_uses_each_audio_profile(application, monkeypatch):
+    from voice_features import expression_features
+    shell = Shell()
+    shell.project = {"keyword_id": "fixture", "label": "fixture"}
+    page = GeneratePage(shell)
+    monkeypatch.setattr(page, "request", lambda *args, **kwargs: None)
+    caps = {key: {"audio_formats": ["wav", "mp3"], "sample_rates": [16000, 24000],
+                  "speed": True, "pitch": True, "volume": True} for key in ("mock", "xiaomi")}
+    caps["xiaomi"]["pitch"] = False
+    page.set_capabilities(caps)
+    def voice(identifier, provider):
+        row = {"id": identifier, "name": "A long voice name "+str(identifier), "provider": provider,
+               "voice_id": "fixture", "model": "mimo-v2.5-tts" if provider == "xiaomi" else "mock",
+               "languages": ["zh"], "gender": "female", "age_group": "young"}
+        row["expression_features"] = expression_features(row)
+        return row
+    page.show_voices([voice(1, "mock")])
+    page.voices.item(0).setCheckState(Qt.CheckState.Checked)
+    page.provider.setCurrentIndex(page.provider.findData("xiaomi"))
+    page.show_voices([voice(2, "xiaomi")])
+    page.voices.item(0).setCheckState(Qt.CheckState.Checked)
+    application.processEvents()
+    assert page.selected == {1, 2} and page.chosen_voices.count() == 2
+    assert not page.pitch.isEnabled()
+    page.audio_supplier.setCurrentIndex(page.audio_supplier.findData("xiaomi"))
+    page.audio_format.setCurrentIndex(page.audio_format.findData("mp3"))
+    page.sample_rate.setCurrentIndex(page.sample_rate.findData(24000))
+    payload = page.payload()
+    assert payload["voice_ids"] == [1, 2]
+    assert payload["provider_audio"] == {"mock": {"format": "wav", "sample_rate": 16000},
+                                         "xiaomi": {"format": "mp3", "sample_rate": 24000}}
+    page.language.setCurrentIndex(page.language.findData("foreign"))
+    page.show_voices([])
+    application.processEvents()
+    assert page.selected == {1, 2} and page.chosen_voices.count() == 2
+    page.remove_voice(2)
+    application.processEvents()
+    assert page.selected == {1} and page.chosen_voices.count() == 1 and page.pitch.isEnabled()
+    page.created({})
+    assert page.selected == {1}  # Submission keeps the draft and basket.
+
+
+def test_composer_minimum_viewport_has_no_page_scroll_and_all_tabs_fit(application, monkeypatch):
+    shell = Shell()
+    page = GeneratePage(shell)
+    monkeypatch.setattr(page, "request", lambda *args, **kwargs: None)
+    page.setStyleSheet(STYLE)
+    page.resize(748, 550)  # The available composer area in the 980x680 shell.
+    page.show()
+    application.processEvents()
+    assert not page.findChildren(QScrollArea)
+    for index in range(page.editor_tabs.count()):
+        page.editor_tabs.setCurrentIndex(index)
+        application.processEvents()
+        for control in (page.start_button, page.chosen_voices, page.voices, page.editor_tabs):
+            assert control.isVisible()
+            assert page.rect().contains(control.mapTo(page, control.rect().topLeft()))
+            assert page.rect().contains(control.mapTo(page, control.rect().bottomRight()))
+        assert page.editor_tabs.currentWidget().isVisible()
+        assert all(not page.editor_tabs.widget(other).isVisible() for other in range(4) if other != index)
+    page.ensureWidgetVisible(page.instruction)
+    assert page.editor_tabs.currentIndex() == 1

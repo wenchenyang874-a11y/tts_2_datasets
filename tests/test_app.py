@@ -111,7 +111,7 @@ def test_unsupported_expression_blocks_task_and_batch_before_creation(client, mo
     assert app_module.db.one("SELECT COUNT(*) AS n FROM tasks")["n"] == before
 
 
-def test_emotion_participates_in_dedup_and_sample_metadata(client):
+def test_emotion_preserved_for_independently_created_samples(client):
     voice = _first_mock_voice(client)
     base = {"voice_ids": [voice["id"]], "text": "情感去重验收", "label": "情感去重验收", "keyword_id": "emotion_dedup_fixture", "seed": 826519}
     ids = []
@@ -122,7 +122,7 @@ def test_emotion_participates_in_dedup_and_sample_metadata(client):
         assert task["status"] == "completed"
         ids.append(result.json()["id"])
     rows = app_module.db.all("SELECT metadata_json FROM samples WHERE keyword_id=? AND deleted_at IS NULL", (base["keyword_id"],))
-    assert len(rows) == 2
+    assert len(rows) == 3
     assert {json.loads(row["metadata_json"])["emotion"] for row in rows} == {"happy", "sad"}
     assert all("provider_expression_request" in json.loads(row["metadata_json"]) for row in rows)
     owned = app_module.db.all("SELECT file_path FROM samples WHERE keyword_id=?", (base["keyword_id"],))
@@ -1113,7 +1113,7 @@ def test_upload_duration_boundaries(client: TestClient) -> None:
     assert "0.2" in too_short_noise.json()["detail"]
 
 
-def test_generation_deduplication_includes_instruction_and_retry(client: TestClient) -> None:
+def test_generation_and_retry_always_create_samples_with_instruction(client: TestClient) -> None:
     voice = _first_mock_voice(client)
     base = {
         "text": "你好，小助手", "label": "你好小助手", "keyword_id": "ni_hao_xiao_zhu_shou",
@@ -1140,7 +1140,71 @@ def test_generation_deduplication_includes_instruction_and_retry(client: TestCli
         "SELECT COUNT(*) AS n FROM samples WHERE provider='mock' AND seed=? AND deleted_at IS NULL",
         (base["seed"],),
     )["n"]
-    assert count_after_retry == 2
+    assert count_after_retry == 3
+
+
+@pytest.mark.parametrize("fail_at", [None, 2])
+def test_same_request_calls_provider_for_every_take_and_keeps_identical_audio(client, monkeypatch, fail_at):
+    voice = _first_mock_voice(client)
+    calls = []
+    class ConstantProvider:
+        def synthesize(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == fail_at:
+                raise app_module.ProviderError("isolated take failure")
+            return _wav_bytes(0.7, 377.0)
+    monkeypatch.setattr(app_module, "get_provider", lambda *args, **kwargs: ConstantProvider())
+    keyword = f"fresh_takes_{fail_at}"
+    payload = {"voice_ids": [voice["id"]], "text": "explicit take", "label": "fixture",
+               "keyword_id": keyword, "count": 2, "seed": 2718, "speed": 1.0, "pitch": 1.0, "volume": 50}
+    tasks = []
+    for _ in range(2):
+        response = client.post("/api/tasks/generate", json=payload)
+        assert response.status_code == 200
+        tasks.append(_wait_for_task(client, response.json()["task_id"]))
+    assert len(calls) == 4  # No cache hit, post-audio skip, or implicit retry.
+    rows = app_module.db.all("SELECT * FROM samples WHERE keyword_id=?", (keyword,))
+    assert len(rows) == (4 if fail_at is None else 3)
+    assert len({row["sha256"] for row in rows}) == 1
+    assert len({row["id"] for row in rows}) == len(rows)
+    assert len({row["file_path"] for row in rows}) == len(rows)
+    assert all(Path(row["file_path"]).is_file() for row in rows)
+    assert sum(task["completed"] for task in tasks) == len(rows)
+    assert sum(task["failed"] for task in tasks) == (0 if fail_at is None else 1)
+    assert all("duplicates" not in task["result"] and "重复" not in task["message"] for task in tasks)
+
+
+def test_repeated_recording_upload_keeps_every_identical_file(client):
+    audio = _wav_bytes(0.7, 433.0)
+    data = {"text": "same recording", "keyword_id": "fresh_recordings", "speaker_id": "fixture"}
+    for number in (2, 1):
+        response = client.post("/api/samples/upload", files=[("files", (f"{i}.wav", audio, "audio/wav")) for i in range(number)], data=data)
+        assert response.status_code == 200
+        assert response.json()["imported"] == number and not response.json()["failures"]
+        assert "duplicates" not in response.json()
+    rows = app_module.db.all("SELECT * FROM samples WHERE keyword_id=?", (data["keyword_id"],))
+    assert len(rows) == 3 and len({row["sha256"] for row in rows}) == 1
+    assert len({row["file_path"] for row in rows}) == 3
+
+
+def test_repeated_augmentation_and_noise_materialization_create_new_samples(client):
+    audio = _wav_bytes(0.7, 599.0)
+    source = client.post("/api/samples/upload", files={"files": ("source.wav", audio, "audio/wav")},
+                         data={"text": "source", "keyword_id": "fresh_augments", "speaker_id": "fixture"}).json()["sample_ids"][0]
+    noise = client.post("/api/noises/upload", files={"file": ("noise.wav", audio, "audio/wav")},
+                        data={"name": "repeat-noise", "min_snr": 5, "max_snr": 5}).json()["id"]
+    for _ in range(2):
+        response = client.post("/api/augment", json={"sample_ids": [source], "noise_ids": [noise], "count": 1, "seed": 8128})
+        assert response.status_code == 200
+        task = _wait_for_task(client, response.json()["task_id"])
+        assert task["status"] == "completed" and task["completed"] == 1
+        materialized = client.post("/api/noises/materialize", json={"noise_ids": [noise], "keyword_id": "fresh_background"})
+        assert materialized.status_code == 200
+        assert materialized.json()["created"] == 1 and "duplicates" not in materialized.json()
+    for keyword, variant in (("fresh_augments", "augmented"), ("fresh_background", "clean")):
+        rows = app_module.db.all("SELECT * FROM samples WHERE keyword_id=? AND variant_kind=?", (keyword, variant))
+        assert len(rows) == 2 and len({row["sha256"] for row in rows}) == 1
+        assert len({row["file_path"] for row in rows}) == 2
 
 
 def test_missing_sample_file_is_not_reported_recoverable(client: TestClient) -> None:
@@ -1248,14 +1312,14 @@ def test_batch_generation_caps_concurrency_and_preserves_lineage(
     )
     assert keyword_summary["background_count"] == 3
 
-    # The same seed and item identity must reproduce the same randomized
-    # parameters, allowing the existing samples to be reused deterministically.
+    # Reproducible parameters never turn an explicit new batch into cached
+    # samples. Each repeated child must create another independently owned WAV.
     repeated = client.post("/api/tasks/generate-batch", json=payload)
     assert repeated.status_code == 200
     repeated_parent = _wait_for_task(client, repeated.json()["parent_id"])
     assert repeated_parent["status"] == "completed"
-    assert all(child["result"]["duplicates"] == 1 for child in repeated_parent["children"])
-    assert client.get("/api/samples", params={"keyword_id": "batch_keyword"}).json()["total"] == 3
+    assert all("duplicates" not in child["result"] for child in repeated_parent["children"])
+    assert client.get("/api/samples", params={"keyword_id": "batch_keyword"}).json()["total"] == 6
 
 
 def test_cost_estimate_distinguishes_unavailable_and_mixed_currency(

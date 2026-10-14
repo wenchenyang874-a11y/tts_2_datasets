@@ -317,14 +317,17 @@ def run_smoke(application, destination: Path) -> int:
         assert item.checkState() == Qt.CheckState.Unchecked
         check("formatted-voice-rows-whole-row-checkbox-keyboard-toggle-no-inset-change")
         generation.voices.item(0).setCheckState(Qt.CheckState.Checked)
+        chosen_foreign = set(generation.selected)
         generation.instruction.setText("轻快自然，强调关键词")
         generation.emotion.setCurrentIndex(generation.emotion.findData("happy"))
         assert generation.payload()["emotion"] == "happy"
         assert generation.instruction.isEnabled() and not generation.scale_field.isVisible()
+        generation.ensureWidgetVisible(generation.instruction)
         window.grab().save(str(destination / "voice-foreign-expression.png"))
         generation.language.setCurrentIndex(generation.language.findData("chinese"))
         idle(window)
-        assert generation.voices.count() == 4 and not generation.selected
+        assert generation.voices.count() == 4 and generation.selected == chosen_foreign
+        assert generation.chosen_voices.count() == len(chosen_foreign)
         assert generation.instruction.text() == "轻快自然，强调关键词"
         generation.language.setCurrentIndex(0)
         generation.provider.setCurrentIndex(generation.provider.findData("aliyun"))
@@ -334,6 +337,7 @@ def run_smoke(application, destination: Path) -> int:
         generation.capability_filter.setCurrentIndex(0)
         idle(window)
         check("voice-language-capability-filters-and-visible-emotion-controls")
+        generation.clear_voices()
         generation.provider.setCurrentIndex(generation.provider.findData("volcengine_v1"))
         idle(window)
         generation.voices.item(0).setCheckState(Qt.CheckState.Checked)
@@ -356,6 +360,7 @@ def run_smoke(application, destination: Path) -> int:
         assert generation.selected == selected_before and generation.instruction.text() == "轻快自然，强调关键词"
         assert len(runtime.call("/api/tasks")) == tasks_before and not generation.submitting
         generation.instruction.clear()
+        generation.clear_voices()
         check("start-expression-modal-preserves-form-before-submission")
         original_size = window.size()
         window.resize(980, 680)
@@ -364,12 +369,22 @@ def run_smoke(application, destination: Path) -> int:
         for control in (generation.provider, generation.age, generation.capability_filter, generation.voices):
             point = control.mapTo(window, control.rect().topRight())
             assert point.x() < window.width() - 10, (point, window.width(), generation.width(), generation.minimumSizeHint(), generation.body_layout.minimumSize())
+        from PySide6.QtWidgets import QScrollArea
+        assert window.stack.currentWidget() is generation and not generation.findChildren(QScrollArea)
+        for index in range(generation.editor_tabs.count()):
+            generation.editor_tabs.setCurrentIndex(index)
+            application.processEvents()
+            assert generation.start_button.isVisible()
+            assert generation.rect().contains(generation.start_button.mapTo(generation, generation.start_button.rect().bottomRight()))
+            assert all(not generation.editor_tabs.widget(other).isVisible() for other in range(4) if other != index)
+            window.grab().save(str(destination / f"composer-minimum-tab-{index}.png"))
+        generation.editor_tabs.setCurrentIndex(0)
         window.grab().save(str(destination / "generation-minimum-window.png"))
         window.resize(original_size)
         pump_until(lambda: generation.width() <= window.stack.currentWidget().viewport().width(), 3)
         check("minimum-window-width-voice-filters-without-horizontal-clipping")
         generation.provider.setCurrentIndex(generation.provider.findData("volcengine_v2"))
-        action(generation, "获取音色列表")
+        action(generation, "获取音色")
         idle(window)
         assert generation.voices.count() >= 2
         assert all(generation.voice_rows[generation.voices.item(i).data(Qt.ItemDataRole.UserRole)]["model"] == "seed-tts-2.0" for i in range(generation.voices.count()))
@@ -411,12 +426,33 @@ def run_smoke(application, destination: Path) -> int:
         window.navigate(0)
         idle(window)
         generation.provider.setCurrentIndex(generation.provider.findData("mock"))
+        generation.clear_voices()
         generation.refresh_catalog()
         idle(window)
         assert not generation.selected
         assert generation.voices.count() >= 2
         generation.voices.item(0).setCheckState(Qt.CheckState.Checked)
         generation.voices.item(1).setCheckState(Qt.CheckState.Checked)
+        mock_selection = set(generation.selected)
+        generation.provider.setCurrentIndex(generation.provider.findData("xiaomi"))
+        idle(window)
+        generation.voices.item(0).setCheckState(Qt.CheckState.Checked)
+        idle(window)
+        assert len(generation.selected) == 3 and generation.chosen_voices.count() == 3
+        assert set(generation.payload()["provider_audio"]) == {"mock", "xiaomi"}
+        window.grab().save(str(destination / "composer-cross-supplier-basket.png"))
+        cross_identifier = next(iter(generation.selected-mock_selection))
+        basket_item = next(generation.chosen_voices.item(i) for i in range(generation.chosen_voices.count())
+                           if generation.chosen_voices.item(i).data(Qt.ItemDataRole.UserRole) == cross_identifier)
+        basket_rect = generation.chosen_voices.visualItemRect(basket_item)
+        QTest.mouseClick(generation.chosen_voices.viewport(), Qt.MouseButton.LeftButton,
+                         pos=QPoint(basket_rect.right()-20, basket_rect.top()+21))
+        idle(window)
+        assert cross_identifier not in generation.selected and generation.chosen_voices.count() == 2
+        generation.provider.setCurrentIndex(generation.provider.findData("mock"))
+        idle(window)
+        assert generation.selected == mock_selection
+        check("cross-supplier-basket-keeps-filtered-selections-and-separate-audio-profiles")
         generation.texts.setPlainText("你好，小助手\n请开灯")
         generation.count.setValue(2)
         heartbeat = []
@@ -428,6 +464,7 @@ def run_smoke(application, destination: Path) -> int:
         idle(window)
         tasks = runtime.call("/api/tasks")
         task = wait_task(runtime, tasks[0]["id"])
+        assert window.stack.currentIndex() == 0 and generation.selected == mock_selection
         assert len(task["children"]) == 2
         samples = runtime.call("/api/samples", params={"page_size": 200})["items"]
         assert len(samples) == 8
@@ -645,8 +682,9 @@ def run_smoke(application, destination: Path) -> int:
         recording.paths = [str(tone)]
         action(recording, "导入并校验")
         idle(window)
-        assert "重复 1" in recording.result.text()
-        check("native-import-48khz-continuous-parameters-deduplication")
+        assert "已导入 1" in recording.result.text() and "重复" not in recording.result.text()
+        assert runtime.call("/api/samples", params={"provider": "real"})["total"] == 2
+        check("native-import-48khz-continuous-parameters-repeat-creates-new-sample")
         noise = runtime.call("/api/noises/upload", "POST", files=[("file", str(tone))],
                              data={"name": "smoke-noise", "min_snr": 5, "max_snr": 15})
         window.navigate(3)
@@ -770,6 +808,28 @@ def run_smoke(application, destination: Path) -> int:
         assert tested >= 12
         check("visible-page-form-wheel-gestures-do-not-edit-focused-controls")
         window.poll_timer.start()
+        # Repeat the exact same synthesis twice. Both explicit requests must
+        # own new rows/files, including identical deterministic Mock output.
+        repeated_keyword = "native-repeat-takes"
+        voice = runtime.call("/api/voices", params={"provider": "mock"})[0]
+        payload = {"voice_ids": [voice["id"]], "text": "重复合成验收", "label": "重复合成验收",
+                   "keyword_id": repeated_keyword, "count": 2, "seed": 20261014,
+                   "speed": 1.0, "pitch": 1.0, "volume": 50}
+        for _ in range(2):
+            created = runtime.call("/api/tasks/generate", "POST", json=payload)
+            repeated_task = wait_task(runtime, created["task_id"])
+            assert repeated_task["completed"] == 2 and repeated_task["failed"] == 0
+            assert "重复" not in repeated_task["message"]
+        repeated_rows = runtime.call("/api/samples", params={"keyword_id": repeated_keyword})["items"]
+        assert len(repeated_rows) == 4 and len({row["id"] for row in repeated_rows}) == 4
+        assert len({row["sha256"] for row in repeated_rows}) < 4
+        window.navigate(4)
+        window.pages[4].refresh()
+        idle(window)
+        window.grab().save(str(destination / "repeat-synthesis-task.png"))
+        check("same-request-and-identical-audio-create-new-samples-without-reuse")
+        expected_samples = runtime.call("/api/samples")["total"]
+        assert expected_samples == 22
         previous_directory = runtime.data_directory
         moved_directory = destination / "迁移 数据"
         moved_directory.mkdir()
@@ -777,7 +837,7 @@ def run_smoke(application, destination: Path) -> int:
         idle(window)
         runtime = window.runtime
         assert runtime.data_directory == moved_directory.resolve()
-        assert runtime.call("/api/samples")["total"] == 17
+        assert runtime.call("/api/samples")["total"] == expected_samples
         assert not (previous_directory / "tts_dataset.sqlite3").exists()
         assert not (previous_directory / "samples").exists()
         assert window.preferences.data_directory() == moved_directory.resolve()
@@ -790,7 +850,7 @@ def run_smoke(application, destination: Path) -> int:
         check("native-close-no-business-child-left")
         imported = copy_dataset(runtime.data_directory, destination / "导入 数据")
         runtime2, window2 = start(imported)
-        assert runtime2.call("/api/samples")["total"] == 17
+        assert runtime2.call("/api/samples")["total"] == expected_samples
         assert runtime2.call("/api/exports")
         window2.close()
         check("copied-dataset-rebased-paths-second-cold-start-and-close")

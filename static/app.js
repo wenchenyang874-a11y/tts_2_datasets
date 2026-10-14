@@ -1791,7 +1791,7 @@
       $("sampleUploadFiles").value = "";
       resetRecording();
       await Promise.all([loadSampleKeywords(), loadSampleSpeakers(true), loadSamples(true), loadStatus()]);
-      const extra = `${result.duplicates?.length || 0} 重复，${result.failures?.length || 0} 失败`;
+      const extra = `${result.failures?.length || 0} 失败`;
       $("sampleUploadResult").textContent = `上次校验：${result.imported || 0} 成功，${extra}。参数已保留，可继续录音或选择文件。`;
       $("sampleUploadResult").classList.remove("hidden");
       toast("真人样本导入完成", `${result.imported || 0} 成功，${extra}`, result.failures?.length ? "info" : "success", 6500);
@@ -1935,8 +1935,7 @@
       });
       await Promise.all([loadTasks(), loadSampleKeywords(), loadSamples(true), loadStatus()]);
       const created = result?.created ?? result?.sample_ids?.length ?? 0;
-      const reused = result?.duplicates ?? result?.duplicate_sample_ids?.length ?? 0;
-      toast("背景噪声已加入样本库", `新建 ${created} 条，复用 ${reused} 条；可在样本库按“背景噪声”筛选。`, "success", 6500);
+      toast("背景噪声已加入样本库", `新建 ${created} 条；可在样本库按“背景噪声”筛选。`, "success", 6500);
     } catch (error) {
       toast("背景噪声入库失败", error.message, "error", 7000);
     } finally {

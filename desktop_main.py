@@ -24,7 +24,17 @@ def main() -> int:
     # DLLs while the application is still loading them.
     guard = InstallerGuard()
     try:
-        return run_application(args, VERSION)
+        from desktop.diagnostics import NativeDiagnostics
+        if args.smoke_test:
+            return run_application(args, VERSION)  # The isolated harness owns its trace.
+        from desktop.preferences import default_preferences_path
+        diagnostics = (args.preferences_file or default_preferences_path()).parent / 'diagnostics'
+        if args.verify_launch:
+            diagnostics = args.verify_launch.parent / (args.verify_launch.name+'-diagnostics')
+        elif args.data_dir:
+            diagnostics = args.data_dir / 'diagnostics'
+        with NativeDiagnostics(diagnostics, VERSION):
+            return run_application(args, VERSION)
     finally:
         guard.close()
 

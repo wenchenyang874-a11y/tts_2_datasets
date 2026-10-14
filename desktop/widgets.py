@@ -15,6 +15,13 @@ STYLE = """
 QWidget { font-family: 'Segoe UI', 'Microsoft YaHei UI'; font-size: 14px; color: #26334a; }
 QMainWindow, QWidget#canvas, QWidget#page { background: #f4f6fb; }
 QWidget#sidebar { background: #ffffff; border-right: 1px solid #e6eaf3; }
+QWidget#composerPane { background: white; border: 1px solid #e1e6f0; border-radius: 10px; }
+QWidget#composerFooter { background: white; border: 1px solid #e1e6f0; border-radius: 10px; }
+QWidget#composerPane QListWidget { border: 0; border-radius: 0; }
+QWidget#composerPane QTabWidget::pane { border: 0; padding: 0; }
+QTabWidget#composerTabs QTabBar::tab { padding: 7px 10px; margin-right: 2px; }
+QSplitter::handle { background: #f4f6fb; width: 10px; }
+QLabel#composerSummary { color: #5245bc; font-weight: 600; }
 QWidget#sidebar QLabel { color: #6155cc; background: transparent; }
 QWidget#sidebar QPushButton { color: #68758b; background: transparent; border: 0; text-align: left; padding: 13px 18px; border-radius: 8px; }
 QWidget#sidebar QPushButton:hover { background: #f3f2fd; color: #5245bc; }
@@ -29,6 +36,7 @@ QPushButton:pressed { background: #e3e4ff; }
 QPushButton#primary { background: #6563df; color: white; border: 0; font-weight: 600; }
 QPushButton#primary:hover { background: #5553c9; }
 QPushButton:disabled { color: #a4acbb; background: #eef0f5; }
+QPushButton#primary:disabled { color: #919aad; background: #e8eaf2; }
 QPushButton#rowPlay { background: #efedff; border: 0; border-radius: 8px; padding: 0; }
 QPushButton#rowPlay:hover { background: #dedaff; }
 QPushButton#rowPlay:pressed { background: #cec7ff; }

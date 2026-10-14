@@ -1,5 +1,17 @@
 # Windows 验证与发布门槛
 
+## 2026-10-14 / beta.7 待验收
+
+223 项离线回归通过（26.81 秒，1 条既有 Starlette 弃用提示）。新增回归覆盖重复请求确实调用、相同 PCM 独立入库、一次失败不自动重试、重复导入／增强／背景创建；控件回归覆盖跨供应商已选栏、筛选保留选择、独立请求音频配置、共同参数约束以及最小创作区域各页签边界。诊断测试检查 hook 恢复、不可写目录容错及日志不保存异常值／Qt 消息中的用户内容。Python 语法、Web JS 语法与 diff 空白检查通过；offscreen 控件通过不代替实际窗口验收。
+
+beta.6 精确源的两种 100 次原生提交循环均未复现用户崩溃，证据位于 `artifacts/beta6-start-crash-repro/` 和 `artifacts/beta6-cloud-dialog-crash-repro/`，全部使用 Mock。Windows WER 无残存 dump，根因未查明，不作为修复成功结论。
+
+`artifacts/beta7-source-workspace-1/`、`-2/` 停在悬停步骤；实际桌面截图确认当时锁屏，均为失败记录，不以控件 grab 截图替代窗口验收。用户解锁后 `artifacts/beta7-source-workspace-unlocked-1/result.json` 为 ok=true，35 项原生流程通过；实际截图核对最小窗口四个页签、可見提交按钮、跨供应商已选栏。冻结与安装后验收待完成，Win10 仍待实测。
+
+小米首轮获准 1 次测试的脚本误将 `/api/tasks` 只返回父任务的长度视为异常，finally 清理中断了已发出的请求；`artifacts/beta6-mimo-authorized-one-call/cloud-calls.json` 记录恰好 1 次 POST、禁用自动重试，不能把该测试失败作为供应商或程序崩溃结论。没有自动再调用；第二次测试须独立授权。
+
+用户独立授权追加 1 次后，`artifacts/beta6-mimo-authorized-one-call-2/result.json` 记录第二次恰好 1 次 POST，任务完成并产生 1 个隔离样本；精确 beta.6 的确认／提交／返回任务中心／轮询／正常关闭未崩溃。两次均无自动重试，不代表 beta.7 或跨厂商整批真实云验收。测试使用 ProviderSettingsStore 构造器读取原凭据时触发了其既有重新加密／updated_at 写入行为，因此原文件哈希不一致；未调用原配置的 update_provider，不能记录为“原文件未修改”。隔离凭据副本已移除，后续读取改为直接 decode_settings，不构造该写入型存储。实际原生崩溃根因仍未定位。
+
 ## 2026-10-14 / beta.6 交互验证
 
 用户后续要求以后每版发布一并设为 Latest；beta.6 已回读 `/releases/latest` 为 ID 412340796／v2.0.0-beta.6，draft=false、prerelease=false。三项资产的 ID、字节数和 digest 未变，Tag 仍为 c8ac4d5；下段为初次发布状态。正式发布工具新增 5 项离线回归通过，覆盖 beta 自动设置 Latest、草稿／预发布状态残留、错误 Tag 和错误 Latest ID，不调用 GitHub 或改动安装包。取消平台标记不代表 Windows 10、麦克风或 ASMR 听感验收通过。

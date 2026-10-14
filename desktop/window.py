@@ -129,6 +129,12 @@ class MainWindow(QMainWindow):
         self.pages = [cls(self) for cls in [GeneratePage, SamplesPage, RecordingPage, NoisesPage,
                                            TasksPage, ExportsPage, SettingsPage]]
         for page in self.pages:
+            if isinstance(page, GeneratePage):
+                # The composer is a bounded workspace with tabs and independent
+                # lists; wrapping it in a page scroll area hides its submit action
+                # and shrinks the catalog behind unrelated parameter forms.
+                self.stack.addWidget(page)
+                continue
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setWidget(page)

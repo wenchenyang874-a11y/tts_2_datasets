@@ -13,3 +13,9 @@ def settings_id(service):
 def audio_provider(service):
     return "volcengine" if service in {"volcengine_v1", "volcengine_v2"} else service
 
+
+def service_for_voice(voice):
+    if voice.get("provider") == "volcengine":
+        return "volcengine_v2" if voice.get("model") == "seed-tts-2.0" else "volcengine_v1"
+    return voice.get("provider", "mock")
+

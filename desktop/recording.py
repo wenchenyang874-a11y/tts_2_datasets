@@ -252,5 +252,5 @@ class RecordingPage(Page):
         self.files.clear()
         self.files.addItems([Path(path).name for path in self.paths])
         failures = "；".join(f"{item['file']}: {item['error']}" for item in result["failures"])
-        self.result.setText(f"已导入 {result['imported']} 条 · 重复 {len(result['duplicates'])} 条 · 失败 {len(result['failures'])} 条" + ("\n" + failures if failures else ""))
+        self.result.setText(f"已导入 {result['imported']} 条 · 失败 {len(result['failures'])} 条" + ("\n" + failures if failures else ""))
         self.refresh()

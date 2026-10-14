@@ -1,6 +1,18 @@
 # Windows 迁移架构与当前实现
 
-## beta.6 交互与刷新契约
+## beta.7 创作与独立样本契约
+
+`desktop/composer_workspace.py` 提供三栏 QSplitter 工作区。GeneratePage 直接加入主窗口 QStackedWidget，不包装 QScrollArea；编辑区以 QTabWidget 在文本、表达、参数和请求音频设置间切换。音色目录与已选栏各自滚动。页内操作行始终可见，不通过覆盖滚动内容的悬浮按钮补救布局。最小窗口需检查所有页签的真实控件边界。
+
+供应商下拉框只改变目录浏览范围。selected 保存整个批次的稳定音色 ID；voice_rows 缓存跨供应商元数据，筛选和重新加载不清空已选。右侧以 delegate 绘制名称、供应商和移除区域，不为每个目录音色创建 QWidget。已选栏更新由页面拥有的 singleShot QTimer 延迟到原生事件之后，避免在条目自己的信号栈中删除它。数据目录切换时定时器随旧页面释放。
+
+每个已选供应商分别保存 provider_audio；共用参数按能力交集开放，表达在 UI 与后端按整个批次校验。预检前快照请求，费用确认只授权该快照，提交后不强制跳页。交互参考 [Fluent List](https://fluent2.microsoft.design/components/web/react/core/list/usage) 的整行选择与信息扫描，以及 [Fluent TagPicker](https://fluent2.microsoft.design/components/web/react/core/tagpicker/usage) 的可见已选项与移除行为；原生实现不引入网页运行时。
+
+`_generate_task` 每份实际调用、归一化并插入独立 UUID/文件；不查询历史参数命中，也不根据 SHA 丢弃结果。录音导入、增强和噪声背景创建同样保留独立样本。completed 只在实际入库后增长，不再报告 duplicates。ID 集合仍用于避免同一勾选项在一个批次内被意外列出两次，和音频内容去重无关。相同内容的 SHA 保留完整性用途；训练划分仍按说话人／供应商音色分组。
+
+`desktop/diagnostics.py` 在普通入口启用 faulthandler，保留原生／Python 栈、Qt 分类与位置和提交阶段。默认诊断目录位于桌面偏好文件旁；测试覆盖为隔离位置。不开启进程全局 dump 注册，不写请求、指令、密钥或异常值；退出恢复 Qt handler 与异常 hook。诊断不可写不阻止启动。
+
+## beta.6 历史交互与刷新契约
 
 2026-10-14 核对的现有合成去重行为：`app.py::_generate_task` 在调用供应商前按文本、音色、模型、参数及表达设置查询旧样本，命中则不调用供应商；返回音频归一化后又按 SHA-256／keyword_id／target_kind 查询，命中则删除本次文件、不新增样本。两条路径都累计 completed 和 duplicates，因此“完成 2，重复 2”实际可为新增 0。已用只读数据库核对用户截图对应的任务，新增数分别为 0 和 1。该限制由应用代码主动执行，不是数据库 sha256 唯一约束；相同内容在不同关键词／类型下不一定被阻止。此处记录现状，不将“任务完成”解释为新增音频数量，也不代表用户已认可该去重规则。
 
