@@ -10,9 +10,13 @@
 
 用户明确授权的豆包 2.0 对照只发起 2 次请求（无指令、ASMR 指令），相同音色和原合成文本，不自动重试。`artifacts/doubao-asmr-authorized-20261014/result.json` 记录脱敏请求体、音频大小与哈希，不保存密钥；无指令 WAV 127474 字节／3.9821875 秒，有指令 WAV 140404 字节／4.38625 秒，均为有效 PCM16／16 kHz mono。用户听辨“有差异，但不符合预期”；只能证明参数传递和返回音频，不声称 ASMR 表达已经验收。真实数据集无写入，供应商凭据文件前后哈希一致。官方逐音色标注依据 [音色表](https://docs.volcengine.com/docs/DoubaoVoice/Tonelist-1) 与 [HTTP 接口](https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-text-to-speech-http?lang=zh)，不把模型名整体当作支持声明。
 
-本版构建与安装证据后续补齐；Win10、真实麦克风待实测，尚无本版发布授权。
+最终构建源为 `4163c6f9311ee9d6549fa455393ecedb9eb9edf9`。源码 100% (`artifacts/beta6-ux-20261014-source-100/result.json`)、冻结程序 150% (`artifacts/beta6-ux-20261014-frozen-150/result.json`) 均 ok=true，各 31 项。`artifacts/installer-beta6-ux-20261014/result.json` 为 ok=true，9 项隔离安装检查及 31 项安装后原生流程通过；实际核对默认单选、逐行按钮、审核子菜单和日志保留位置的截图。
+
+隔离 AppId／mutex 的测试安装器运行文件与便携包一致，覆盖同版本修复保留数据、运行保护、模拟旧版损坏修复、降级防护、普通入口／已保存目录冷启动及卸载保留数据。测试注册已移除，用户现有 beta.5 安装未替换。清单 SHA-256 为 `02d814c9b63501e95f6fa174d9bee444e07bc4775f4084412ed66ee2b1b75853`；安装包 SHA-256 为 `7d3264ab27a9cbdc94d848a58fd424146dae858020d2c69eb9e1948ccfaccb8c`，完整资产记录见 [beta.6](../releases/v2.0.0-beta.6.md)。Win10、真实麦克风待实测，尚无本版发布授权。
 
 首次 main CI 38506769777 在新控件测试收集时报告 `ImportError: libEGL.so.1`，原 QtCore 回归不依赖 QtGui，因此此前未暴露该系统库遗漏。Ubuntu 的 offscreen 插件也需要图形共享库；CI 补齐 libegl1／libopengl0，保留完整控件回归。该修复仅改变 Linux CI 环境，不修改 Windows 运行代码；旧的未发布 d401842 构建按源提交归档，新构建使用修复后的完整提交。
+
+修复后的 [CI 38507025269](https://github.com/wenchenyang874-a11y/tts_2_datasets/actions/runs/38507025269) 对构建源成功：203 项测试通过、5 项 Windows 专属测试跳过、1 条既有弃用提示；Compose 验证、Docker 构建和健康检查通过。Linux CI 不能替代 Windows 原生或安装验收。
 
 2026-10-13 用户明确要求 beta.5 设为 Latest，实际回读 `/releases/latest` 已指向 Release 411556616／v2.0.0-beta.5，draft=false、prerelease=false。三项远程资产大小和 SHA-256 均匹配原构建清单，远程 Tag 仍固定于 d85428b；未重新构建或重写既有证据。GitHub 因不支持预发布作为 Latest 而取消标记，版本仍为 beta，以下系统／云／麦克风验证边界不变。该记录替代历史章节中的“Latest 仍为 v1.1.0”当前状态。
 
