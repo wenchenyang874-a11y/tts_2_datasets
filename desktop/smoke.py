@@ -211,6 +211,10 @@ def run_smoke(application, destination: Path) -> int:
         verify_controls(application, window, destination, idle)
         check("mouse-tab-switch-silent-help-full-filter-labels-all-pages-single-show-popup-first-frames")
         from PySide6.QtWidgets import QTabWidget
+        # The shared-control probe visits every page and restores the composer.
+        # Explicitly enter settings before continuing its visible-button checks.
+        window.navigate(6)
+        idle(window)
         settings = window.pages[6]
         settings.findChildren(QTabWidget)[0].setCurrentIndex(2)
         settings.fields["xiaomi"]["api_key"].setText("native-smoke-test-only-key")

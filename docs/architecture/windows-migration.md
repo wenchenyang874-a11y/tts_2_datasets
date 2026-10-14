@@ -131,7 +131,7 @@ WAV 请求使用 PCM，分段组装后一次写入单声道 PCM16 WAV 文件头�
 
 豆包 2.0 自由指令使用 additions.context_texts；原生情感只依据该音色 ListSpeakers.Emotions 的 Value/Label，发送 audio_params.emotion / emotion_scale。没有原生枚举的 2.0 音色、MiMo 和支持自由指令的阿里云复刻音色，将 UI 情感预设转为自然语言表达要求；阿里云系统音色使用官方固定句式。情感预设不插入待朗读文本。样本元数据同时保存原始设置和实际供应商表达参数，去重条件包含 emotion / emotion_scale，避免不同情感误用旧音频。
 
-共享 AnchoredComboBox 使用独立 Fusion 代理风格和明确列表样式，固定控件宽度及屏幕边界。Windows 6.8.3 在页面即时重建与反复打开时出现 private popup 未显示问题，每次打开重置为顶层窗口拥有的 Qt.Popup，再按固定位置显示；仍保留 Qt 选择和键盘处理。代理样式不能共享 QApplication.style() 的所有权。实际首／中／末选项、鼠标点选、方向键与 Enter、Escape 和即时切换后的重复打开均需回归。
+历史实现曾使用独立 Fusion 代理风格，并在打开后重设 Qt 私有 popup 的父窗口；这会产生 Show→ParentChange→Show 和选项闪刷，已在 beta.7 控件修复中移除。当前实现见本文件开头及 `desktop/combo_popup.py`。实际首／中／末选项、鼠标点选、方向键与 Enter、Escape 和即时切换后的重复打开均需回归。
 
 音色列表使用轻量绘制委托，名称、人口信息、语言、能力分层固定坐标绘制；鼠标整行切换 checkbox 状态，禁止同时交给默认 checkbox 编辑器造成双重切换。样本表格改用 QStyledItemDelegate 保持选中前后的换行，选择列和短状态列固定宽，文本／来源列伸展，长内容按行高显示。
 
