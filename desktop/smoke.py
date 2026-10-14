@@ -32,6 +32,7 @@ def verify_sample_row_first_paint(application, destination):
             return False
 
     table = SampleTable()
+    table.set_multi_select(True)
     table.setStyleSheet(STYLE)
     table.setWindowTitle("样本即时重绘验收")
     table.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
@@ -39,7 +40,7 @@ def verify_sample_row_first_paint(application, destination):
     table.move(application.primaryScreen().availableGeometry().topLeft())
     table.setRowCount(2)
     for row in range(2):
-        for column, text in enumerate(("样本即时重绘", "离线测试 / Mock", "原音", "已通过", "1.0s", "未分配")):
+        for column, text in enumerate(("样本即时重绘", "离线测试 / Mock", "原音", "已通过", "1.0s", "未分配", "")):
             item = QTableWidgetItem(text)
             table.setItem(row, column, item)
             if column == 0:
@@ -55,7 +56,7 @@ def verify_sample_row_first_paint(application, destination):
         application.processEvents()
         tracker = PaintTracker(table)
         table.viewport().installEventFilter(tracker)
-        centers = [table.visualItemRect(table.item(0, column)).center() for column in range(6)]
+        centers = [table.visualItemRect(table.item(0, column)).center() for column in range(table.columnCount())]
         other_row = table.visualItemRect(table.item(1, 0)).center()
         click = lambda: QTest.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=centers[0])
         actions = [("mouse-check", click, True), ("mouse-uncheck", click, False),
@@ -84,7 +85,7 @@ def verify_sample_row_first_paint(application, destination):
 
 def run_smoke(application, destination: Path) -> int:
     from PySide6.QtCore import Qt, QTimer, QPoint
-    from PySide6.QtWidgets import QPushButton
+    from PySide6.QtWidgets import QPushButton, QWidget
     from PySide6.QtTest import QTest
     from .runtime import BusinessRuntime, RuntimeErrorDetail
     from .window import MainWindow
@@ -373,7 +374,6 @@ def run_smoke(application, destination: Path) -> int:
         assert generation.voices.count() >= 2
         assert all(generation.voice_rows[generation.voices.item(i).data(Qt.ItemDataRole.UserRole)]["model"] == "seed-tts-2.0" for i in range(generation.voices.count()))
         generation.voices.item(0).setCheckState(Qt.CheckState.Checked)
-        generation.billing.setChecked(True)
         before_count = len(runtime.call("/api/tasks"))
         action(generation, "开始合成")
         idle(window)
@@ -443,12 +443,21 @@ def run_smoke(application, destination: Path) -> int:
         window.navigate(1)
         idle(window)
         library = window.pages[1]
+        assert not library.grid.multi_select
+        for row in (0, 1):
+            QTest.mouseClick(library.grid.viewport(), Qt.MouseButton.LeftButton,
+                             pos=library.grid.visualItemRect(library.grid.item(row, 0)).center())
+            assert library.grid.currentRow() == row and not library.selected
+        window.grab().save(str(destination / "sample-single-selection.png"))
+        check("sample-default-single-current-row-no-hidden-checkbox-selections")
+        action(library, "多选")
+        assert library.grid.multi_select
         verify_sample_row_first_paint(application, destination)
-        check("sample-check-uncheck-six-columns-first-paint-no-forced-render")
+        check("sample-check-uncheck-all-columns-first-paint-no-forced-render")
         window.stack.currentWidget().ensureWidgetVisible(library.grid)
         application.processEvents()
         from .sample_table import SampleDelegate
-        assert library.grid.columnCount() == 6 and library.grid.horizontalHeaderItem(0).text() == "文本"
+        assert library.grid.columnCount() == 7 and library.grid.horizontalHeaderItem(0).text() == "文本"
         first_item = library.grid.item(0, 0)
         first_id = first_item.data(Qt.ItemDataRole.UserRole)
         first_rect = library.grid.visualItemRect(first_item)
@@ -503,10 +512,37 @@ def run_smoke(application, destination: Path) -> int:
         action(library, "音频分析")
         idle(window)
         assert library.waveform.values and library.spectrum.values
-        action(library, "试听")
+        selection_before = set(library.selected)
+        QTest.mouseClick(library.play_buttons[identifier], Qt.MouseButton.LeftButton)
         idle(window)
+        assert library.selected == selection_before
+        assert not any(button.text() == "试听" for button in library.findChildren(QPushButton))
         first_playback = window.player.source().toLocalFile()
         assert Path(first_playback).is_file()
+        # Exercise the actual native popup and submenu with stable ID actions.
+        # Playback never checks a batch box; direct export writes one WAV only.
+        position = library.grid.visualItemRect(library.grid.item(0, 0)).center()
+        library.open_context_menu(position)
+        application.processEvents()
+        menu = library.context_menu
+        assert menu.isVisible()
+        menu.grab().save(str(destination / "sample-context-menu.png"))
+        review_menu = menu.review_menu
+        review_menu.popup(menu.mapToGlobal(menu.actionGeometry(menu.review_action).topRight()))
+        application.processEvents()
+        assert review_menu.isVisible()
+        review_menu.grab().save(str(destination / "sample-review-submenu.png"))
+        review_menu.hide()
+        menu.hide()
+        from unittest.mock import patch
+        output = destination / "single-wav-export"
+        output.mkdir()
+        with patch("desktop.samples.QFileDialog.getExistingDirectory", return_value=str(output)):
+            library.export_audio(identifier)
+        idle(window)
+        assert len(list(output.iterdir())) == 1 and (output / f"sample-{identifier}.wav").is_file()
+        assert library.selected == selection_before
+        check("sample-native-context-submenu-per-row-play-button-and-direct-wav-export")
         cell = library.grid.visualItemRect(library.grid.item(0, 1))
         window.stack.currentWidget().ensureWidgetVisible(library.grid)
         application.processEvents()
@@ -649,6 +685,58 @@ def run_smoke(application, destination: Path) -> int:
         assert "API Key" in tasks_page.tree.topLevelItem(0).text(5)
         window.grab().save(str(destination / "task-failure.png"))
         check("failure-reason-visible-without-json-dialog")
+        log_fixture = {**failure_fixture, "payload": {f"fixture_{i}": "reading-position"*4 for i in range(90)}}
+        tasks_page.show_tasks([log_fixture])
+        tasks_page.tree.setCurrentItem(tasks_page.tree.topLevelItem(0))
+        tasks_page.raw_detail.parentWidget().show()
+        window.stack.currentWidget().ensureWidgetVisible(tasks_page.raw_detail)
+        application.processEvents()
+        cursor = tasks_page.raw_detail.textCursor()
+        cursor.setPosition(120)
+        cursor.setPosition(140, cursor.MoveMode.KeepAnchor)
+        tasks_page.raw_detail.setTextCursor(cursor)
+        anchor, cursor_position = cursor.anchor(), cursor.position()
+        tasks_page.raw_detail.verticalScrollBar().setValue(20)
+        position = tasks_page.raw_detail.verticalScrollBar().value()
+        assert position > 0
+        for count in range(3):
+            tasks_page.show_tasks([{**log_fixture, "completed": count}])
+            application.processEvents()
+            assert tasks_page.raw_detail.verticalScrollBar().value() == position
+            assert tasks_page.raw_detail.textCursor().anchor() == anchor
+            assert tasks_page.raw_detail.textCursor().position() == cursor_position
+        window.grab().save(str(destination / "task-log-preserved.png"))
+        check("technical-detail-poll-retains-scroll-and-text-selection")
+        from PySide6.QtGui import QWheelEvent
+        from PySide6.QtCore import QPointF
+        from PySide6.QtWidgets import QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QPlainTextEdit
+        tested = 0
+        for page_index in range(7):
+            window.navigate(page_index)
+            idle(window)
+            page = window.pages[page_index]
+            for control in page.findChildren(QWidget):
+                if not isinstance(control, (QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QPlainTextEdit)):
+                    continue
+                if not control.isVisible() or not control.isEnabled():
+                    continue
+                if isinstance(control, QPlainTextEdit) and control.isReadOnly():
+                    continue
+                control.setFocus()
+                window.stack.currentWidget().ensureWidgetVisible(control)
+                application.processEvents()
+                state = lambda: control.currentIndex() if isinstance(control, QComboBox) else control.value() if isinstance(control, (QSpinBox, QDoubleSpinBox)) else control.toPlainText() if isinstance(control, QPlainTextEdit) else control.text()
+                before = state()
+                target = control.viewport() if isinstance(control, QPlainTextEdit) else control
+                event = QWheelEvent(QPointF(target.rect().center()), target.mapToGlobal(QPointF(target.rect().center())),
+                                    QPoint(), QPoint(0, -120), Qt.MouseButton.NoButton,
+                                    Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+                application.sendEvent(target, event)
+                application.processEvents()
+                assert state() == before
+                tested += 1
+        assert tested >= 12
+        check("visible-page-form-wheel-gestures-do-not-edit-focused-controls")
         window.poll_timer.start()
         previous_directory = runtime.data_directory
         moved_directory = destination / "迁移 数据"

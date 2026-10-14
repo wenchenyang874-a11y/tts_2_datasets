@@ -14,6 +14,61 @@ ALI_FIXED_VOICES = {
     ("cosyvoice-v3-flash", "longhuhu_v3"),
 }
 
+# Explicit "instruction following" entries in the official 2.0 voice table,
+# checked 2026-10-14: https://docs.volcengine.com/docs/DoubaoVoice/Tonelist-1
+# Resource/model 2.0 alone is not a declaration of per-voice support. In
+# particular the table's ICL_* roles have an empty capability cell. Keep unknown
+# IDs conservative rather than guessing from a suffix or claiming ASMR success.
+VOLC_INSTRUCTION_VOICES = frozenset("""
+zh_female_vv_uranus_bigtts zh_female_xiaohe_uranus_bigtts
+zh_male_m191_uranus_bigtts zh_male_taocheng_uranus_bigtts
+zh_male_liufei_uranus_bigtts zh_female_sophie_uranus_bigtts
+zh_female_qingxinnvsheng_uranus_bigtts zh_female_cancan_uranus_bigtts
+zh_female_sajiaoxuemei_uranus_bigtts zh_female_tianmeixiaoyuan_uranus_bigtts
+zh_female_tianmeitaozi_uranus_bigtts zh_female_shuangkuaisisi_uranus_bigtts
+zh_female_peiqi_uranus_bigtts zh_female_linjianvhai_uranus_bigtts
+zh_male_shaonianzixin_uranus_bigtts zh_male_sunwukong_uranus_bigtts
+zh_female_yingyujiaoxue_uranus_bigtts zh_female_kefunvsheng_uranus_bigtts
+zh_female_xiaoxue_uranus_bigtts zh_male_dayi_uranus_bigtts
+zh_female_mizai_uranus_bigtts zh_female_jitangnv_uranus_bigtts
+zh_female_meilinvyou_uranus_bigtts zh_female_liuchangnv_uranus_bigtts
+zh_male_ruyayichen_uranus_bigtts en_male_tim_uranus_bigtts
+en_female_dacey_uranus_bigtts en_female_stokie_uranus_bigtts
+zh_female_wenroumama_uranus_bigtts zh_male_jieshuoxiaoming_uranus_bigtts
+zh_female_tvbnv_uranus_bigtts zh_male_yizhipiannan_uranus_bigtts
+zh_female_qiaopinv_uranus_bigtts zh_female_zhishuaiyingzi_uranus_bigtts
+zh_male_linjiananhai_uranus_bigtts zh_male_silang_uranus_bigtts
+zh_male_ruyaqingnian_uranus_bigtts zh_male_qingcang_uranus_bigtts
+zh_male_xionger_uranus_bigtts zh_female_yingtaowanzi_uranus_bigtts
+zh_male_wennuanahu_uranus_bigtts zh_male_naiqimengwa_uranus_bigtts
+zh_female_popo_uranus_bigtts zh_female_gaolengyujie_uranus_bigtts
+zh_male_aojiaobazong_uranus_bigtts zh_male_lanyinmianbao_uranus_bigtts
+zh_male_fanjuanqingnian_uranus_bigtts zh_female_wenroushunv_uranus_bigtts
+zh_female_gufengshaoyu_uranus_bigtts zh_male_huolixiaoge_uranus_bigtts
+zh_male_baqiqingshu_uranus_bigtts zh_male_xuanyijieshuo_uranus_bigtts
+zh_female_mengyatou_uranus_bigtts zh_female_tiexinnvsheng_uranus_bigtts
+zh_female_jitangmei_uranus_bigtts zh_male_cixingjieshuonan_uranus_bigtts
+zh_male_liangsangmengzai_uranus_bigtts zh_female_kailangjiejie_uranus_bigtts
+zh_male_gaolengchenwen_uranus_bigtts zh_male_shenyeboke_uranus_bigtts
+zh_male_lubanqihao_uranus_bigtts zh_female_jiaochuannv_uranus_bigtts
+zh_female_linxiao_uranus_bigtts zh_female_lingling_uranus_bigtts
+zh_female_chunribu_uranus_bigtts zh_male_tangseng_uranus_bigtts
+zh_male_zhuangzhou_uranus_bigtts zh_male_kailangdidi_uranus_bigtts
+zh_male_zhubajie_uranus_bigtts zh_female_ganmaodianyin_uranus_bigtts
+zh_female_chanmeinv_uranus_bigtts zh_female_nvleishen_uranus_bigtts
+zh_female_qinqienv_uranus_bigtts zh_male_kuailexiaodong_uranus_bigtts
+zh_male_kailangxuezhang_uranus_bigtts zh_male_youyoujunzi_uranus_bigtts
+zh_female_wenjingmaomao_uranus_bigtts zh_female_zhixingnv_uranus_bigtts
+zh_male_qingshuangnanda_uranus_bigtts zh_male_yuanboxiaoshu_uranus_bigtts
+zh_male_yangguangqingnian_uranus_bigtts zh_female_qingchezizi_uranus_bigtts
+zh_female_tianmeiyueyue_uranus_bigtts zh_female_xinlingjitang_uranus_bigtts
+zh_male_wenrouxiaoge_uranus_bigtts zh_female_roumeinvyou_uranus_bigtts
+zh_male_dongfanghaoran_uranus_bigtts zh_female_wenrouxiaoya_uranus_bigtts
+zh_male_tiancaitongsheng_uranus_bigtts zh_female_wuzetian_uranus_bigtts
+zh_female_gujie_uranus_bigtts zh_male_guanggaojieshuo_uranus_bigtts
+zh_female_shaoergushi_uranus_bigtts
+""".split())
+
 
 def metadata(voice):
     value = voice.get("metadata", voice.get("metadata_json", {}))
@@ -58,8 +113,10 @@ def expression_features(voice):
             if isinstance(item, dict) and isinstance(item.get("Value"), str) and item["Value"].strip():
                 value = str(item["Value"]).strip()
                 native.append({"value": value, "label": str(item.get("Label") or EMOTION_LABELS.get(value, value))})
-        if model == "seed-tts-2.0":
+        if model == "seed-tts-2.0" and voice.get("voice_id") in VOLC_INSTRUCTION_VOICES:
             result["instruction"] = "free"
+        elif model == "seed-tts-2.0":
+            result["instruction_unknown"] = True
         if native:
             result.update(emotion_mode="parameter", emotions=native, emotion_scale=True)
         elif result["instruction"] == "free":
@@ -109,6 +166,8 @@ def resolve_expression(voice, instruction="", emotion="", emotion_scale=4):
     if not 1 <= emotion_scale <= 5:
         raise ValueError("情感强度必须在 1 到 5 之间")
     if instruction and features["instruction"] == "none":
+        if features.get("instruction_unknown"):
+            raise ValueError(f"音色 {voice.get('name') or voice.get('voice_id')} 官方未标注支持表达指令，请选择标注“指令遵循”的音色")
         raise ValueError(f"音色 {voice.get('name') or voice.get('voice_id')} 不支持表达指令")
     emotions = {item["value"]: item["label"] for item in features["emotions"]}
     if emotion and emotion not in emotions:

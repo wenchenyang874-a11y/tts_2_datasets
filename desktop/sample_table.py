@@ -36,8 +36,10 @@ class SampleDelegate(QStyledItemDelegate):
         # checkbox cell. Selection now belongs to the row, not the current cell;
         # never ask Qt to draw or hit-test a second checkbox/focus panel.
         option.state &= ~(QStyle.StateFlag.State_Selected | QStyle.StateFlag.State_HasFocus)
+        table = self.parent()
         checked = index.siblingAtColumn(0).data(Qt.ItemDataRole.CheckStateRole)
-        if checked == Qt.CheckState.Checked.value:
+        selected = checked == Qt.CheckState.Checked.value if table.multi_select else index.row() == table.currentRow()
+        if selected:
             option.state |= QStyle.StateFlag.State_Selected
 
     def paint(self, painter, option, index):
@@ -51,19 +53,22 @@ class SampleDelegate(QStyledItemDelegate):
         painter.setClipRect(styled.rect)
         painter.setRenderHint(painter.RenderHint.Antialiasing)
         painter.fillRect(styled.rect, QColor("#eeedff" if checked else "white"))
-        indicator = self.checkbox_rect(styled.rect)
-        painter.setPen(QPen(QColor("#6563df" if checked else "#bac3d2"), 1))
-        painter.setBrush(QColor("#6563df" if checked else "white"))
-        painter.drawRoundedRect(indicator, 3, 3)
-        if checked:
-            painter.setPen(QPen(QColor("white"), 1.7))
-            painter.drawLine(indicator.left() + 3, indicator.top() + 8, indicator.left() + 7, indicator.top() + 12)
-            painter.drawLine(indicator.left() + 7, indicator.top() + 12, indicator.left() + 13, indicator.top() + 4)
+        multi = self.parent().multi_select
+        if multi:
+            indicator = self.checkbox_rect(styled.rect)
+            painter.setPen(QPen(QColor("#6563df" if checked else "#bac3d2"), 1))
+            painter.setBrush(QColor("#6563df" if checked else "white"))
+            painter.drawRoundedRect(indicator, 3, 3)
+            if checked:
+                painter.setPen(QPen(QColor("white"), 1.7))
+                painter.drawLine(indicator.left() + 3, indicator.top() + 8, indicator.left() + 7, indicator.top() + 12)
+                painter.drawLine(indicator.left() + 7, indicator.top() + 12, indicator.left() + 13, indicator.top() + 4)
         # The same layout/width is used for row height and drawing, including
         # checked/focused states. Plain text cannot turn sample content into HTML.
-        layout, height = self.text_layout(styled.text, styled.font, styled.rect.width() - 50)
+        inset = 38 if multi else 12
+        layout, height = self.text_layout(styled.text, styled.font, styled.rect.width() - inset - 12)
         painter.setPen(QColor("#383691" if checked else "#26334a"))
-        layout.draw(painter, QPointF(styled.rect.left() + 38, styled.rect.top() + (styled.rect.height() - height) / 2))
+        layout.draw(painter, QPointF(styled.rect.left() + inset, styled.rect.top() + (styled.rect.height() - height) / 2))
         painter.restore()
 
     def sizeHint(self, option, index):
@@ -72,7 +77,7 @@ class SampleDelegate(QStyledItemDelegate):
         styled = QStyleOptionViewItem(option)
         self.initStyleOption(styled, index)
         width = self.parent().columnWidth(0)
-        _, height = self.text_layout(styled.text, styled.font, width - 50)
+        _, height = self.text_layout(styled.text, styled.font, width - (50 if self.parent().multi_select else 24))
         return QSize(width, max(44, int(height + 16)))
 
     def editorEvent(self, event, model, option, index):
@@ -81,13 +86,14 @@ class SampleDelegate(QStyledItemDelegate):
 
 class SampleTable(QTableWidget):
     def __init__(self):
-        super().__init__(0, 6)
-        self.setHorizontalHeaderLabels(["文本", "来源 / 音色", "类型", "审核", "时长", "划分"])
+        super().__init__(0, 7)
+        self.multi_select = False
+        self.setHorizontalHeaderLabels(["文本", "来源 / 音色", "类型", "审核", "时长", "划分", "播放"])
         self.setItemDelegate(SampleDelegate(self))
         self.verticalHeader().hide()
         self.verticalHeader().setMinimumSectionSize(44)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        for column, width in ((2, 60), (3, 80), (4, 70), (5, 80)):
+        for column, width in ((2, 60), (3, 80), (4, 70), (5, 80), (6, 64)):
             self.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
             self.setColumnWidth(column, width)
         self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -97,6 +103,22 @@ class SampleTable(QTableWidget):
         self.pressed_identifier = None
         self.horizontalHeader().sectionResized.connect(lambda *args: self.resizeRowsToContents())
         self.model().dataChanged.connect(self.refresh_checked_rows)
+        self.currentCellChanged.connect(self.refresh_current_rows)
+
+    def set_multi_select(self, enabled):
+        self.multi_select = bool(enabled)
+        self.pressed_identifier = None
+        self.resizeRowsToContents()
+        self.viewport().update()
+
+    def refresh_current_rows(self, row, column, previous_row, previous_column):
+        if not self.multi_select:
+            # Single selection derives every cell from the current row. Qt's
+            # NoSelection mode otherwise invalidates only the current cell;
+            # repaint both full rows immediately when focus moves or is cleared.
+            for index in {row, previous_row}:
+                if index >= 0:
+                    self.viewport().update(QRect(0, self.rowViewportPosition(index), self.viewport().width(), self.rowHeight(index)))
 
     def refresh_checked_rows(self, top_left, bottom_right, roles):
         if top_left.column() != 0 or (roles and Qt.ItemDataRole.CheckStateRole not in roles):
@@ -136,7 +158,7 @@ class SampleTable(QTableWidget):
             item = self.item(index.row(), 0)
             # Compare stable IDs, not a cached row/item pointer: a background
             # refresh may replace/reorder rows between the press and release.
-            if item.data(Qt.ItemDataRole.UserRole) == identifier:
+            if self.multi_select and item.data(Qt.ItemDataRole.UserRole) == identifier:
                 item.setCheckState(Qt.CheckState.Unchecked if item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked)
         event.accept()
 
@@ -150,12 +172,13 @@ class SampleTable(QTableWidget):
             self.setCurrentCell(index.row(), 0)
             # The first click already toggled. Double-click selects the sample
             # for playback and must not undo that choice on its second release.
-            self.item(index.row(), 0).setCheckState(Qt.CheckState.Checked)
+            if self.multi_select:
+                self.item(index.row(), 0).setCheckState(Qt.CheckState.Checked)
             self.cellDoubleClicked.emit(index.row(), index.column())
         event.accept()
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Space and self.currentRow() >= 0:
+        if event.key() == Qt.Key.Key_Space and self.multi_select and self.currentRow() >= 0:
             item = self.item(self.currentRow(), 0)
             item.setCheckState(Qt.CheckState.Unchecked if item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked)
             event.accept()

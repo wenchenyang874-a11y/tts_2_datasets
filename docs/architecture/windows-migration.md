@@ -1,5 +1,17 @@
 # Windows 迁移架构与当前实现
 
+## beta.6 交互与刷新契约
+
+`desktop/form_wheel.py` 的 FormWheelGuard 由窗口持有，在应用级过滤该窗口及其弹窗拥有的表单控件事件，覆盖数字框内的 line edit、编辑器 viewport 和即时切换后的新页面。控件即使聚焦也不处理滚轮；传统滚轮复制事件到外层 QScrollArea，像素型触控板直接应用原方向位移。没有外层页面的弹窗只保持值不变。下拉框展开后的列表仍可浏览；只读日志内部滚动不受影响。只设置焦点策略会漏掉已经聚焦的控件，单纯吞事件会制造无法滚动的区域。
+
+SampleTable 默认以 currentRow 标识唯一当前行，各列依当前行同步着色；多选模式才依据首列 CheckStateRole 绘制框与整行背景。进入／退出模式重排行高，退出清空跨页批量集合；逐行播放按钮为真正的 40×34 QPushButton，可键盘聚焦，不改变样本选择。右键菜单及异步操作捕获稳定样本 ID，刷新重排不会误操作其他音频。审核子菜单明确父对象并保留 Python 包装，避免 PySide 6.8.3 中原生创建子菜单的生命周期问题。
+
+单条导出使用 QFileDialog 的目录选择和业务进程的 samples copy 操作，直接复制 WAV；不走 datasets export API，不生成 ZIP／JSONL。同名目标使用新文件名，保留旧文件。现有训练集导出和音频契约不变。
+
+任务树刷新期间暂停选中信号，按 ID 恢复当前任务；技术详情内容相同时不调用 setPlainText，内容变化时恢复滚动条和有边界的 cursor／anchor。切换到其他任务才重置阅读位置，避免周期轮询先清空选择再把文档重置到顶部。
+
+费用常驻勾选框移除；预检通过且用户确认本次云批次后才给该不可变请求快照设置 cost_acknowledged。豆包指令名单来自 [官方音色表](https://docs.volcengine.com/docs/DoubaoVoice/Tonelist-1)，仅明确标注“指令遵循”的 93 款 2.0 音色进入自由指令分类，不根据模型名／ID 后缀猜测。原 API additions.context_texts 结构保持 [官方 HTTP 说明](https://docs.volcengine.com/docs/DoubaoVoice/unidirectional-streaming-text-to-speech-http?lang=zh) 要求，原始设置与实际供应商参数继续写入样本元数据；接口成功不等于模型风格效果已验收。
+
 ## 已查证的 Web 基线
 
 基线提交：`fcbcbb22f84797dfe9b17b81da0c9eea444fe38d`，提交说明 `feat: release interactive sample review v1.2.3`。该说明是原提交信息，不代表本轮发布了版本。

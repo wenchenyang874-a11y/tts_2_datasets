@@ -105,7 +105,7 @@ class GeneratePage(Page):
         expression_row.addWidget(field("情感", self.emotion, "只列出已选音色共同支持的情感；豆包多情感音色使用官方参数，其余支持指令的音色使用自然语言控制。"), 1)
         self.scale_field = field("强度", self.emotion_scale, "仅用于音色支持的豆包情感参数，范围 1–5；不是所有音色都支持。")
         expression_row.addWidget(self.scale_field, 0)
-        expression_row.addWidget(field("表达指令", self.instruction, "豆包 2.0 与小米可填写自然语言要求。阿里云部分系统音色须用固定格式，如：你说话的情感是happy。选择多个音色时，指令须被全部已选音色支持。"), 3)
+        expression_row.addWidget(field("表达指令", self.instruction, "豆包 2.0 仅官方标注“指令遵循”的音色支持，填写自然语言即可，例如：用 ASMR 的语气撩我，无需加 # 或 [#]。小米支持自然语言要求。阿里云部分系统音色须用固定格式，如：你说话的情感是happy。多音色指令须被全部已选音色支持。"), 3)
         expression.body.addLayout(expression_row)
         self.expression_panel = expression
         self.layout.addWidget(expression)
@@ -141,8 +141,6 @@ class GeneratePage(Page):
         randoms.body.addLayout(audio_row)
         parameters.body.addWidget(randoms)
         self.layout.addWidget(parameters)
-        self.billing = QCheckBox("我已了解云合成费用由当前账号承担")
-        self.layout.addWidget(self.billing)
         issue = QHBoxLayout()
         self.problem = QLabel()
         self.problem.setWordWrap(True)
@@ -250,7 +248,6 @@ class GeneratePage(Page):
             if not supported:
                 control.setValue(default)
                 self.random_fields[name][0].setChecked(False)
-        self.billing.setVisible(provider != "mock")
         self.update_expression()
 
     def update_expression(self):
@@ -327,6 +324,8 @@ class GeneratePage(Page):
             language = "中/外语" if len(groups) == 2 else "中文" if "chinese" in groups else "外语" if "foreign" in groups else "语言未知"
             features = row["expression_features"]
             instruction = {"free": "指令", "fixed": "固定指令", "none": "无指令"}[features["instruction"]]
+            if features.get("instruction_unknown"):
+                instruction = "未标注指令"
             traits = instruction + ("/情感" if features["emotions"] else "")
             item = QListWidgetItem(row['name'])
             age = dict((value, label) for label, value in AGES).get(row.get("age_group"), "")
@@ -355,7 +354,7 @@ class GeneratePage(Page):
                   "concurrency": self.concurrency.value(), "speed": self.speed.value(),
                   "pitch": self.pitch.value(), "volume": self.volume.value(), "seed": self.seed.value(),
                   "instruction": self.instruction.text(), "emotion": self.emotion.currentData() or "",
-                  "emotion_scale": self.emotion_scale.value(), "cost_acknowledged": self.billing.isChecked()}
+                  "emotion_scale": self.emotion_scale.value(), "cost_acknowledged": False}
         for name, (enable, start, end) in self.random_fields.items():
             result.update({"random_" + name: enable.isChecked(), name + "_min": start.value(), name + "_max": end.value()})
         service = self.provider.currentData()
@@ -392,9 +391,6 @@ class GeneratePage(Page):
             QMessageBox.warning(self, "请调整音色或表达设置", message)
             return
         cloud = self.provider.currentData() != "mock"
-        if cloud and not self.billing.isChecked():
-            self.creation_failed("请确认云合成费用")
-            return
         try:
             payload = self.payload()
         except (ValueError, KeyError):
@@ -418,6 +414,10 @@ class GeneratePage(Page):
             self.submitting = False
             self.start_button.setEnabled(True)
             return
+        # The redundant page checkbox is gone. Acknowledgement belongs to this
+        # exact preflighted batch, and is set only after its cloud confirmation;
+        # cancellation never submits a task or silently authorizes a later one.
+        payload["cost_acknowledged"] = cloud
         # Snapshot the form before preflight. Editing while a response is in
         # flight must not silently change the billable batch being confirmed.
         self.request("/api/tasks/generate-batch", "POST", json=payload, callback=self.created, error=self.creation_failed)

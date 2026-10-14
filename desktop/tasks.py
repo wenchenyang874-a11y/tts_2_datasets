@@ -13,6 +13,7 @@ class TasksPage(Page):
     def __init__(self, shell):
         super().__init__(shell, "任务中心")
         self.loading = False
+        self.detail_identifier = None
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["任务", "状态", "进度", "耗时", "预估费用", "结果 / 失败原因"])
         self.tree.setColumnWidth(0, 190)
@@ -57,6 +58,10 @@ class TasksPage(Page):
         identifier = current.data(0, Qt.ItemDataRole.UserRole)["id"] if current else None
         expanded = {self.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)["id"]
                     for i in range(self.tree.topLevelItemCount()) if self.tree.topLevelItem(i).isExpanded()}
+        scroll = self.tree.verticalScrollBar().value()
+        # Clearing/reselecting emits transient "no task" signals. Suppress them
+        # while rebuilding so a poll cannot clear the technical document first.
+        self.tree.blockSignals(True)
         self.tree.clear()
         for row in rows:
             parent = self.item(row)
@@ -70,6 +75,8 @@ class TasksPage(Page):
                 if child["id"] == identifier:
                     self.tree.setCurrentItem(item)
 
+        self.tree.blockSignals(False)
+        self.tree.verticalScrollBar().setValue(scroll)
         self.details()
 
     def failure_reason(self, row):
@@ -116,10 +123,33 @@ class TasksPage(Page):
             # the card layout squeezes the second line behind the disclosure.
             self.detail.setMinimumHeight(max(54, self.detail.heightForWidth(max(260, self.detail.width()))))
             self.detail.setStyleSheet("color:#b54050;" if row["status"] in {"failed", "partial"} else "")
-            self.raw_detail.setPlainText(json.dumps(row, ensure_ascii=False, indent=2))
+            self.update_technical_detail(row)
         else:
             self.detail.setText("选择一个任务查看结果")
+            self.detail_identifier = None
             self.raw_detail.clear()
+
+    def update_technical_detail(self, row):
+        text = json.dumps(row, ensure_ascii=False, indent=2)
+        same_task = self.detail_identifier == row["id"]
+        if same_task and text == self.raw_detail.toPlainText():
+            return  # setPlainText resets scroll/cursor even for identical text.
+        cursor = self.raw_detail.textCursor()
+        position, anchor = cursor.position(), cursor.anchor()
+        vertical = self.raw_detail.verticalScrollBar().value()
+        horizontal = self.raw_detail.horizontalScrollBar().value()
+        self.raw_detail.setPlainText(text)
+        self.detail_identifier = row["id"]
+        if same_task:
+            # Running-task JSON changes on each poll; keep the reader's position
+            # and selection too, bounded to the shortened document if necessary.
+            limit = self.raw_detail.document().characterCount() - 1
+            cursor = self.raw_detail.textCursor()
+            cursor.setPosition(min(anchor, limit))
+            cursor.setPosition(min(position, limit), cursor.MoveMode.KeepAnchor)
+            self.raw_detail.setTextCursor(cursor)
+            self.raw_detail.verticalScrollBar().setValue(vertical)
+            self.raw_detail.horizontalScrollBar().setValue(horizontal)
 
     def retry(self):
         row = self.selected_row()

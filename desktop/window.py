@@ -23,6 +23,8 @@ from .settings import SettingsPage
 class MainWindow(QMainWindow):
     def __init__(self, runtime, preferences=None, session=None):
         super().__init__()
+        from .form_wheel import FormWheelGuard
+        self.form_wheel_guard = FormWheelGuard(self)
         self.runtime = runtime
         self.preferences = preferences
         from .session import DirectorySession, acquire_directory_lock
@@ -35,6 +37,7 @@ class MainWindow(QMainWindow):
         self.ready = False
         self.closing = False
         self.playback_epoch = 0
+        self.playback_resource = None
         self.cache = tempfile.TemporaryDirectory(prefix="tts-desktop-media-")
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="desktop-commands")
         # Serialize UI-originated commands. Core generation still uses its real
@@ -254,11 +257,12 @@ class MainWindow(QMainWindow):
         self.playback_epoch += 1
         page, epoch, playback_epoch = self.stack.currentIndex(), self.epoch, self.playback_epoch
         self.submit(lambda: self.runtime.call(op="copy", kind=kind, id=identifier, destination=str(path)),
-                    lambda result: self.play_file(Path(result), label) if page == self.stack.currentIndex() and epoch == self.epoch and playback_epoch == self.playback_epoch else None)
+                    lambda result: self.play_file(Path(result), label, (kind, identifier)) if page == self.stack.currentIndex() and epoch == self.epoch and playback_epoch == self.playback_epoch else None)
 
-    def play_file(self, path, label="录音"):
+    def play_file(self, path, label="录音", resource=None):
         self.player.stop()
         self.player.setSource(QUrl.fromLocalFile(str(path)))
+        self.playback_resource = resource
         self.player.play()
         page = self.pages[self.stack.currentIndex()]
         if hasattr(page, "playback_label"):
@@ -273,9 +277,13 @@ class MainWindow(QMainWindow):
 
     def update_playback_controls(self, *args):
         active = self.player.playbackState() != QMediaPlayer.PlaybackState.StoppedState
+        if not active:
+            self.playback_resource = None
         for index, page in enumerate(self.pages):
             if hasattr(page, "playback_controls"):
                 page.playback_controls.setVisible(active and index == self.stack.currentIndex())
+            if hasattr(page, "update_row_playback"):
+                page.update_row_playback()
 
     def closeEvent(self, event):
         if self.switching:

@@ -20,12 +20,27 @@ def test_language_classification_uses_declared_languages(languages, expected):
 
 
 def test_doubao2_instruction_emotion_preset_does_not_invent_native_parameters():
-    voice = {"provider": "volcengine", "model": "seed-tts-2.0"}
+    voice = {"provider": "volcengine", "model": "seed-tts-2.0", "voice_id": "zh_female_vv_uranus_bigtts"}
     features = expression_features(voice)
     assert features["instruction"] == "free" and not features["emotion_scale"]
     result = resolve_expression(voice, "慢一些，强调开灯", "happy")
     assert result["instruction"] == "请用开心的语气朗读。\n慢一些，强调开灯"
     assert not result["emotion"]
+
+
+@pytest.mark.parametrize("identifier,supported", [
+    ("zh_female_jiaochuannv_uranus_bigtts", True),
+    ("ICL_uranus_zh_female_aojiaonvyou_tob", False),
+    ("unlisted_voice_uranus_bigtts", False),
+])
+def test_doubao_instruction_requires_explicit_official_voice_declaration(identifier, supported):
+    voice = {"provider": "volcengine", "model": "seed-tts-2.0", "voice_id": identifier}
+    assert (expression_features(voice)["instruction"] == "free") == supported
+    if supported:
+        assert resolve_expression(voice, "用 ASMR 的语气撩我")["instruction"] == "用 ASMR 的语气撩我"
+    else:
+        with pytest.raises(ValueError, match="官方未标注支持表达指令"):
+            resolve_expression(voice, "用 ASMR 的语气撩我")
 
 
 def test_doubao_native_emotions_require_voice_metadata_and_support_both_models(monkeypatch):
