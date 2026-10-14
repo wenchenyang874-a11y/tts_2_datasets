@@ -189,6 +189,72 @@ def sample(identifier):
     return {"id": identifier, "text": identifier, "provider": "mock", "voice_name": "Mock", "quality_status": "accepted", "duration": 2.0}
 
 
+def test_sample_click_analysis_ignores_late_result_error_and_clears_missing_row(application, monkeypatch):
+    shell = Shell()
+    page = SamplesPage(shell)
+    requests = []
+    monkeypatch.setattr(page, "request", lambda path, **options: requests.append((path, options)))
+    page.show_rows({"items": [sample("one"), sample("two")], "page": 1, "total": 2})
+    page.show()
+    application.processEvents()
+    def click(row):
+        QTest.mouseClick(page.grid.viewport(), Qt.MouseButton.LeftButton,
+                         pos=page.grid.visualItemRect(page.grid.item(row, 0)).center())
+    def result(duration):
+        return {"info": {"duration": duration}, "waveform": [0.1, 0.2],
+                "spectrum": {"frequency": [0, 8000], "magnitude_db": [-60, -20]},
+                "metrics": {"peak": 0.2}}
+    try:
+        click(0)
+        assert requests[-1][0] == "/api/samples/one/analysis"
+        first = requests[-1][1]
+        click(1)
+        second = requests[-1][1]
+        assert requests[-1][0] == "/api/samples/two/analysis"
+        assert not page.waveform.values and not shell.selected_samples
+        second["callback"](result(3))
+        first["callback"](result(2))
+        first["error"](RuntimeError("old failure"))
+        assert page.waveform.x_values[-1] == 3 and not shell.status
+        count = len(requests)
+        page.show_rows({"items": [sample("two"), sample("one")], "page": 1, "total": 2})
+        assert page.grid.currentRow() == 0 and len(requests) == count
+        page.multi_button.setChecked(True)
+        page.toggle_multi()
+        click(1)
+        assert "one" in shell.selected_samples and requests[-1][0] == "/api/samples/one/analysis"
+        first["callback"](result(9))  # A→B→A must reject the FIRST A, too.
+        assert not page.waveform.values and page.analysis_loaded_identifier is None
+        requests[-1][1]["error"](RuntimeError("current failure"))
+        assert not page.waveform.values and "失败" in page.metrics.text()
+        page.analyze_current()
+        pending = requests[-1][1]
+        page.show_rows({"items": [], "page": 1, "total": 0})
+        pending["callback"](result(2))
+        assert not page.waveform.values and not page.spectrum.values and not page.metrics.text()
+    finally:
+        page.close()
+        shell.close()
+
+
+def test_combo_popup_has_transparent_corners_without_square_native_shadow(application):
+    control = combo([("全部语言", ""), ("中文", "zh")])
+    control.setStyleSheet(STYLE)
+    control.resize(140, 38)
+    control.show()
+    control.showPopup()
+    application.processEvents()
+    try:
+        popup = control.view().window()
+        image = popup.grab().toImage()
+        assert image.pixelColor(image.width()-1, image.height()-1).alpha() == 0
+        assert image.pixelColor(image.width()//2, image.height()//2).alpha() == 255
+        assert image.pixelColor(image.width()//2, image.height()-3).alpha() == 255
+        assert popup.windowFlags() & Qt.WindowType.NoDropShadowWindowHint
+    finally:
+        control.close()
+
+
 def test_play_button_remains_fully_visible_after_styled_row_resize(application):
     shell = Shell()
     page = SamplesPage(shell)

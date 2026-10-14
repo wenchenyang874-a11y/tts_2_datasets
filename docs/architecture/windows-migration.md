@@ -2,6 +2,10 @@
 
 ## beta.7 创作与独立样本契约
 
+样本当前行通过 `currentCellChanged` 自动请求现有后台 analysis 接口。`show_rows` 阻塞重建信号后按稳定 ID 对齐状态，同一个音频刷新不重复计算；更换或移除 ID 时立即清空旧图，递增 generation，同时校验 generation 和当前 ID 才应用结果／错误，防止 A→B→A 的旧结果和已删除样本更新图表。显式“音频分析”／右键分析可重试当前音频；多选勾选集合与当前行分析独立，不播放或更改审核。
+
+下拉圆角的 QSS 绘制不等于原生 HWND／系统阴影圆角。`ComboPopup` 在创建窗口前设置 WA_TranslucentBackground／NoDropShadowWindowHint，并用抗锯齿 paintEvent 绘制完整白色圆角卡片与浅色边框。仅加透明属性会关闭 QFrame 背景填充并使布局边沿透字，必须检查角 alpha=0 与卡片边沿 alpha=255；不使用整数 mask，避免分数 DPI 锯齿。透明像素 render 检查位于原生连续帧采集之后，不能通过强制重画掩盖首次呈现问题。
+
 beta.7 同版本控件修复：文本编辑器聚焦后点击参数／音频页签，QTabWidget 以 OtherFocusReason 把焦点转到首个 HelpButton；旧实现对所有 focusIn 都显示帮助，鼠标未进入该按钮所以没有 Leave，造成常驻。HelpButton 仅允许 Tab／Backtab／Shortcut 焦点直接显示，其余依 Enter／Hover 与离开关闭；Hide／WindowDeactivate 清掉悬停标记。不能以项目输入框聚焦的切页测试替代此触发条件。
 
 原筛选框宽 119px，四个汉字实际需 56px，而样式的 30px padding-right 与 28px drop-down 重复预留，SC_ComboBoxEditField 只有 52px；改为普通 7px padding 后有 75px。GeneratePage 按真实样式和最长选项测量最小宽度，再决定四列或两列；不能只检查整个控件没有越出页面。

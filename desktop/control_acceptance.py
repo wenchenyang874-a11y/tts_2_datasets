@@ -55,6 +55,8 @@ def verify_controls(application, window, destination, idle):
                         assert states[0][1] == [popup.x(), popup.y(), popup.width(), popup.height()]
                         assert control.currentText() == text and control.currentIndex() == selected
                         assert popup.width() == control.width()
+                        assert popup.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+                        assert popup.windowFlags() & Qt.WindowType.NoDropShadowWindowHint
                         # Capture presented frames at the same scale as the user's
                         # GIF, not QWidget.grab() which would force a repaint and
                         # hide a transient private-container animation defect.
@@ -64,6 +66,10 @@ def verify_controls(application, window, destination, idle):
                                 window.screen().grabWindow(0, window.x(), window.y(), window.width(), window.height()).save(
                                     str(destination / f"popup-{len(evidence)}-frame-{frame}.png"))
                                 time.sleep(.04)
+                        # Pixel-alpha verification forces a render, so run it
+                        # only AFTER the presented first-frame evidence above.
+                        rendered = popup.grab().toImage()
+                        assert rendered.pixelColor(rendered.width()-1, rendered.height()-1).alpha() == 0
                         evidence.append({'page': page_index, 'tab': tab, 'text': text,
                                          'repeat': repeat, 'shows': 1, 'visible_reparent': False,
                                          'first_show_geometry': list(states[0][1]), 'selection_unchanged': True})

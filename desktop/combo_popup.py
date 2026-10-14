@@ -1,15 +1,33 @@
 """Native model-backed combo popups placed before their first visible frame."""
-from PySide6.QtCore import Qt, QPoint, QRect, QEvent
+from PySide6.QtCore import Qt, QPoint, QRect, QRectF, QEvent
+from PySide6.QtGui import QPainter, QColor, QPen
 from PySide6.QtWidgets import (QComboBox, QFrame, QVBoxLayout, QListView,
                                QStyledItemDelegate, QSizePolicy, QStyleOptionComboBox, QStyle, QApplication)
 
 
 class ComboPopup(QFrame):
     def __init__(self, owner):
-        super().__init__(owner, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        super().__init__(owner, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
+                         | Qt.WindowType.NoDropShadowWindowHint)
+        # A QSS radius rounds only the painted frame, not the native opaque
+        # HWND or its rectangular system shadow. That left a white square and
+        # dark corner outside the bottom-right radius. Use actual per-pixel
+        # transparency before the native window is created, and suppress the
+        # square OS shadow. The shared border supplies a clean popup boundary;
+        # do not clip using an integer mask (jagged corners at fractional DPI).
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.owner = owner
         self.setObjectName('comboPopup')
-        self.setStyleSheet('QFrame#comboPopup {background:white; border:1px solid #dce2ee; border-radius:8px;}')
+
+    def paintEvent(self, event):
+        # WA_TranslucentBackground also disables the normal QFrame/QSS fill.
+        # Explicitly draw the opaque card and border; relying on that fill left
+        # the layout rim transparent, allowing underlying text to show through.
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor('#dce2ee'), 1))
+        painter.setBrush(QColor('white'))
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 8, 8)
 
     def mousePressEvent(self, event):
         # Qt replays an outside click after dismissing a popup. A click on a

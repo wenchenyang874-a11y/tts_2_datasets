@@ -24,6 +24,9 @@ class SamplesPage(Page):
         self.rows = []
         self.play_buttons = {}
         self.deleted_ids = []
+        self.analysis_identifier = None
+        self.analysis_loaded_identifier = None
+        self.analysis_generation = 0
         self.search = QLineEdit()
         self.search.setPlaceholderText("搜索文本、音色或说话人")
         self.quality = combo([("全部审核", ""), ("未审核", "pending"), ("已通过", "accepted"), ("已拒绝", "rejected")])
@@ -96,6 +99,7 @@ class SamplesPage(Page):
         charts.addWidget(self.waveform)
         charts.addWidget(self.spectrum)
         self.layout.addLayout(charts)
+        self.grid.currentCellChanged.connect(lambda *args: self.analyze_selection())
 
     def filters(self):
         return {"search": self.search.text(), "provider": self.provider.currentData(),
@@ -178,6 +182,10 @@ class SamplesPage(Page):
         self.update_row_playback()
         self.page_number.setValue(result["page"])
         self.update_selection_summary()
+        # Rebuilding rows blocks currentCellChanged and can retain the same
+        # numeric row for a different ID. Reconcile only after the model is
+        # complete; an unchanged sample keeps its chart without extra I/O.
+        self.analyze_selection()
 
     def update_selection_summary(self):
         text = f"共 {self.total} 条 · 第 {self.page} 页"
@@ -208,7 +216,7 @@ class SamplesPage(Page):
         menu = QMenu(self)
         menu.setMinimumWidth(174)
         menu.addAction(QIcon(str(Path(__file__).resolve().parent / "assets/play.svg")), "播放", lambda: self.play_sample(identifier))
-        menu.addAction("频谱分析", lambda: self.request(f"/api/samples/{identifier}/analysis", callback=self.show_analysis))
+        menu.addAction("频谱分析", lambda: self.analyze_sample(identifier, force=True))
         review = QMenu("审核", menu)
         # Give the submenu an explicit parent and retain both wrappers. The
         # native-created addMenu(title) path did not survive the returned menu's
@@ -304,7 +312,46 @@ class SamplesPage(Page):
 
     def analyze(self, index):
         if 0 <= index < len(self.rows):
-            self.request(f"/api/samples/{self.rows[index]['id']}/analysis", callback=self.show_analysis)
+            self.analyze_sample(self.rows[index]['id'], force=True)
+
+    def analyze_selection(self):
+        row = self.current()
+        self.analyze_sample(row['id'] if row else None)
+
+    def analyze_sample(self, identifier, force=False):
+        if identifier == self.analysis_identifier and not force:
+            return
+        self.analysis_identifier = identifier
+        self.analysis_loaded_identifier = None
+        self.analysis_generation += 1
+        generation = self.analysis_generation
+        # Analysis stays on the existing background service, never the GUI
+        # thread. Clear the previous chart immediately: a newly selected row
+        # must not appear to own the previous audio's waveform/FFT. Requests
+        # may finish out of order when clicking quickly; both result and error
+        # are guarded by a generation AND stable sample ID, including A→B→A.
+        # Pagination, filtering and deletion also invalidate a removed target.
+        self.waveform.set_values([], [])
+        self.spectrum.set_values([], [])
+        self.metrics.setText("正在分析…" if identifier is not None else "")
+        if identifier is None:
+            return
+
+        def is_current():
+            row = self.current()
+            return generation == self.analysis_generation and row is not None and row['id'] == identifier
+
+        def completed(result):
+            if is_current():
+                self.show_analysis(result)
+                self.analysis_loaded_identifier = identifier
+
+        def failed(error):
+            if is_current():
+                self.metrics.setText("音频分析失败")
+                self.shell.set_status(str(error), True)
+
+        self.request(f"/api/samples/{identifier}/analysis", callback=completed, error=failed)
 
     def show_analysis(self, result):
         duration = result["info"]["duration"]

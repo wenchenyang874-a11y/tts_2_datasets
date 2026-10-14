@@ -511,6 +511,23 @@ def run_smoke(application, destination: Path) -> int:
             QTest.mouseClick(library.grid.viewport(), Qt.MouseButton.LeftButton,
                              pos=library.grid.visualItemRect(library.grid.item(row, 0)).center())
             assert library.grid.currentRow() == row and not library.selected
+            idle(window)
+            identifier = library.rows[row]['id']
+            expected = runtime.call(f"/api/samples/{identifier}/analysis")
+            assert library.analysis_loaded_identifier == identifier
+            assert library.waveform.values == expected['waveform']
+            assert library.spectrum.values == expected['spectrum']['magnitude_db']
+        for row in (0, 1, 0):
+            QTest.mouseClick(library.grid.viewport(), Qt.MouseButton.LeftButton,
+                             pos=library.grid.visualItemRect(library.grid.item(row, 0)).center())
+        idle(window)
+        assert library.analysis_loaded_identifier == library.rows[0]['id']
+        window.stack.currentWidget().ensureWidgetVisible(library.spectrum)
+        application.processEvents()
+        window.screen().grabWindow(window.winId()).save(str(destination / "sample-auto-analysis.png"))
+        window.stack.currentWidget().ensureWidgetVisible(library.grid)
+        application.processEvents()
+        check("sample-single-click-auto-waveform-spectrum-latest-selection-wins")
         window.grab().save(str(destination / "sample-single-selection.png"))
         check("sample-default-single-current-row-no-hidden-checkbox-selections")
         action(library, "多选")
