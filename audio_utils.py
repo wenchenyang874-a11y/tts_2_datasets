@@ -157,15 +157,35 @@ def mix_noise(
 
 
 def waveform_points(path: str | Path, max_points: int = 1000) -> list[float]:
-    audio, _ = _read_pcm16(Path(path))
-    if not len(audio):
-        return []
-    step = max(1, math.ceil(len(audio) / max_points))
-    usable = len(audio) // step * step
-    if not usable:
-        return audio.tolist()
-    blocks = audio[:usable].reshape(-1, step)
-    return np.max(np.abs(blocks), axis=1).astype(float).tolist()
+    return waveform_series(path, max_points)['values']
+
+
+def waveform_series(path: str | Path, max_points: int = 1000) -> dict[str, list[float]]:
+    """Bounded signed PCM extrema in sample order, with actual time coordinates."""
+    if max_points < 2:
+        raise ValueError("At least two points are required to preserve signed extrema")
+    audio, sample_rate = _read_pcm16(Path(path))
+    if len(audio) <= max_points:
+        indices = np.arange(len(audio))
+    else:
+        # abs/max removed every negative sample; simple stride/mean can miss
+        # short impulses or cancel both peaks. Keep each block's real min/max
+        # in chronological order, including the final partial block. Never
+        # mirror one side or normalize per file: DC offset and asymmetry are
+        # real signal properties. PCM16 retains its fixed -1..1 reference.
+        step = math.ceil(len(audio) / (max_points // 2))
+        indices = []
+        for start in range(0, len(audio), step):
+            block = audio[start:start+step]
+            extremes = {int(np.argmin(block)), int(np.argmax(block))}
+            if len(extremes) == 1:
+                # A flat segment still spans time; preserve its last frame so
+                # silence/DC is a horizontal line rather than a single dot.
+                extremes = {0, len(block)-1}
+            indices.extend(start + index for index in sorted(extremes))
+        indices = np.asarray(indices, dtype=np.int64)
+    return {'values': audio[indices].astype(float).tolist(),
+            'time': (indices / sample_rate).astype(float).tolist()}
 
 
 def spectrum_points(path: str | Path, max_points: int = 512) -> dict[str, list[float]]:

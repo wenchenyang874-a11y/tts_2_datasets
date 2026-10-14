@@ -516,6 +516,8 @@ def run_smoke(application, destination: Path) -> int:
             expected = runtime.call(f"/api/samples/{identifier}/analysis")
             assert library.analysis_loaded_identifier == identifier
             assert library.waveform.values == expected['waveform']
+            assert library.waveform.x_values == expected['waveform_time']
+            assert min(library.waveform.values) < 0 < max(library.waveform.values)
             assert library.spectrum.values == expected['spectrum']['magnitude_db']
         for row in (0, 1, 0):
             QTest.mouseClick(library.grid.viewport(), Qt.MouseButton.LeftButton,
@@ -599,7 +601,7 @@ def run_smoke(application, destination: Path) -> int:
         idle(window)
         assert library.waveform.values and library.spectrum.values
         assert library.waveform.x_values[-1] > 0
-        assert library.waveform.axis_ranges()[1:] == (0.0, 1.0)
+        assert library.waveform.axis_ranges()[1:] == (-1.0, 1.0)
         assert library.spectrum.x_values[-1] > 7000
         window.stack.currentWidget().ensureWidgetVisible(library.spectrum)
         application.processEvents()

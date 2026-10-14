@@ -20,6 +20,7 @@ try:
         probe_wav,
         spectrum_points,
         waveform_points,
+        waveform_series,
     )
 except ModuleNotFoundError:
     # Also support running pytest from the workspace root.
@@ -32,6 +33,7 @@ except ModuleNotFoundError:
         probe_wav,
         spectrum_points,
         waveform_points,
+        waveform_series,
     )
 
 
@@ -80,8 +82,29 @@ def test_waveform_points_are_bounded(tone_wav: Path) -> None:
     points = waveform_points(tone_wav, max_points=400)
 
     assert 2 <= len(points) <= 400
-    assert min(points) >= 0.0
+    assert min(points) == pytest.approx(-0.25, abs=2e-4)
     assert max(points) == pytest.approx(0.25, abs=2e-4)
+
+
+def test_signed_waveform_preserves_tail_impulse_time_and_asymmetric_signal(tmp_path):
+    samples = np.full(103, 0.125)
+    samples[1] = 0.75
+    samples[4] = -0.25
+    samples[-1] = -0.875
+    path = tmp_path / 'signed.wav'
+    _write_wav(path, samples, 16000)
+    result = waveform_series(path, max_points=10)
+    indices = np.rint(np.asarray(result['time'])*16000).astype(int)
+    assert len(indices) <= 10 and np.all(np.diff(indices) > 0)
+    assert result['values'] == samples[indices].tolist()
+    assert max(result['values']) == .75 and min(result['values']) == -.875
+    assert indices[-1] == 102
+    # DC-only signals remain on their true side of zero, not mirrored.
+    _write_wav(path, np.full(103, .125), 16000)
+    assert set(waveform_points(path, max_points=10)) == {.125}
+    _write_wav(path, np.zeros(3), 16000)
+    assert waveform_series(path)['values'] == [0, 0, 0]
+    assert waveform_series(path)['time'] == [0, 1/16000, 2/16000]
 
 
 def test_audio_metrics_report_tone_levels(tone_wav: Path) -> None:

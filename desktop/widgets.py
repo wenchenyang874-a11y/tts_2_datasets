@@ -427,23 +427,26 @@ class Plot(QWidget):
         self.title = title
         self.values = []
         self.x_values = []
+        self.x_extent = None
         self.setMinimumHeight(170)
 
-    def set_values(self, values, x_values):
+    def set_values(self, values, x_values, extent=None):
         if len(values) != len(x_values):
             raise ValueError("Plot coordinates must have matching lengths")
         self.values = list(values)
         self.x_values = list(x_values)
+        self.x_extent = extent
         self.update()
 
     def axis_ranges(self):
-        # waveform_points is a normalized absolute peak envelope, not signed
-        # PCM: show 0..1 without auto-normalizing small peaks to full scale.
+        # Keep the signed PCM16 reference fixed at -1..1 and zero centered.
+        # Actual extrema timestamps may end before the final frame; the full
+        # recording duration sets the time extent, not compressed point count.
         # FFT magnitudes are the API's actual dB values, not dBFS. Use its real
         # frequency coordinates; sample indexes are not frequencies or seconds.
-        x_max = max(self.x_values, default=1.0)
+        x_max = self.x_extent if self.x_extent is not None else max(self.x_values, default=1.0)
         if self.title == "波形":
-            return max(x_max, 0.001), 0.0, 1.0
+            return max(x_max, 0.001), -1.0, 1.0
         low = math.floor(min(self.values, default=-100) / 20) * 20
         high = math.ceil(max(self.values, default=0) / 20) * 20
         return max(1000, math.ceil(x_max / 1000) * 1000), low, max(high, low + 20)
@@ -454,18 +457,18 @@ class Plot(QWidget):
         painter.fillRect(self.rect(), QColor("#ffffff"))
         painter.setPen(QColor("#7a8497"))
         painter.drawText(12, 20, self.title)
-        envelope = self.title == "波形"
+        waveform = self.title == "波形"
         plot = QRectF(48, 38, max(1, self.width()-65), max(1, self.height()-80))
         x_max, low, high = self.axis_ranges()
         font = QFont(painter.font())
         font.setPixelSize(11)
         painter.setFont(font)
-        painter.drawText(QRectF(10, 23, 90, 14), Qt.AlignmentFlag.AlignLeft, "振幅" if envelope else "dB")
+        painter.drawText(QRectF(10, 23, 90, 14), Qt.AlignmentFlag.AlignLeft, "振幅" if waveform else "dB")
         painter.drawText(QRectF(plot.left(), self.height()-18, plot.width(), 14), Qt.AlignmentFlag.AlignRight,
-                         "时间 (s)" if envelope else "频率 (kHz)")
+                         "时间 (s)" if waveform else "频率 (kHz)")
         for fraction in (0.0, 0.5, 1.0):
             y = plot.bottom() - fraction * plot.height()
-            painter.setPen(QPen(QColor("#edf0f6"), 1))
+            painter.setPen(QPen(QColor("#cdd5e3" if waveform and fraction == .5 else "#edf0f6"), 1))
             painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
             painter.setPen(QColor("#7a8497"))
             value = low + fraction * (high-low)
@@ -478,8 +481,8 @@ class Plot(QWidget):
                 painter.setPen(QPen(QColor("#edf0f6"), 1))
                 painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()))
                 painter.setPen(QColor("#7a8497"))
-                value = x_max * fraction / (1 if envelope else 1000)
-                painter.drawText(QRectF(x-22, plot.bottom()+5, 44, 14), Qt.AlignmentFlag.AlignHCenter, f"{value:.2f}" if envelope else f"{value:g}")
+                value = x_max * fraction / (1 if waveform else 1000)
+                painter.drawText(QRectF(x-22, plot.bottom()+5, 44, 14), Qt.AlignmentFlag.AlignHCenter, f"{value:.2f}" if waveform else f"{value:g}")
         painter.setPen(QPen(QColor("#cdd5e3"), 1))
         painter.drawLine(plot.bottomLeft(), plot.bottomRight())
         painter.drawLine(plot.bottomLeft(), plot.topLeft())

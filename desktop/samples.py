@@ -356,7 +356,7 @@ class SamplesPage(Page):
     def show_analysis(self, result):
         duration = result["info"]["duration"]
         waveform = result["waveform"]
-        self.waveform.set_values(waveform, [duration * index / max(1, len(waveform)-1) for index in range(len(waveform))])
+        self.waveform.set_values(waveform, result['waveform_time'], extent=duration)
         self.spectrum.set_values(result["spectrum"]["magnitude_db"], result["spectrum"]["frequency"])
         metrics = result["metrics"]
         labels = {"peak": "峰值", "rms": "RMS", "dc_offset": "直流偏移",

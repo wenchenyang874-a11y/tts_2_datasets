@@ -36,7 +36,7 @@ try:
         probe_wav,
         sha256_file,
         spectrum_points,
-        waveform_points,
+        waveform_series,
     )
     from .db import Database, utc_now
     from .providers import (
@@ -55,7 +55,7 @@ except ImportError:  # Support direct `uvicorn app:app` execution.
     from app_version import VERSION
     from audio_utils import (  # type: ignore
         AudioError, audio_metrics, mix_noise, normalize_wav, probe_wav, sha256_file,
-        spectrum_points, waveform_points,
+        spectrum_points, waveform_series,
     )
     from db import Database, utc_now  # type: ignore
     from providers import (  # type: ignore
@@ -2174,9 +2174,11 @@ def sample_analysis(sample_id: str) -> dict[str, Any]:
     if not row:
         raise HTTPException(404, "样本不存在")
     path = _safe_file(row["file_path"])
+    waveform = waveform_series(path)
     return {
         "info": probe_wav(path), "metrics": audio_metrics(path),
-        "waveform": waveform_points(path), "spectrum": spectrum_points(path),
+        "waveform": waveform['values'], "waveform_time": waveform['time'],
+        "spectrum": spectrum_points(path),
     }
 
 

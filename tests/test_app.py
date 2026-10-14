@@ -620,6 +620,8 @@ def test_mock_generate_analyze_augment_export_and_restore(client: TestClient) ->
     assert analysis.json()["info"]["channels"] == 1
     assert analysis.json()["metrics"]["peak"] > 0
     assert analysis.json()["waveform"]
+    assert len(analysis.json()["waveform"]) == len(analysis.json()["waveform_time"])
+    assert min(analysis.json()["waveform"]) < 0 < max(analysis.json()["waveform"])
     assert analysis.json()["spectrum"]["frequency"]
 
     review = client.patch(

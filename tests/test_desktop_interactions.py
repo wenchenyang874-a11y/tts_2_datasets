@@ -202,6 +202,7 @@ def test_sample_click_analysis_ignores_late_result_error_and_clears_missing_row(
                          pos=page.grid.visualItemRect(page.grid.item(row, 0)).center())
     def result(duration):
         return {"info": {"duration": duration}, "waveform": [0.1, 0.2],
+                "waveform_time": [0, duration],
                 "spectrum": {"frequency": [0, 8000], "magnitude_db": [-60, -20]},
                 "metrics": {"peak": 0.2}}
     try:
@@ -294,11 +295,13 @@ def test_play_button_remains_fully_visible_after_styled_row_resize(application):
 def test_audio_plot_uses_duration_frequency_and_absolute_amplitude(application):
     shell = Shell()
     page = SamplesPage(shell)
-    page.show_analysis({"info": {"duration": 2.0}, "waveform": [0.1, 0.2, 0.0],
+    page.show_analysis({"info": {"duration": 2.0}, "waveform": [-0.1, 0.2, 0.0],
+                        "waveform_time": [0, .8, 1.9],
                         "spectrum": {"frequency": [0, 1000, 8000], "magnitude_db": [-90, -20, -60]},
                         "metrics": {"peak": 0.2}})
-    assert page.waveform.x_values == [0, 1, 2]
-    assert page.waveform.axis_ranges() == (2, 0, 1)
+    assert page.waveform.x_values == [0, .8, 1.9]
+    assert page.waveform.values == [-.1, .2, 0]
+    assert page.waveform.axis_ranges() == (2, -1, 1)
     assert page.spectrum.x_values == [0, 1000, 8000]
     assert page.spectrum.axis_ranges() == (8000, -100, -20)
     # A constant spectrum must have a nonzero plotted range, without division

@@ -32,7 +32,7 @@ SampleTable 默认以 currentRow 标识唯一当前行，各列依当前行同�
 
 播放列 delegate 的 sizeHint 始终保留 54px 行高（34px 按钮 + 样式上下各 8px padding + 4px 间隙）。只依赖初始 cell widget 的 hint 会在 stylesheet polish／resizeRowsToContents 后退到 44px，host 剩 28px，按钮底部被裁切；单纯增大 host hint 或一次性设置行高不能解决重复计算。验收核对 visibleRegion 全矩形及底部 childAt 命中，不能只点击中心。
 
-样本 ActionBar 用原生 QVBoxLayout／QHBoxLayout 按可见按钮宽度排列；普通宽度同一行，窄窗口或多选按钮增加时换行，隐藏按钮不占位。Plot 使用 analysis.info.duration 和 spectrum.frequency 作为横轴；波形 API 返回绝对峰值包络，因此纵轴固定 0–1，而不是有符号 PCM 或自动放大后的假满幅。频谱保留 API 的真实 FFT dB 幅度，不标成 dBFS；常量频谱也保留非零轴范围。
+样本 ActionBar 用原生 QVBoxLayout／QHBoxLayout 按可见按钮宽度排列；普通宽度同一行，窄窗口或多选按钮增加时换行，隐藏按钮不占位。波形纵轴固定 -1–1、0 居中，API 的 waveform 为有符号 PCM16 极值序列，waveform_time 为真实采样位置（秒），info.duration 设置完整时间范围。`waveform_series` 对每段保留按采样顺序排列的 min／max，包括末尾不足一段的数据；常量段保留首末帧，短音频直接显示采样。不取绝对值、不镜像、不按每文件峰值自动归一化，避免丢失短脉冲、直流偏移及真实不对称性。每次最多 1000 点，后台处理；已有 waveform_points 调用返回同一 signed values。频谱保留 spectrum.frequency 和 API 的真实 FFT dB 幅度，不标成 dBFS；常量频谱也保留非零轴范围。
 
 单条导出使用 QFileDialog 的目录选择和业务进程的 samples copy 操作，直接复制 WAV；不走 datasets export API，不生成 ZIP／JSONL。同名目标使用新文件名，保留旧文件。现有训练集导出和音频契约不变。
 
