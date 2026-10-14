@@ -2,6 +2,8 @@
 
 ## 2026-10-14 / beta.7 待验收
 
+同版本共享控件修复：三个回归先在旧实现失败，确认自动 OtherFocusReason 常驻帮助、119px 控件的 52px 文字绘制区裁切 56px 文本，以及下拉单次打开 Show→ParentChange→Show。修复后 227 项离线测试通过；新增真实键盘帮助、可编辑组合框、下拉列表滚动不改值、单次 activated 与重复开合、隐藏页面关闭弹窗回归。用户 GIF 已在仓外根目录逐帧读取（67 帧／6.7 秒），源文件及抽帧不提交。`desktop/control_acceptance.py` 在七页实际宿主记录重复打开时首次几何／Show 数，并采集原生屏幕连续帧，不能只检查停稳后的 grab 图。首轮源码悬停被鼠标打断的失败证据保留于 `artifacts/beta7-controls-source-100-v1/`，新构建及实际验收结果后续记录；下方 91af0a8 为上一包历史证据。
+
 223 项离线回归通过（26.81 秒，1 条既有 Starlette 弃用提示）。新增回归覆盖重复请求确实调用、相同 PCM 独立入库、一次失败不自动重试、重复导入／增强／背景创建；控件回归覆盖跨供应商已选栏、筛选保留选择、独立请求音频配置、共同参数约束以及最小创作区域各页签边界。诊断测试检查 hook 恢复、不可写目录容错及日志不保存异常值／Qt 消息中的用户内容。Python 语法、Web JS 语法与 diff 空白检查通过；offscreen 控件通过不代替实际窗口验收。
 
 beta.6 精确源的两种 100 次原生提交循环均未复现用户崩溃，证据位于 `artifacts/beta6-start-crash-repro/` 和 `artifacts/beta6-cloud-dialog-crash-repro/`，全部使用 Mock。Windows WER 无残存 dump，根因未查明，不作为修复成功结论。

@@ -24,6 +24,8 @@ class FormWheelGuard(QObject):
             return False
         control = watched
         while control and control is not self.window:
+            if control.property('comboPopupView'):
+                return False  # Browse the open list; never wheel-change the combo itself.
             if isinstance(control, (QComboBox, QAbstractSpinBox, QLineEdit)):
                 break
             if isinstance(control, (QPlainTextEdit, QTextEdit)):

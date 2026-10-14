@@ -207,6 +207,9 @@ def run_smoke(application, destination: Path) -> int:
         visible_help.clearFocus()
         pump_until(lambda: not visible_help.popup.isVisible(), 3)
         check("actual-mouse-hover-help-focus-and-leave")
+        from .control_acceptance import verify_controls
+        verify_controls(application, window, destination, idle)
+        check("mouse-tab-switch-silent-help-full-filter-labels-all-pages-single-show-popup-first-frames")
         from PySide6.QtWidgets import QTabWidget
         settings = window.pages[6]
         settings.findChildren(QTabWidget)[0].setCurrentIndex(2)

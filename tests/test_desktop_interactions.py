@@ -366,3 +366,130 @@ def test_composer_minimum_viewport_has_no_page_scroll_and_all_tabs_fit(applicati
         assert all(not page.editor_tabs.widget(other).isVisible() for other in range(4) if other != index)
     page.ensureWidgetVisible(page.instruction)
     assert page.editor_tabs.currentIndex() == 1
+
+
+def test_mouse_tab_switch_does_not_open_help_from_automatic_focus(application):
+    from desktop.widgets import HelpButton
+    shell = Shell()
+    page = GeneratePage(shell)
+    page.setStyleSheet(STYLE)
+    page.resize(1028, 760)
+    page.show()
+    application.processEvents()
+    # Qt restores focus inside the newly shown tab only when the previously
+    # focused editor belongs to the tab being hidden. Starting from the project
+    # field outside QTabWidget missed the actual user's reproduction.
+    page.texts.setFocus(Qt.FocusReason.MouseFocusReason)
+    for index in (2, 3, 0, 2):
+        QTest.mouseClick(page.editor_tabs.tabBar(), Qt.MouseButton.LeftButton,
+                         pos=page.editor_tabs.tabBar().tabRect(index).center())
+        application.processEvents()
+        assert not any(help.popup and help.popup.isVisible() for help in page.findChildren(HelpButton))
+    page.speed.setFocus(Qt.FocusReason.MouseFocusReason)
+    QTest.keyClick(page.speed, Qt.Key.Key_Backtab)
+    QTest.keyClick(application.focusWidget(), Qt.Key.Key_Backtab)
+    application.processEvents()
+    focused = application.focusWidget()
+    assert isinstance(focused, HelpButton) and focused.popup.isVisible()
+    QTest.keyClick(focused, Qt.Key.Key_Tab)
+    application.processEvents()
+    assert not focused.popup.isVisible()
+
+
+def test_composer_filter_labels_fit_the_native_text_rect(application):
+    from PySide6.QtWidgets import QStyleOptionComboBox, QStyle
+    page = GeneratePage(Shell())
+    page.setStyleSheet(STYLE)
+    page.resize(1028, 760)
+    page.show()
+    application.processEvents()
+    for control in page.filter_controls:
+        option = QStyleOptionComboBox()
+        control.initStyleOption(option)
+        rect = control.style().subControlRect(QStyle.ComplexControl.CC_ComboBox, option,
+                                             QStyle.SubControl.SC_ComboBoxEditField, control)
+        assert rect.width() >= control.fontMetrics().horizontalAdvance(control.currentText())+2
+
+
+def test_popup_does_not_reparent_or_show_twice_during_open(application):
+    from PySide6.QtCore import QObject
+    root = QWidget()
+    layout = QVBoxLayout(root)
+    control = combo([(str(i), i) for i in range(20)])
+    layout.addWidget(control)
+    root.setStyleSheet(STYLE)
+    root.resize(300, 100)
+    root.show()
+    application.processEvents()
+    states = []
+    class Tracker(QObject):
+        def eventFilter(self, watched, event):
+            if event.type() in (QEvent.Type.Show, QEvent.Type.ParentChange):
+                states.append(event.type())
+            return False
+    tracker = Tracker(control)
+    popup = control.view().window()
+    popup.installEventFilter(tracker)
+    for index in (0, 10, 19, 0):
+        control.setCurrentIndex(index)
+        states.clear()
+        control.showPopup()
+        application.processEvents()
+        assert states.count(QEvent.Type.Show) == 1 and QEvent.Type.ParentChange not in states
+        assert control.currentIndex() == index
+        QTest.keyClick(control.view(), Qt.Key.Key_Escape)
+        application.processEvents()
+        assert not popup.isVisible()
+
+
+def test_native_popup_mouse_keyboard_editable_model_and_list_scroll(application):
+    root = QWidget()
+    layout = QVBoxLayout(root)
+    first, second = combo([(str(i), i) for i in range(30)]), combo([('A', 'a'), ('B', 'b')])
+    second.setEditable(True)
+    layout.addWidget(first)
+    layout.addWidget(second)
+    root.setStyleSheet(STYLE)
+    root.resize(300, 200)
+    root.show()
+    guard = FormWheelGuard(root)
+    application.processEvents()
+    activations = []
+    first.activated.connect(activations.append)
+    try:
+        first.showPopup()
+        application.processEvents()
+        assert first.view().window().width() == first.width()
+        before = first.view().verticalScrollBar().value()
+        wheel(application, first.view().viewport(), -120)
+        assert first.view().verticalScrollBar().value() > before and first.currentIndex() == 0
+        index = first.model().index(7, 0)
+        first.view().scrollTo(index)
+        application.processEvents()
+        QTest.mouseClick(first.view().viewport(), Qt.MouseButton.LeftButton,
+                         pos=first.view().visualRect(index).center())
+        assert first.currentData() == 7 and activations == [7] and not first.view().window().isVisible()
+        first.showPopup()
+        QTest.keyClick(first.view(), Qt.Key.Key_Down)
+        QTest.keyClick(first.view(), Qt.Key.Key_Return)
+        assert first.currentData() == 8 and activations == [7, 8]
+        first.showPopup()
+        QTest.mouseClick(second, Qt.MouseButton.LeftButton,
+                         pos=QPoint(second.width()-12, second.height()//2))
+        assert not first.view().window().isVisible() and second.view().window().isVisible()
+        QTest.keyClick(second.view(), Qt.Key.Key_Escape)
+        second.setEditText('new speaker')
+        second.showPopup()
+        QTest.keyClick(second.view(), Qt.Key.Key_Escape)
+        assert second.currentText() == 'new speaker'
+        second.addItem('C', 'c')
+        second.showPopup()
+        QTest.keyClick(second.view(), Qt.Key.Key_End)
+        QTest.keyClick(second.view(), Qt.Key.Key_Return)
+        assert second.currentData() == 'c'
+        first.showPopup()
+        root.hide()
+        application.processEvents()
+        assert not first.view().window().isVisible()
+    finally:
+        application.removeEventFilter(guard)

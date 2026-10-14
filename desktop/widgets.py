@@ -7,8 +7,8 @@ from PySide6.QtCore import Qt, QPointF, QEvent, QTimer, QPoint, QRect, QRectF, Q
 from PySide6.QtGui import QPainter, QPen, QColor, QFont
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                                QComboBox, QSpinBox, QDoubleSpinBox, QTableWidget,
-                               QHeaderView, QToolTip, QFrame, QProxyStyle, QStyle,
-                               QStyleFactory, QListView, QListWidget, QAbstractItemView,
+                               QHeaderView, QToolTip, QFrame, QStyle,
+                               QListWidget, QAbstractItemView,
                                QStyledItemDelegate, QSizePolicy)
 
 STYLE = """
@@ -44,7 +44,9 @@ QPushButton#rowPlay:focus { border: 2px solid #8d82ed; }
 QPushButton#help { border: 1px solid #a0a9bd; border-radius: 10px; padding: 0; color: #7a8497; background: transparent; font-size: 12px; }
 QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox { background: white; border: 1px solid #dce2ee; border-radius: 6px; padding: 7px; selection-background-color: #6563df; }
 QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus { border-color: #6563df; }
-QComboBox { padding-right: 30px; }
+/* The 28px drop-down subcontrol already reserves the arrow. Adding another
+   30px right padding left only 52px for a 56px Chinese label in a 119px box. */
+QComboBox { padding-right: 7px; }
 QComboBox:hover { border-color: #a6a4e8; }
 QComboBox::drop-down { border: 0; width: 28px; }
 QComboBox::down-arrow { image: url("__ASSETS__/chevron.svg"); width: 14px; height: 14px; }
@@ -200,8 +202,8 @@ class HelpButton(QPushButton):
         self.hover_timer.setInterval(180)
         self.hover_timer.timeout.connect(self.show_help)
 
-    def show_help(self):
-        if not self.isVisible() or not (self.hovered or self.hasFocus()):
+    def show_help(self, keyboard=False):
+        if not self.isVisible() or not (self.hovered or (keyboard and self.hasFocus())):
             return
         # Do not rely only on QEvent.ToolTip: Windows did not deliver that
         # delayed event consistently, while the old smoke manually injected it
@@ -234,7 +236,14 @@ class HelpButton(QPushButton):
 
     def focusInEvent(self, event):
         super().focusInEvent(event)
-        self.show_help()
+        # QTabWidget automatically moves focus from a hidden editor to the
+        # first focusable child (often this help button), with OtherFocusReason.
+        # That is not a help request: no mouse Leave follows and the old popup
+        # stayed permanently visible. Only explicit keyboard traversal/shortcut
+        # focus may show help without hover; all other focus remains silent.
+        if event.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason,
+                              Qt.FocusReason.ShortcutFocusReason):
+            self.show_help(keyboard=True)
 
     def focusOutEvent(self, event):
         super().focusOutEvent(event)
@@ -250,6 +259,7 @@ class HelpButton(QPushButton):
             self.hovered = False
             self.hide_help()
         elif event.type() in (QEvent.Type.Hide, QEvent.Type.WindowDeactivate):
+            self.hovered = False
             self.hide_help()
         elif event.type() == QEvent.Type.ToolTip:
             self.show_help()
@@ -311,85 +321,7 @@ def button(text, callback, primary=False):
     return item
 
 
-class ComboStyle(QProxyStyle):
-    def __init__(self, parent):
-        # Own a fresh base style: wrapping QApplication.style() would share
-        # ownership and can delete the application's style when a page closes.
-        super().__init__(QStyleFactory.create("Fusion"))
-        self.setParent(parent)
-
-    def styleHint(self, hint, option=None, widget=None, return_data=None):
-        if hint == QStyle.StyleHint.SH_ComboBox_Popup:
-            return 0
-        return super().styleHint(hint, option, widget, return_data)
-
-
-class AnchoredComboBox(QComboBox):
-    """A bounded list popup anchored to the control, not the selected row."""
-    def __init__(self):
-        super().__init__()
-        self.popup_style = ComboStyle(self)
-        self.setStyle(self.popup_style)
-        self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.setMinimumContentsLength(7)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setMaxVisibleItems(8)
-        view = QListView()
-        # Explicit styling survives the popup's top-level window ownership;
-        # descendant selectors scoped to QComboBox alone do not survive it.
-        view.setStyleSheet("QListView {background:white; color:#26334a; border:0; padding:4px; outline:0; selection-background-color:#eeedff; selection-color:#5245bc;} QListView::item {min-height:24px; padding:6px 10px; border:0; border-radius:5px;} QListView::item:hover {background:#f5f4ff;} QListView::item:selected {background:#eeedff; color:#5245bc;}")
-        view.setItemDelegate(QStyledItemDelegate(view))
-        view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        view.setUniformItemSizes(True)
-        self.setView(view)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.setFocus(Qt.FocusReason.MouseFocusReason)
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            # Opening on press and then relocating Qt's popup can make the
-            # same release count as an outside click, immediately closing it
-            # at high DPI. Open after release; popup item/keyboard events still
-            # use Qt's normal selection implementation. Editable line edits
-            # receive their own events and remain usable.
-            if self.rect().contains(event.position().toPoint()):
-                self.showPopup()
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-    def showPopup(self):
-        super().showPopup()
-        if not self.count():
-            return
-        popup = self.view().window()
-        # Qt 6.8's private popup lost its visible state after live page changes
-        # and repeated opens on Windows. Reset top-level popup ownership on
-        # every open before placing/showing it, including when the parent is
-        # already correct. A one-time reparent still failed on the second open.
-        # QComboBox retains its private container lifetime; it is not global.
-        popup.setParent(self.window(), Qt.WindowType.Popup)
-        popup.setObjectName("comboPopup")
-        popup.setStyleSheet("QFrame#comboPopup {background:white; border:1px solid #dce2ee; border-radius:8px;}")
-        screen = self.screen().availableGeometry()
-        below = self.mapToGlobal(QPoint(0, self.height() + 4))
-        top = self.mapToGlobal(QPoint(0, 0)).y()
-        height = min(max(32, self.view().sizeHintForRow(0)) * min(self.count(), self.maxVisibleItems()) + 12, screen.height())
-        # Native menu mode aligned the selected item to the combobox, moving
-        # its top every time the selection changed. The non-menu style above
-        # preserves Qt mouse/keyboard handling; this placement additionally
-        # gives all shared controls the same anchor and screen-edge behavior.
-        y = below.y() if below.y() + height <= screen.bottom() + 1 else top - height - 4
-        y = max(screen.top(), min(y, screen.bottom() - height + 1))
-        width = min(self.width(), screen.width())
-        x = max(screen.left(), min(below.x(), screen.right() - width + 1))
-        popup.setGeometry(QRect(x, y, width, height))
-        popup.show()
+from .combo_popup import AnchoredComboBox
 
 
 def combo(options):

@@ -22,7 +22,15 @@ class GeneratePage(Page):
 
     def eventFilter(self, watched, event):
         if watched is getattr(self, "voice_pane", None) and event.type() == QEvent.Type.Resize:
-            columns = 4 if event.size().width() >= 445 else 2
+            # Measure the real styled edit field, including the longest choice.
+            # A guessed panel breakpoint fit the widget bounds but clipped the
+            # last Chinese glyph and longer capability choices inside them.
+            for control in self.filter_controls:
+                control.setMinimumWidth(control.required_text_width())
+            margins = self.voice_pane.layout().contentsMargins()
+            required = sum(control.minimumWidth() for control in self.filter_controls)
+            required += margins.left()+margins.right()+self.filter_grid.horizontalSpacing()*3
+            columns = 4 if event.size().width() >= required else 2
             if columns != getattr(self, "filter_columns", None):
                 self.filter_columns = columns
                 for index, control in enumerate(self.filter_controls):

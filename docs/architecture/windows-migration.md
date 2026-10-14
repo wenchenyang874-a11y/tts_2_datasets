@@ -2,6 +2,12 @@
 
 ## beta.7 创作与独立样本契约
 
+beta.7 同版本控件修复：文本编辑器聚焦后点击参数／音频页签，QTabWidget 以 OtherFocusReason 把焦点转到首个 HelpButton；旧实现对所有 focusIn 都显示帮助，鼠标未进入该按钮所以没有 Leave，造成常驻。HelpButton 仅允许 Tab／Backtab／Shortcut 焦点直接显示，其余依 Enter／Hover 与离开关闭；Hide／WindowDeactivate 清掉悬停标记。不能以项目输入框聚焦的切页测试替代此触发条件。
+
+原筛选框宽 119px，四个汉字实际需 56px，而样式的 30px padding-right 与 28px drop-down 重复预留，SC_ComboBoxEditField 只有 52px；改为普通 7px padding 后有 75px。GeneratePage 按真实样式和最长选项测量最小宽度，再决定四列或两列；不能只检查整个控件没有越出页面。
+
+旧 AnchoredComboBox 调用 Qt 私有 showPopup 后再 reparent／resize 容器，单次打开实际产生 Show→ParentChange→Show，用户 GIF 中出现原位置的选项残影。`desktop/combo_popup.py` 改为一次拥有的原生 QFrame(Qt.Popup)＋QListView，共享 QComboBox 的 model，隐藏时配置行、滚动与屏幕边界，最终几何确定后只 Show 一次，不操纵 Qt 私有容器。鼠标选择／Enter／Escape、方向键、键盘搜索、可编辑组合框与 activated 信号保留；列表滚轮浏览不改变组合框值。外层 FormWheelGuard 明确放行该列表，其余表单禁滚规则不变。所有页面共用该实现，连续画面及实际 Show／ParentChange 事件另作原生验收。
+
 `desktop/composer_workspace.py` 提供三栏 QSplitter 工作区。GeneratePage 直接加入主窗口 QStackedWidget，不包装 QScrollArea；编辑区以 QTabWidget 在文本、表达、参数和请求音频设置间切换。音色目录与已选栏各自滚动。页内操作行始终可见，不通过覆盖滚动内容的悬浮按钮补救布局。最小窗口需检查所有页签的真实控件边界。
 
 供应商下拉框只改变目录浏览范围。selected 保存整个批次的稳定音色 ID；voice_rows 缓存跨供应商元数据，筛选和重新加载不清空已选。右侧以 delegate 绘制名称、供应商和移除区域，不为每个目录音色创建 QWidget。已选栏更新由页面拥有的 singleShot QTimer 延迟到原生事件之后，避免在条目自己的信号栈中删除它。数据目录切换时定时器随旧页面释放。
