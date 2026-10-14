@@ -2,6 +2,8 @@
 
 ## 2026-10-14 / beta.6 交互验证
 
+用户后续要求以后每版发布一并设为 Latest；beta.6 已回读 `/releases/latest` 为 ID 412340796／v2.0.0-beta.6，draft=false、prerelease=false。三项资产的 ID、字节数和 digest 未变，Tag 仍为 c8ac4d5；下段为初次发布状态。正式发布工具新增 5 项离线回归通过，覆盖 beta 自动设置 Latest、草稿／预发布状态残留、错误 Tag 和错误 Latest ID，不调用 GitHub 或改动安装包。取消平台标记不代表 Windows 10、麦克风或 ASMR 听感验收通过。
+
 用户验收后于同日通知发布；[beta.6 Release](https://github.com/wenchenyang874-a11y/tts_2_datasets/releases/tag/v2.0.0-beta.6)（ID 412340796）已公开为非 Latest 预发布。Tag 实际剥离提交为 c8ac4d5，与下面的修复包和安装证据一致；三项 GitHub 资产完整回读的字节数／SHA-256 及安装器内嵌版本核对通过，证据位于 `artifacts/release-beta6-published-20261014/`。Latest 仍为 beta.5；发布不补写 Win10、麦克风或 ASMR 听感通过。下面“没有发布”指验收阶段当时状态，详细发布记录见版本文档。
 
 后续用户截图指出播放按钮底部裁切，本机复现：styled 单元格二次行高计算后 host 高 28px、按钮高 34px，可见区域只有 40×28。新增回归先在原实现失败，修复后全部 40×34 可见且底部实际命中；覆盖模式切换、不同宽度和工具栏换行。新增图表回归核对真实时长、频率、固定振幅及常量 dB 边界。本轮 210 项离线测试通过（1 条既有弃用提示）；GUI 夹具用 Qt DeferredDelete 在 dispatcher 存活时释放窗口，避免仅 close 隐藏导致回调循环残留到 QApplication 销毁。下方 4163c6f 与 31 项流程为上一构建证据，不作为修复包的验收结果；新版结果见下一段。

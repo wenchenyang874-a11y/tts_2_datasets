@@ -20,7 +20,7 @@
 
 同一版本号可能有多个未发布构建，用户验收／发布授权必须对应源提交、安装包 SHA-256 和验证清单。上一构建验收不自动覆盖新运行代码；最终发布使用最新获用户验收的具体文件，不以文件名相同判断资产相同。安装验证额外检查同版本重新安装实际替换运行文件并保留数据。
 
-首个 Windows 原生版本为 `2.0.0-beta.1`，与 Web `v1.2.3` 区分。用户于 2026-10-13 已合入 main，并要求后续直接在 main 开发；Win10 尚未实测时获准发布的版本仍仅为非 Latest 预发布。稳定版必须在 main，满足 Windows 10 和 Windows 11 验收；合入不代表两套系统已验收，直接开发也不构成自动发布授权。
+首个 Windows 原生版本为 `2.0.0-beta.1`，与 Web `v1.2.3` 区分。用户于 2026-10-13 已合入 main，并要求后续直接在 main 开发。2026-10-14 用户明确要求以后每个获准发布的版本一并设为 Latest；该要求替代此前非 Latest 预发布规则。[GitHub API](https://docs.github.com/en/rest/releases/releases#update-a-release) 不允许 prerelease=true 与 Latest 共存，因此公开时同时设置 draft=false、prerelease=false、make_latest=true。beta 版本号和构建清单保留，Latest 仅表示默认下载，不代表 Windows 10 已实测或产品成为稳定版。稳定版必须在 main，满足 Windows 10 和 Windows 11 验收；直接开发也不构成自动发布授权。
 
 ## 本地构建与验证
 
@@ -48,6 +48,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_release.ps1 -I
 ```
 
 发布脚本验证干净工作区、origin、分支、构建提交、版本与安装验证清单一致后，创建 annotated Tag 并推送分支和 Tag。随后建立 Release 草稿，上传安装包、便携包与校验文件；通过 scripts/download_release_assets.py 从 GitHub 分段并行下载，核对各段范围与长度、完整文件字节数和 SHA-256，再公开 Release。失败保留草稿和证据，不伪造成功、不移动 Tag、不覆盖已有发布资产；网络失败按项目代理规则处理。公开版本修复另发新版本。
+
+公开与 Latest 设置一次完成；脚本随后回读该 Release 和 `/releases/latest`，要求 ID／Tag 匹配、draft=false、prerelease=false。仅命令成功但 Latest 仍指向旧版时不生成成功验证结论。构建清单中的 prerelease 是 beta 构建／验证门槛信息，不随 GitHub 平台标记变更而改写；不为设 Latest 重建已验收包。
 
 稳定版额外传入 `--windows10-evidence <Win10 result.json>`；两套系统的证据都必须对应相同提交与产物清单，脚本从实际 Windows build 分类系统。
 

@@ -31,6 +31,22 @@ def release_for_tag(tag):
     return matches[0] if matches else None
 
 
+def publish_as_latest(tag, release_id):
+    # The user requires every authorized publication to become Latest, including
+    # beta versions. GitHub disallows Latest on prerelease-flagged releases, so
+    # clear that platform flag atomically with publication. Keep the beta tag,
+    # immutable build manifest and Windows validation gates unchanged: Latest
+    # describes the default download, not additional system acceptance.
+    execute("gh", "release", "edit", tag, "--repo", REPOSITORY,
+            "--draft=false", "--prerelease=false", "--latest=true")
+    published = json.loads(output("gh", "api", f"repos/{REPOSITORY}/releases/{release_id}"))
+    latest = json.loads(output("gh", "api", f"repos/{REPOSITORY}/releases/latest"))
+    if (published["id"] != release_id or published["tag_name"] != tag
+            or published["draft"] or published["prerelease"] or latest["id"] != release_id):
+        raise RuntimeError("Release publication or Latest readback differs from the requested release")
+    return published
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("release_dir", type=Path)
@@ -97,10 +113,10 @@ def main():
         else:
             execute("gh", "release", "upload", tag, str(release / entry["name"]), "--repo", REPOSITORY)
     download_verified(REPOSITORY, release_id, manifest["assets"], args.download_dir)
-    execute("gh", "release", "edit", tag, "--repo", REPOSITORY, "--draft=false", "--latest=false" if manifest["prerelease"] else "--latest=true")
-    published = json.loads(output("gh", "api", f"repos/{REPOSITORY}/releases/{release_id}"))
+    published = publish_as_latest(tag, release_id)
     result = {"ok": not published["draft"], "url": published["html_url"], "tag": tag, "source_commit": commit,
-              "assets": manifest["assets"], "remote_bytes_and_sha256_verified": True}
+              "assets": manifest["assets"], "remote_bytes_and_sha256_verified": True,
+              "latest_verified": True, "github_prerelease": published["prerelease"]}
     (args.download_dir / "verification.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(result["url"])
 
