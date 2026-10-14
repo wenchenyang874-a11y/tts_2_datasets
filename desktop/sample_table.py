@@ -72,6 +72,15 @@ class SampleDelegate(QStyledItemDelegate):
         painter.restore()
 
     def sizeHint(self, option, index):
+        if index.column() == 6:
+            # QTableWidget's stylesheet applies 8px item padding on both sides
+            # of a cell widget. After polish/column resize Qt uses this delegate
+            # again, not the initial host widget hint; a 44px text-only row then
+            # leaves only 28px for the fixed 34px button and clips its bottom.
+            # Reserve the control + padding + a small gap on every row sizing
+            # pass. Increasing only the host hint or initial row height fails
+            # again on mode changes and window resize.
+            return QSize(64, 54)
         if index.column() != 0:
             return super().sizeHint(option, index)
         styled = QStyleOptionViewItem(option)

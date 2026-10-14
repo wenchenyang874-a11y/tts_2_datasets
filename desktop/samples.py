@@ -6,7 +6,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QHBoxLayout, QLineEdit, QLabel, QTableWidgetItem,
                                QDialog, QVBoxLayout, QDialogButtonBox, QFormLayout, QWidget, QMenu, QFileDialog)
 from .base import Page
-from .widgets import combo, spin, button, Plot, field, Disclosure
+from .widgets import combo, spin, button, Plot, field, Disclosure, ActionBar
 from .services import SERVICES
 from .generate import TARGETS, AGES
 from .sample_table import SampleTable
@@ -48,16 +48,27 @@ class SamplesPage(Page):
         for widget in [self.provider, self.quality, self.kind, self.variant, self.split, self.gender, self.age, self.keyword, self.task_filter]:
             widget.currentIndexChanged.connect(self.search_first)
         self.search.returnPressed.connect(self.search_first)
-        actions = self.actions(("筛选", self.search_first, True))
+        self.toolbar = ActionBar()
+        actions = self.toolbar
+        actions.addWidget(button("筛选", self.search_first, True))
+        self.layout.addWidget(self.toolbar)
         self.multi_button = button("多选", self.toggle_multi)
         self.multi_button.setCheckable(True)
-        actions.insertWidget(1, self.multi_button)
+        actions.addWidget(self.multi_button)
         self.batch_buttons = [button("全选筛选结果", self.select_filtered),
                               button("清空选择", self.clear_selection),
                               button("导出所选", lambda: shell.navigate(5))]
         for control in self.batch_buttons:
-            actions.insertWidget(actions.count()-1, control)
+            actions.addWidget(control)
             control.hide()
+        for text, handler in (("音频分析", self.analyze_current), ("切换审核", self.review_current),
+                              ("编辑元数据", self.edit), ("删除所选", self.delete),
+                              ("撤销最近删除", self.restore)):
+            control = button(text, handler)
+            actions.addWidget(control)
+            if text == "删除所选":
+                self.delete_button = control
+                control.hide()
         self.grid = SampleTable()
         self.grid.setMinimumHeight(270)
         self.grid.itemChanged.connect(self.selection_changed)
@@ -65,11 +76,6 @@ class SamplesPage(Page):
         self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.grid.customContextMenuRequested.connect(self.open_context_menu)
         self.layout.addWidget(self.grid)
-        row = self.actions(("音频分析", self.analyze_current, False),
-                           ("切换审核", self.review_current, False), ("编辑元数据", self.edit, False),
-                           ("删除所选", self.delete, False), ("撤销最近删除", self.restore, False))
-        self.delete_button = row.itemAt(3).widget()
-        self.delete_button.hide()
         self.add_playback_controls()
         self.summary = QLabel()
         self.summary.setObjectName("muted")
@@ -86,7 +92,7 @@ class SamplesPage(Page):
         self.layout.addWidget(self.metrics)
         charts = QHBoxLayout()
         self.waveform = Plot("波形")
-        self.spectrum = Plot("频谱 · dB")
+        self.spectrum = Plot("频谱")
         charts.addWidget(self.waveform)
         charts.addWidget(self.spectrum)
         self.layout.addLayout(charts)
@@ -192,6 +198,7 @@ class SamplesPage(Page):
             self.selected.clear()
             for row in range(self.grid.rowCount()):
                 self.grid.item(row, 0).setCheckState(Qt.CheckState.Unchecked)
+        self.toolbar.reflow()
         self.update_selection_summary()
 
     def build_context_menu(self, identifier):
@@ -300,8 +307,10 @@ class SamplesPage(Page):
             self.request(f"/api/samples/{self.rows[index]['id']}/analysis", callback=self.show_analysis)
 
     def show_analysis(self, result):
-        self.waveform.set_values(result["waveform"])
-        self.spectrum.set_values(result["spectrum"]["magnitude_db"])
+        duration = result["info"]["duration"]
+        waveform = result["waveform"]
+        self.waveform.set_values(waveform, [duration * index / max(1, len(waveform)-1) for index in range(len(waveform))])
+        self.spectrum.set_values(result["spectrum"]["magnitude_db"], result["spectrum"]["frequency"])
         metrics = result["metrics"]
         labels = {"peak": "峰值", "rms": "RMS", "dc_offset": "直流偏移",
                   "clipping_ratio": "削波", "silence_ratio": "静音"}

@@ -444,6 +444,25 @@ def run_smoke(application, destination: Path) -> int:
         idle(window)
         library = window.pages[1]
         assert not library.grid.multi_select
+        # Re-run sizing after stylesheet polish, just as window/column changes
+        # do. Initial cell-widget sizing hid the beta.6 button clipping defect.
+        library.grid.resizeRowsToContents()
+        application.processEvents()
+        control = next(iter(library.play_buttons.values()))
+        assert control.visibleRegion().boundingRect() == control.rect()
+        bottom = QPoint(control.width() // 2, control.height()-4)
+        assert library.grid.viewport().childAt(control.mapTo(library.grid.viewport(), bottom)) is control
+        original_size = window.size()
+        for width in (980, original_size.width()):
+            window.resize(width, original_size.height())
+            application.processEvents()
+            library.toolbar.reflow()
+            application.processEvents()
+            for item in library.toolbar.controls:
+                if item.isVisible():
+                    assert library.toolbar.rect().contains(item.geometry())
+            assert control.visibleRegion().boundingRect() == control.rect()
+        check("sample-play-control-full-visible-region-and-bottom-hit-after-resize")
         for row in (0, 1):
             QTest.mouseClick(library.grid.viewport(), Qt.MouseButton.LeftButton,
                              pos=library.grid.visualItemRect(library.grid.item(row, 0)).center())
@@ -452,6 +471,12 @@ def run_smoke(application, destination: Path) -> int:
         check("sample-default-single-current-row-no-hidden-checkbox-selections")
         action(library, "多选")
         assert library.grid.multi_select
+        library.toolbar.reflow()
+        application.processEvents()
+        assert control.visibleRegion().boundingRect() == control.rect()
+        for item in library.toolbar.controls:
+            if item.isVisible():
+                assert library.toolbar.rect().contains(item.geometry())
         verify_sample_row_first_paint(application, destination)
         check("sample-check-uncheck-all-columns-first-paint-no-forced-render")
         window.stack.currentWidget().ensureWidgetVisible(library.grid)
@@ -512,6 +537,13 @@ def run_smoke(application, destination: Path) -> int:
         action(library, "音频分析")
         idle(window)
         assert library.waveform.values and library.spectrum.values
+        assert library.waveform.x_values[-1] > 0
+        assert library.waveform.axis_ranges()[1:] == (0.0, 1.0)
+        assert library.spectrum.x_values[-1] > 7000
+        window.stack.currentWidget().ensureWidgetVisible(library.spectrum)
+        application.processEvents()
+        window.grab().save(str(destination / "sample-chart-axes.png"))
+        check("sample-chart-time-amplitude-and-frequency-db-axes")
         selection_before = set(library.selected)
         QTest.mouseClick(library.play_buttons[identifier], Qt.MouseButton.LeftButton)
         idle(window)

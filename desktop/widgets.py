@@ -1,8 +1,9 @@
 """Shared native controls and visual tokens; explanatory text lives in help."""
 from __future__ import annotations
 from pathlib import Path
+import math
 
-from PySide6.QtCore import Qt, QPointF, QEvent, QTimer, QPoint, QRect, QSize
+from PySide6.QtCore import Qt, QPointF, QEvent, QTimer, QPoint, QRect, QRectF, QSize
 from PySide6.QtGui import QPainter, QPen, QColor, QFont
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                                QComboBox, QSpinBox, QDoubleSpinBox, QTableWidget,
@@ -416,16 +417,96 @@ def table(headers):
     return item
 
 
+class ActionBar(QWidget):
+    """Compact sample actions, wrapping with native layouts at narrow widths."""
+    def __init__(self):
+        super().__init__()
+        self.controls = []
+        self.rows = []
+        self.groups = None
+        self.body = QVBoxLayout(self)
+        self.body.setContentsMargins(0, 0, 0, 0)
+        self.body.setSpacing(12)
+
+    def addWidget(self, widget):
+        widget.setParent(self)
+        widget.show()
+        self.controls.append(widget)
+
+    def minimumSizeHint(self):
+        return QSize(max((item.sizeHint().width() for item in self.controls), default=0), 36)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.reflow()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.reflow()
+
+    def reflow(self):
+        # Do not keep a forced horizontal minimum when batch controls appear.
+        # Rebuild only when grouping changes. Native layouts own the items;
+        # removing old layouts keeps the buttons alive in their toolbar parent.
+        groups, row, width = [], [], 0
+        for control in self.controls:
+            if control.isHidden():
+                continue
+            needed = control.sizeHint().width() + (12 if row else 0)
+            if row and width + needed > self.width():
+                groups.append(tuple(row))
+                row, width = [], 0
+                needed = control.sizeHint().width()
+            row.append(control)
+            width += needed
+        if row:
+            groups.append(tuple(row))
+        if groups == self.groups:
+            return
+        self.groups = groups
+        for layout in self.rows:
+            while layout.count():
+                layout.takeAt(0)
+            self.body.removeItem(layout)
+            layout.deleteLater()
+        self.rows = []
+        for group in groups:
+            layout = QHBoxLayout()
+            layout.setSpacing(12)
+            for control in group:
+                layout.addWidget(control)
+            layout.addStretch()
+            self.body.addLayout(layout)
+            self.rows.append(layout)
+        self.updateGeometry()
+
+
 class Plot(QWidget):
     def __init__(self, title: str):
         super().__init__()
         self.title = title
         self.values = []
-        self.setMinimumHeight(115)
+        self.x_values = []
+        self.setMinimumHeight(170)
 
-    def set_values(self, values):
+    def set_values(self, values, x_values):
+        if len(values) != len(x_values):
+            raise ValueError("Plot coordinates must have matching lengths")
         self.values = list(values)
+        self.x_values = list(x_values)
         self.update()
+
+    def axis_ranges(self):
+        # waveform_points is a normalized absolute peak envelope, not signed
+        # PCM: show 0..1 without auto-normalizing small peaks to full scale.
+        # FFT magnitudes are the API's actual dB values, not dBFS. Use its real
+        # frequency coordinates; sample indexes are not frequencies or seconds.
+        x_max = max(self.x_values, default=1.0)
+        if self.title == "波形":
+            return max(x_max, 0.001), 0.0, 1.0
+        low = math.floor(min(self.values, default=-100) / 20) * 20
+        high = math.ceil(max(self.values, default=0) / 20) * 20
+        return max(1000, math.ceil(x_max / 1000) * 1000), low, max(high, low + 20)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -433,18 +514,43 @@ class Plot(QWidget):
         painter.fillRect(self.rect(), QColor("#ffffff"))
         painter.setPen(QColor("#7a8497"))
         painter.drawText(12, 20, self.title)
-        if len(self.values) < 2:
-            return
-        signed = self.title == "波形"
-        minimum = min(self.values)
-        values = self.values if signed else [float(v) - minimum for v in self.values]
-        maximum = max(max(abs(float(v)) for v in values), 0.001)
-        base = self.height() / 2 + 10 if signed else self.height() - 14
-        scale = (self.height() - 44) / (2 if signed else 1) / maximum
+        envelope = self.title == "波形"
+        plot = QRectF(48, 38, max(1, self.width()-65), max(1, self.height()-80))
+        x_max, low, high = self.axis_ranges()
+        font = QFont(painter.font())
+        font.setPixelSize(11)
+        painter.setFont(font)
+        painter.drawText(QRectF(10, 23, 90, 14), Qt.AlignmentFlag.AlignLeft, "振幅" if envelope else "dB")
+        painter.drawText(QRectF(plot.left(), self.height()-18, plot.width(), 14), Qt.AlignmentFlag.AlignRight,
+                         "时间 (s)" if envelope else "频率 (kHz)")
+        for fraction in (0.0, 0.5, 1.0):
+            y = plot.bottom() - fraction * plot.height()
+            painter.setPen(QPen(QColor("#edf0f6"), 1))
+            painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+            painter.setPen(QColor("#7a8497"))
+            value = low + fraction * (high-low)
+            painter.drawText(QRectF(3, y-7, 38, 14), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{value:g}")
+        if self.values:
+            ticks = 2 if self.width() < 300 else 4
+            for index in range(ticks + 1):
+                fraction = index / ticks
+                x = plot.left() + fraction * plot.width()
+                painter.setPen(QPen(QColor("#edf0f6"), 1))
+                painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()))
+                painter.setPen(QColor("#7a8497"))
+                value = x_max * fraction / (1 if envelope else 1000)
+                painter.drawText(QRectF(x-22, plot.bottom()+5, 44, 14), Qt.AlignmentFlag.AlignHCenter, f"{value:.2f}" if envelope else f"{value:g}")
+        painter.setPen(QPen(QColor("#cdd5e3"), 1))
+        painter.drawLine(plot.bottomLeft(), plot.bottomRight())
+        painter.drawLine(plot.bottomLeft(), plot.topLeft())
+        painter.save()
+        painter.setClipRect(plot)
         painter.setPen(QPen(QColor("#7774e5"), 1.5))
         last = None
-        for index, value in enumerate(values):
-            point = QPointF(12 + index * (self.width() - 24) / (len(self.values) - 1), base - float(value) * scale)
+        for x_value, value in zip(self.x_values, self.values):
+            point = QPointF(plot.left() + x_value / x_max * plot.width(),
+                            plot.bottom() - (float(value)-low) / (high-low) * plot.height())
             if last is not None:
                 painter.drawLine(last, point)
             last = point
+        painter.restore()

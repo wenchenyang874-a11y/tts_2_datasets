@@ -6,6 +6,10 @@
 
 SampleTable 默认以 currentRow 标识唯一当前行，各列依当前行同步着色；多选模式才依据首列 CheckStateRole 绘制框与整行背景。进入／退出模式重排行高，退出清空跨页批量集合；逐行播放按钮为真正的 40×34 QPushButton，可键盘聚焦，不改变样本选择。右键菜单及异步操作捕获稳定样本 ID，刷新重排不会误操作其他音频。审核子菜单明确父对象并保留 Python 包装，避免 PySide 6.8.3 中原生创建子菜单的生命周期问题。
 
+播放列 delegate 的 sizeHint 始终保留 54px 行高（34px 按钮 + 样式上下各 8px padding + 4px 间隙）。只依赖初始 cell widget 的 hint 会在 stylesheet polish／resizeRowsToContents 后退到 44px，host 剩 28px，按钮底部被裁切；单纯增大 host hint 或一次性设置行高不能解决重复计算。验收核对 visibleRegion 全矩形及底部 childAt 命中，不能只点击中心。
+
+样本 ActionBar 用原生 QVBoxLayout／QHBoxLayout 按可见按钮宽度排列；普通宽度同一行，窄窗口或多选按钮增加时换行，隐藏按钮不占位。Plot 使用 analysis.info.duration 和 spectrum.frequency 作为横轴；波形 API 返回绝对峰值包络，因此纵轴固定 0–1，而不是有符号 PCM 或自动放大后的假满幅。频谱保留 API 的真实 FFT dB 幅度，不标成 dBFS；常量频谱也保留非零轴范围。
+
 单条导出使用 QFileDialog 的目录选择和业务进程的 samples copy 操作，直接复制 WAV；不走 datasets export API，不生成 ZIP／JSONL。同名目标使用新文件名，保留旧文件。现有训练集导出和音频契约不变。
 
 任务树刷新期间暂停选中信号，按 ID 恢复当前任务；技术详情内容相同时不调用 setPlainText，内容变化时恢复滚动条和有边界的 cursor／anchor。切换到其他任务才重置阅读位置，避免周期轮询先清空选择再把文档重置到顶部。

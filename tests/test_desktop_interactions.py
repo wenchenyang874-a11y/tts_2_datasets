@@ -5,13 +5,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from copy import deepcopy
 from pathlib import Path
 import pytest
-from PySide6.QtCore import Qt, QPoint, QPointF
+from PySide6.QtCore import Qt, QPoint, QPointF, QCoreApplication, QEvent
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QScrollArea,
                                QLineEdit, QPlainTextEdit, QTableWidgetItem, QDialog, QPushButton)
 from desktop.form_wheel import FormWheelGuard
-from desktop.widgets import combo, spin
+from desktop.widgets import combo, spin, STYLE
 from desktop.sample_table import SampleTable
 from desktop.tasks import TasksPage
 from desktop.samples import SamplesPage
@@ -21,6 +21,18 @@ from desktop.generate import GeneratePage
 @pytest.fixture(scope="module")
 def application():
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def release_test_windows(application):
+    yield
+    # close() only hides these isolated widgets; callback ownership cycles can
+    # otherwise keep their native children alive until QApplication teardown.
+    # Release them through Qt while its event dispatcher is still running.
+    for widget in application.topLevelWidgets():
+        widget.close()
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def wheel(application, widget, delta=-120, pixel=False):
@@ -162,10 +174,12 @@ def test_single_and_multi_sample_modes_click_and_double_click(application):
     assert table.currentRow() == 1
     assert all(table.item(row, 0).checkState() == Qt.CheckState.Unchecked for row in range(2))
     table.set_multi_select(True)
+    points = [table.visualItemRect(table.item(row, 0)).center() for row in range(2)]
     QTest.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=points[0])
     QTest.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=points[1])
     assert all(table.item(row, 0).checkState() == Qt.CheckState.Checked for row in range(2))
     table.set_multi_select(False)
+    points = [table.visualItemRect(table.item(row, 0)).center() for row in range(2)]
     QTest.mouseDClick(table.viewport(), Qt.MouseButton.LeftButton, pos=points[0])
     assert table.currentRow() == 0
     table.close()
@@ -173,6 +187,60 @@ def test_single_and_multi_sample_modes_click_and_double_click(application):
 
 def sample(identifier):
     return {"id": identifier, "text": identifier, "provider": "mock", "voice_name": "Mock", "quality_status": "accepted", "duration": 2.0}
+
+
+def test_play_button_remains_fully_visible_after_styled_row_resize(application):
+    shell = Shell()
+    page = SamplesPage(shell)
+    page.setStyleSheet(STYLE)
+    page.resize(1000, 830)
+    page.show_rows({"items": [sample("one"), sample("two")], "page": 1, "total": 2})
+    page.show()
+    application.processEvents()
+    try:
+        # Initial setCellWidget sizing can fit the control; the later polished
+        # delegate sizing and stylesheet item padding used to crop its bottom.
+        # Exercise the same second resize caused by column/window/mode changes.
+        for multi, width in ((False, 1000), (True, 740), (False, 1000)):
+            page.multi_button.setChecked(multi)
+            page.toggle_multi()
+            page.resize(width, 830)
+            page.grid.resizeRowsToContents()
+            application.processEvents()
+            assert page.width() == width
+            control = page.play_buttons["one"]
+            assert control.visibleRegion().boundingRect() == control.rect()
+            bottom = QPoint(control.width() // 2, control.height() - 4)
+            assert page.grid.viewport().childAt(control.mapTo(page.grid.viewport(), bottom)) is control
+            QTest.mouseClick(control, Qt.MouseButton.LeftButton, pos=bottom)
+            assert shell.playback_resource == ("samples", "one")
+            shell.stop_playback()
+            # The action strip shares one row at ordinary width and wraps at
+            # narrow widths; every visible action remains inside its parent.
+            for action in page.toolbar.findChildren(QPushButton):
+                if action.isVisible():
+                    assert page.toolbar.rect().contains(action.geometry())
+    finally:
+        page.close()
+        shell.close()
+
+
+def test_audio_plot_uses_duration_frequency_and_absolute_amplitude(application):
+    shell = Shell()
+    page = SamplesPage(shell)
+    page.show_analysis({"info": {"duration": 2.0}, "waveform": [0.1, 0.2, 0.0],
+                        "spectrum": {"frequency": [0, 1000, 8000], "magnitude_db": [-90, -20, -60]},
+                        "metrics": {"peak": 0.2}})
+    assert page.waveform.x_values == [0, 1, 2]
+    assert page.waveform.axis_ranges() == (2, 0, 1)
+    assert page.spectrum.x_values == [0, 1000, 8000]
+    assert page.spectrum.axis_ranges() == (8000, -100, -20)
+    # A constant spectrum must have a nonzero plotted range, without division
+    # by zero; its numeric values still retain the API's actual dB reference.
+    page.spectrum.set_values([-40, -40], [0, 8000])
+    assert page.spectrum.axis_ranges() == (8000, -40, -20)
+    page.close()
+    shell.close()
 
 
 def test_per_row_playback_context_targets_and_direct_wav_export(application, monkeypatch, tmp_path):
