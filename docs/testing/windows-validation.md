@@ -12,6 +12,10 @@ beta.6 精确源的两种 100 次原生提交循环均未复现用户崩溃，�
 
 用户独立授权追加 1 次后，`artifacts/beta6-mimo-authorized-one-call-2/result.json` 记录第二次恰好 1 次 POST，任务完成并产生 1 个隔离样本；精确 beta.6 的确认／提交／返回任务中心／轮询／正常关闭未崩溃。两次均无自动重试，不代表 beta.7 或跨厂商整批真实云验收。测试使用 ProviderSettingsStore 构造器读取原凭据时触发了其既有重新加密／updated_at 写入行为，因此原文件哈希不一致；未调用原配置的 update_provider，不能记录为“原文件未修改”。隔离凭据副本已移除，后续读取改为直接 decode_settings，不构造该写入型存储。实际原生崩溃根因仍未定位。
 
+最终构建源 `91af0a8e8c35aa28924ea493a573e1a2865a4d75`。[CI 38527809240](https://github.com/wenchenyang874-a11y/tts_2_datasets/actions/runs/38527809240) 成功：218 通过、5 项 Windows 专属跳过、1 条既有提示，Docker 构建／自检亦通过。`artifacts/beta7-source-final-150/result.json`、`artifacts/beta7-frozen-final-150/result.json` 均为 ok=true／35 项；目录移除按钮实际鼠标命中与异步条目生命周期已验证。安装首次 `artifacts/installer-beta7-final-150/` 在悬停被鼠标打断后失败，测试注册自动卸载，此记录不充当通过证据。
+
+先完成安装前置流程，在真正窗口检查前暂停等待用户就绪，再按原脚本继续，`artifacts/installer-beta7-coordinated-final-150/result.json` 为 ok=true：9 项隔离安装检查，35 项安装内原生流程，Win11=true／Win10=false；source_commit 对应 91af0a8，manifest_sha256=`a3d4f8ba5ade14a3a90dfb3e3e40013ca7d003b41ed8fc9e36d5796ef59557e8`。正式安装包及隔离副本 PE 为 2.0.0.7，安装内容逐文件匹配便携包；普通启动两轮均产生本地诊断启动／关闭记录。截图核对已选栏、最小窗口参数／音频／表达页签与可见操作行。测试卸载登记已移除，生产安装未覆盖；产物哈希见版本文档，未发布。
+
 ## 2026-10-14 / beta.6 交互验证
 
 用户后续要求以后每版发布一并设为 Latest；beta.6 已回读 `/releases/latest` 为 ID 412340796／v2.0.0-beta.6，draft=false、prerelease=false。三项资产的 ID、字节数和 digest 未变，Tag 仍为 c8ac4d5；下段为初次发布状态。正式发布工具新增 5 项离线回归通过，覆盖 beta 自动设置 Latest、草稿／预发布状态残留、错误 Tag 和错误 Latest ID，不调用 GitHub 或改动安装包。取消平台标记不代表 Windows 10、麦克风或 ASMR 听感验收通过。
