@@ -1,5 +1,11 @@
 # Windows 验证与发布门槛
 
+## 2026-10-14 / beta.7 发布回读
+
+用户于 2026-10-14 验收后明确通知发布；[beta.7 Release](https://github.com/wenchenyang874-a11y/tts_2_datasets/releases/tag/v2.0.0-beta.7)（ID 412542371）已公开并设为 Latest，draft=false／prerelease=false。Tag 固定在已验收构建源 7911785，三项 GitHub 资产完整回读字节数和 SHA-256 一致，安装器 PE 为 2.0.0.7；没有重建包。证据为 `artifacts/release-beta7-published-20261014/verification.json`。取消平台预发布标记不改变 beta 版本号，Windows 10、麦克风与真实云验收边界保持不变。
+
+构建后 main 仅新增四份验收文档，运行源码未改；核对祖先关系及该差异白名单后将 Tag 固定于 7911785，复用维护中的下载校验和 Latest 发布函数，保留当前 main。仓库只有 main 的 CI，无 Tag 构建工作流；构建源 CI 38540637080 已成功。首次草稿创建后列表暂未返回该项，流程终止且未上传；确认唯一草稿 ID 后继续，未创建第二份草稿或覆盖资产。下文未发布状态为当时阶段记录。
+
 ## 2026-10-14 / beta.7 有符号波形
 
 最终构建源 7911785，[构建源 CI](https://github.com/wenchenyang874-a11y/tts_2_datasets/actions/runs/38540637080) 成功（225 通过／5 项 Windows 专属跳过／1 条既有提示）。协调鼠标与窗口后 `artifacts/beta7-signed-wave-frozen-150-v3/result.json`、`installer-beta7-signed-wave-final-150/installed-smoke/result.json` 均 ok=true／37 项。原生截图核对居中 0 线、真实正负曲线、完整时长和频谱；安装报告为 ok=true／9 项，source_commit=7911785，manifest_sha256=`1f3874ffd5bd800aa76540ff1c59a63375a38175d5613c98a32990465f5e0e00`。普通启动／关闭与卸载保留数据通过，测试注册已移除，生产安装未覆盖。此为下段待协调后的最终结果；Win10 仍未实测，无云调用或麦克风录制，未发布。
