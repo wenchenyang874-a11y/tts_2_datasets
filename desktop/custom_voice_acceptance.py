@@ -39,14 +39,8 @@ def verify_custom_voices(application, window, destination, idle):
         dialog.service.setCurrentIndex(dialog.service.findData("mock"))
         dialog.name.setText("离线"+("复刻" if mode == "clone" else "设计")+"验收")
         if mode == "clone":
-            reference = destination / "custom-reference.wav"
-            with wave.open(str(reference), "wb") as wav:
-                wav.setnchannels(1)
-                wav.setsampwidth(2)
-                wav.setframerate(24000)
-                wav.writeframes(b"\x01\x00\xff\xff"*48000)
-            dialog.path = reference
-            dialog.file_label.setText(reference.name)
+            from .reference_acceptance import verify_reference_recording
+            reference = verify_reference_recording(application, window, dialog, destination)
         else:
             dialog.prompt.setPlainText("温暖清晰的青年声音")
         application.processEvents()
@@ -54,6 +48,8 @@ def verify_custom_voices(application, window, destination, idle):
         QTest.mouseClick(dialog.create_button, Qt.MouseButton.LeftButton)
         wait(lambda: not dialog.isVisible())
         idle(window)
+        if mode == "clone":
+            assert not reference.exists(), "accepted form must release only its own temporary recording"
         dialog.deleteLater()
         def completed():
             rows = window.runtime.call("/api/custom-voices")
@@ -114,4 +110,4 @@ def verify_custom_voices(application, window, destination, idle):
     idle(window)
     page.timer.start()
     (destination / "custom-voices-evidence.json").write_text(json.dumps({"ok": True, "created": 2, "real_cloud_calls": 0,
-        "checks": ["provider-specific-dialog-fields", "mock-clone-and-design-create", "preview-button-unclipped-bottom-hit-play-and-stop", "ready-preview-playback-copy", "edit-name-tags", "select-custom-voice-in-composer", "show-removed-and-restore-without-new-cloud-call"]}, indent=2), encoding="utf-8")
+        "checks": ["provider-specific-dialog-fields", "mock-clone-and-design-create", "preview-button-unclipped-bottom-hit-play-and-stop", "ready-preview-playback-copy", "edit-name-tags", "select-custom-voice-in-composer", "show-removed-and-restore-without-new-cloud-call", "native-reference-record-short-reject-rerecord-stop-play-use-import-and-cleanup"]}, indent=2), encoding="utf-8")

@@ -1,17 +1,17 @@
 """Native device capture; device rate is normalized by the existing importer."""
 from __future__ import annotations
 
-import struct
 import time
 import wave
 from pathlib import Path
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtMultimedia import QAudioSource, QAudioFormat, QMediaDevices, QAudio
+from PySide6.QtMultimedia import QAudioSource, QMediaDevices, QAudio
 from PySide6.QtWidgets import (QLineEdit, QHBoxLayout, QListWidget, QProgressBar,
                                QFileDialog, QLabel)
 from .base import Page
 from .widgets import combo, field, button
 from .generate import TARGETS, AGES
+from .audio_capture import capture_format, pcm16_frames
 
 
 class RecordingPage(Page):
@@ -100,15 +100,10 @@ class RecordingPage(Page):
             self.shell.error("没有可用麦克风，请检查设备与 Windows 权限")
             return
         device = self.devices[index]
-        format = QAudioFormat()
-        format.setSampleRate(16000)
-        format.setChannelCount(1)
-        format.setSampleFormat(QAudioFormat.SampleFormat.Int16)
-        if not device.isFormatSupported(format):
-            format = device.preferredFormat()
-        if format.sampleFormat() not in (QAudioFormat.SampleFormat.Int16, QAudioFormat.SampleFormat.Int32,
-                                         QAudioFormat.SampleFormat.UInt8, QAudioFormat.SampleFormat.Float):
-            self.shell.error("麦克风采样格式不受支持")
+        try:
+            format = capture_format(device)
+        except ValueError as exc:
+            self.shell.error(str(exc))
             return
         # Capture the actual supported rate/channel format. Pretending 48 kHz
         # bytes are 16 kHz corrupts duration/pitch; import performs conversion.
@@ -134,28 +129,11 @@ class RecordingPage(Page):
     def read_audio(self):
         if not self.device_stream or not self.writer:
             return
-        import numpy as np
-        data = self.pending_bytes + bytes(self.device_stream.readAll())
-        sample_format = self.capture_format.sampleFormat()
-        dtype = {QAudioFormat.SampleFormat.Int16: "<i2", QAudioFormat.SampleFormat.Int32: "<i4",
-                 QAudioFormat.SampleFormat.UInt8: "u1", QAudioFormat.SampleFormat.Float: "<f4"}[sample_format]
-        size = np.dtype(dtype).itemsize
-        frame_size = size * self.capture_format.channelCount()
-        complete = len(data) // frame_size * frame_size
-        # QIODevice chunks need not align to complete interleaved frames. Keep
-        # the remainder for the next read instead of dropping samples/clicking.
-        data, self.pending_bytes = data[:complete], data[complete:]
+        data, self.pending_bytes, peak = pcm16_frames(bytes(self.device_stream.readAll()), self.capture_format, self.pending_bytes)
         if not data:
             return
-        values = np.frombuffer(data, dtype=dtype).astype(np.float64)
-        divisor = {QAudioFormat.SampleFormat.Int16: 32768, QAudioFormat.SampleFormat.Int32: 2147483648,
-                   QAudioFormat.SampleFormat.UInt8: 128, QAudioFormat.SampleFormat.Float: 1}[sample_format]
-        if sample_format == QAudioFormat.SampleFormat.UInt8:
-            values -= 128
-        values = np.nan_to_num(values / divisor)
-        converted = (np.clip(values, -1, 1) * 32767).astype("<i2")
-        self.writer.writeframesraw(converted.tobytes())
-        self.level.setValue(min(100, int(np.max(np.abs(values)) * 100)))
+        self.writer.writeframesraw(data)
+        self.level.setValue(peak)
 
     def state_changed(self, state):
         if self.source and self.source.error() != QAudio.Error.NoError:

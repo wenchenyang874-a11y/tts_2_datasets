@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import uuid
 from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QSize
@@ -26,6 +27,8 @@ class CreationDialog(QDialog):
         self.page, self.mode, self.path = page, mode, None
         self.request_id = uuid.uuid4().hex
         self.submitting = False
+        self.reference_cache = tempfile.TemporaryDirectory(prefix="tts-clone-reference-")
+        self.finished.connect(self.release_reference)
         self.setWindowTitle("新建"+MODES[mode])
         self.resize(640, 700)
         self.setMinimumWidth(500)
@@ -60,11 +63,18 @@ class CreationDialog(QDialog):
         self.file_label.setWordWrap(True)
         reference_layout.addWidget(self.file_label, 1)
         reference_layout.addWidget(button("选择音频", self.choose_file))
+        self.record_button = button("现场录制", self.record_reference)
+        reference_layout.addWidget(self.record_button)
         self.reference_field = field("参考音频", self.reference, "本地 WAV、MP3、M4A 等，3–60 秒、不超过 10 MB；建议 10–20 秒清晰单人录音。文件会保存在数据目录，并发送给所选供应商用于复刻。")
         form.addWidget(self.reference_field)
         self.url = QLineEdit()
         self.url.setPlaceholderText("https://…/reference.wav")
-        self.url_field = field("参考音频链接", self.url, "阿里云 CosyVoice 要求公网可访问的 HTTPS 音频 URL，建议 10–20 秒。应用不会把本地文件自动上传到第三方存储。")
+        url_input = QWidget()
+        url_layout = QHBoxLayout(url_input)
+        url_layout.setContentsMargins(0, 0, 0, 0)
+        url_layout.addWidget(self.url, 1)
+        url_layout.addWidget(button("现场录制", self.record_reference))
+        self.url_field = field("参考音频链接", url_input, "阿里云 CosyVoice 要求公网可访问的 HTTPS 音频 URL，建议 10–20 秒。现场录音可先保存到本地，再由你上传并填写链接；应用不会自动上传到第三方存储。")
         form.addWidget(self.url_field)
         self.prompt = QPlainTextEdit()
         self.prompt.setPlaceholderText("例如：温暖沉稳的青年女性，声音清晰自然，适合轻松的日常交流")
@@ -111,6 +121,31 @@ class CreationDialog(QDialog):
         if filename:
             self.path = Path(filename)
             self.file_label.setText(self.path.name)
+
+    def release_reference(self, *_):
+        # A successful callback means the backend has already copied the
+        # multipart reference into its managed data directory. Cancelled forms
+        # only remove their own recordings, never a user-selected local file.
+        self.reference_cache.cleanup()
+
+    def record_reference(self):
+        from .reference_recording import ReferenceRecordingDialog
+        if self.submitting:
+            return
+        if self.page.shell.pages[2].source:
+            self.problem.setText("真人录音正在录制，请先停止后再录制参考音频")
+            return
+        self.page.shell.stop_playback()
+        dialog = ReferenceRecordingDialog(self, self.reference_cache.name, export_required=self.service.currentData() == "aliyun")
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.accepted_path:
+            if self.service.currentData() == "aliyun":
+                self.url.clear()
+                self.problem.setText("参考录音已保存；请上传后填写可公网访问的 HTTPS 音频链接")
+            else:
+                self.path = dialog.accepted_path
+                self.file_label.setText(f"现场录音 · {dialog.capture.duration:.1f} 秒")
+                self.problem.clear()
+        dialog.deleteLater()
 
     def values(self):
         return {"request_id": self.request_id, "name": self.name.text().strip(), "service": self.service.currentData(), "mode": self.mode,
