@@ -1,5 +1,11 @@
 # Windows 验证与发布门槛
 
+## 2026-10-15 / 2.0.0 正式发布
+
+正式构建源 `56dfd542e551d0e6aaa8b50c5d02434a66575ac9` 的版本／发布策略 7 项针对性检查和 [CI 38697859915](https://github.com/wenchenyang874-a11y/tts_2_datasets/actions/runs/38697859915) 通过；业务和界面代码与已验收 beta.8 一致，未额外重跑完整本地业务回归或安装矩阵。`artifacts/stable-2.0.0-local/result.json` 记录 Windows 11 普通启动／关闭、正式数字版本、资产及源码一致性核对，不声称本轮重新实测安装。
+
+用户明确批准豁免本次 Win10 门槛；发布工具保留 `windows10_verified=false` 和豁免原因。[Release 413525180](https://github.com/wenchenyang874-a11y/tts_2_datasets/releases/tag/v2.0.0) 已公开，非草稿、非预发布且为 Latest。三项资产完整回读的字节数和 SHA-256 与本地一致，远端安装器及便携程序版本均为 2.0.0.65535，ProductVersion 为 2.0.0。证据 `artifacts/release-2.0.0-published-20261015/verification.json`、`remote-pe-version.json`、`final-state.json`；产物哈希见[正式版清单](../releases/v2.0.0.md)。旧 beta 检查和真实云／麦克风的范围仍按原记录，不因正式版号补记通过。
+
 ## 2026-10-14 / beta.7 发布回读
 
 用户于 2026-10-14 验收后明确通知发布；[beta.7 Release](https://github.com/wenchenyang874-a11y/tts_2_datasets/releases/tag/v2.0.0-beta.7)（ID 412542371）已公开并设为 Latest，draft=false／prerelease=false。Tag 固定在已验收构建源 7911785，三项 GitHub 资产完整回读字节数和 SHA-256 一致，安装器 PE 为 2.0.0.7；没有重建包。证据为 `artifacts/release-beta7-published-20261014/verification.json`。取消平台预发布标记不改变 beta 版本号，Windows 10、麦克风与真实云验收边界保持不变。
