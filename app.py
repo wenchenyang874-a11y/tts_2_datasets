@@ -623,13 +623,18 @@ def _validate_provider_audio(
 
 
 def _generation_config_id(voice):
-    return "volcengine_v2" if voice["provider"] == "volcengine" and voice.get("model") == "seed-tts-2.0" else voice["provider"]
+    return "volcengine_v2" if voice["provider"] == "volcengine" and voice.get("model") in {"seed-tts-2.0", "seed-icl-2.0"} else voice["provider"]
 
 
 def _validate_synthesis_credentials(selected):
     # beta.2 allowed a V2 voice with only V1 credentials into the task pool.
     # Validate the selected model before creating any task or sending a paid
     # request. Account permission cannot be inferred from a local voice list.
+    for voice in selected:
+        try:
+            custom_voice_manager.validate_synthesis(voice)
+        except ProviderError as exc:
+            raise HTTPException(400, str(exc)) from exc
     for name in {_generation_config_id(voice) for voice in selected}:
         if name == "mock":
             continue
@@ -818,7 +823,7 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                 if expression["emotion"]:
                     expression_args.update(emotion=expression["emotion"], emotion_scale=expression["emotion_scale"])
                 audio = provider.synthesize(
-                    text=request["text"], voice=voice["voice_id"], model=voice["model"],
+                    text=request["text"], voice=custom_voice_manager.synth_voice(voice), model=voice["model"],
                     audio_format=provider_audio["format"],
                     sample_rate=provider_audio["sample_rate"],
                     speed=speed, pitch=pitch, volume=volume,
@@ -842,6 +847,7 @@ def _generate_task(task_id: str, request: dict[str, Any], voices: list[dict[str,
                     "sample_rate": info["sample_rate"], "channels": info["channels"], "sha256": digest,
                     "quality_status": quality,
                     "metadata": {
+                        **({"speaker_id": db.decode_json_fields(dict(voice)).get("metadata", {}).get("speaker_id")} if voice.get("source") == "managed_custom" else {}),
                         "voice_db_id": voice["id"], "instruction": request.get("instruction", ""),
                         "emotion": request.get("emotion", ""), "emotion_scale": request.get("emotion_scale", 4),
                         "provider_expression_request": expression,
@@ -942,9 +948,15 @@ def _augment_task(task_id: str, request: dict[str, Any], samples: list[dict[str,
 
 
 def _speaker_for(sample: dict[str, Any]) -> str:
+    metadata = db.decode_json_fields(dict(sample)).get("metadata", {})
+    if metadata.get("speaker_id"):
+        return str(metadata["speaker_id"])
     if sample.get("provider") == "real":
-        metadata = db.decode_json_fields(dict(sample)).get("metadata", {})
         return str(metadata.get("speaker_id") or sample.get("voice_id") or sample["id"])
+    if sample.get("provider") == "volcengine" and sample.get("model") in {"seed-icl-1.0", "seed-icl-2.0", "voice-clone-v1"}:
+        # One purchased speaker can be used with both ICL models. A model
+        # boundary is not a different person and must not split train/test.
+        return "volc_clone_"+str(sample["voice_id"])
     return "tts_" + "_".join((
         str(sample.get("provider", "unknown")),
         str(sample.get("voice_id", "unknown")),
@@ -1373,8 +1385,8 @@ def voices(
     if provider:
         clauses.append("provider=?"); params.append("volcengine" if provider in {"volcengine_v1", "volcengine_v2"} else provider)
         if provider in {"volcengine_v1", "volcengine_v2"}:
-            clauses.append("model=?" if provider.endswith("v2") else "model!=?")
-            params.append("seed-tts-2.0")
+            clauses.append("model IN (?,?)" if provider.endswith("v2") else "model NOT IN (?,?)")
+            params.extend(("seed-tts-2.0", "seed-icl-2.0"))
     if gender:
         clauses.append("gender=?"); params.append(gender)
     if age_group:
@@ -1430,7 +1442,13 @@ def refresh_voices(payload: dict[str, Any] = Body(default_factory=dict)) -> dict
     values: list[dict[str, Any]] = []
     for voice in catalog:
         value = asdict(voice) if is_dataclass(voice) else dict(voice)
-        if scope and (value.get("model") == "seed-tts-2.0") != (scope == "volcengine_v2"):
+        if scope and (value.get("model") in {"seed-tts-2.0", "seed-icl-2.0"}) != (scope == "volcengine_v2"):
+            continue
+        # Managed names, state and speaker identity belong to the user, not a
+        # periodically refreshed provider catalog. Never overwrite them.
+        managed = db.one("SELECT id FROM voices WHERE provider=? AND voice_id=? AND model=? AND source='managed_custom'", (value["provider"], value["voice_id"], value.get("model", "")))
+        if managed:
+            added.append(managed["id"])
             continue
         values.append(value)
         voice_id = db.upsert_voice(value)
@@ -1448,6 +1466,7 @@ def refresh_voices(payload: dict[str, Any] = Body(default_factory=dict)) -> dict
         disabled_stale += db.disable_missing_voices(
             snapshot_provider, snapshot_source, active_keys, model_scope=scope
         )
+    custom_voice_manager.adopt_catalog()
     return {
         "count": len(added),
         "voice_ids": added,
@@ -1844,8 +1863,8 @@ def _sample_filter(
         # Keep the model boundary in this shared filter so pagination and
         # selecting all filtered IDs cannot disagree about which service a
         # sample belongs to. Augmented rows retain their source model too.
-        clauses.append("model=?" if provider == "volcengine_v2" else "model!=?")
-        params.append("seed-tts-2.0")
+        clauses.append("model IN (?,?)" if provider == "volcengine_v2" else "model NOT IN (?,?)")
+        params.extend(("seed-tts-2.0", "seed-icl-2.0"))
         provider = "volcengine"
     for column, value in (("provider", provider), ("voice_id", voice_id),
                           ("split", split),
@@ -2662,6 +2681,18 @@ def restore_export(export_id: str) -> dict[str, Any]:
         except OSError:
             pass
         return {"restored": 1, "export_id": export_id}
+
+
+try:
+    from .custom_voices import install_routes
+except ImportError:
+    from custom_voices import install_routes
+custom_voice_manager = install_routes(app, db, DATA_ROOT, provider_settings, _create_task, _submit, _update_task)
+
+
+def custom_voice_audio(identifier):
+    value = custom_voice_manager.get(identifier)
+    return FileResponse(custom_voice_manager.asset(value["preview_rel"]), media_type="audio/wav")
 
 
 if STATIC_DIR.exists():

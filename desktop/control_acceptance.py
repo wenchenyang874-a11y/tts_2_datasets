@@ -28,7 +28,7 @@ def verify_controls(application, window, destination, idle):
             if event.type() in (QEvent.Type.Show, QEvent.Type.ParentChange):
                 states.append((event.type().name, [watched.x(), watched.y(), watched.width(), watched.height()]))
             return False
-    for page_index in range(7):
+    for page_index in range(len(window.pages)):
         window.navigate(page_index)
         idle(window)
         tabs = range(4) if page_index == 0 else (None,)

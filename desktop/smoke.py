@@ -162,13 +162,15 @@ def run_smoke(application, destination: Path) -> int:
         check("native-window-start-and-ready")
         helps = window.findChildren(HelpButton)
         assert len(helps) >= 15 and all(item.toolTip() for item in helps)
-        for index in range(7):
+        for index in range(len(window.pages)):
             QTest.mouseClick(window.nav_buttons[index], Qt.MouseButton.LeftButton)
             idle(window)
             assert window.stack.currentIndex() == index
             if not window.grab().save(str(destination / f"page-{index}.png")):
                 raise AssertionError("screenshot save failed")
-        check("seven-native-pages-and-help-controls")
+        check("eight-native-pages-and-help-controls")
+        window.navigate(6)
+        idle(window)
         from PySide6.QtGui import QCursor
         from PySide6.QtWidgets import QLabel
         visible_help = next(item for item in helps if item.isVisible())
@@ -807,7 +809,7 @@ def run_smoke(application, destination: Path) -> int:
         from PySide6.QtCore import QPointF
         from PySide6.QtWidgets import QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QPlainTextEdit
         tested = 0
-        for page_index in range(7):
+        for page_index in range(len(window.pages)):
             window.navigate(page_index)
             idle(window)
             page = window.pages[page_index]
@@ -854,6 +856,9 @@ def run_smoke(application, destination: Path) -> int:
         idle(window)
         window.grab().save(str(destination / "repeat-synthesis-task.png"))
         check("same-request-and-identical-audio-create-new-samples-without-reuse")
+        from .custom_voice_acceptance import verify_custom_voices
+        verify_custom_voices(application, window, destination, idle)
+        check("custom-voice-dialogs-create-manage-preview-and-use-without-cloud")
         expected_samples = runtime.call("/api/samples")["total"]
         assert expected_samples == 22
         previous_directory = runtime.data_directory
@@ -867,6 +872,9 @@ def run_smoke(application, destination: Path) -> int:
         assert not (previous_directory / "tts_dataset.sqlite3").exists()
         assert not (previous_directory / "samples").exists()
         assert window.preferences.data_directory() == moved_directory.resolve()
+        custom_rows = runtime.call("/api/custom-voices")
+        assert len(custom_rows) == 2 and all(row["has_preview"] for row in custom_rows)
+        assert not (previous_directory / "custom_voices").exists()
         check("live-move-preserves-samples-and-removes-old-data-not-a-copy")
         window.navigate(6)
         idle(window)

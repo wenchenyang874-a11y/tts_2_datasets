@@ -88,7 +88,7 @@ class TasksPage(Page):
 
     def item(self, row):
         payload = row.get("payload") or {}
-        name = str(payload.get("text") or {"generate_batch": "批量合成", "generate": "语音合成", "augment": "噪声增强", "export": "训练集导出"}.get(row.get("type"), row.get("type") or row["id"]))
+        name = str(payload.get("text") or {"generate_batch": "批量合成", "generate": "语音合成", "augment": "噪声增强", "export": "训练集导出", "custom_voice": "创建自定义音色", "custom_voice_status": "查询音色状态"}.get(row.get("type"), row.get("type") or row["id"]))
         timings = [row.get(key + "_duration_seconds") for key in ("queue", "execution", "total")]
         duration = " / ".join("—" if value is None else f"{value:.1f}s" for value in timings)
         cost = row.get("cost_by_currency", {})
@@ -154,6 +154,9 @@ class TasksPage(Page):
     def retry(self):
         row = self.selected_row()
         if not row:
+            return
+        if row.get("type") in {"custom_voice", "custom_voice_status"}:
+            self.shell.error("音色创建不会自动重发；请在“我的音色”刷新实际状态后再决定下一步")
             return
         if row["status"] in ("running", "queued"):
             self.shell.error("任务尚未结束")

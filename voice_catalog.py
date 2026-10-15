@@ -417,7 +417,7 @@ def query_volc_account_voices(
         if not resource_ids:
             resource_ids = {"voice-clone-v1"}
         for resource_id in sorted(resource_ids):
-            synthesis_compatible = resource_id in {"seed-icl-1.0", "voice-clone-v1"}
+            synthesis_compatible = resource_id in {"seed-icl-1.0", "voice-clone-v1", "seed-icl-2.0"}
             metadata = {
                 "catalog_version": CATALOG_VERSION,
                 "classification_source": "volcengine_account_voice",

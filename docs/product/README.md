@@ -4,3 +4,4 @@
 
 - [Windows app 需求与 UI 规范](windows-app-requirements.md)
 - [Windows 桌面版使用](windows-quickstart.md)
+- [我的音色：复刻、设计与管理](custom-voices.md)

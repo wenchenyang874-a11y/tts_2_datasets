@@ -113,7 +113,11 @@ def expression_features(voice):
             if isinstance(item, dict) and isinstance(item.get("Value"), str) and item["Value"].strip():
                 value = str(item["Value"]).strip()
                 native.append({"value": value, "label": str(item.get("Label") or EMOTION_LABELS.get(value, value))})
-        if model == "seed-tts-2.0" and voice.get("voice_id") in VOLC_INSTRUCTION_VOICES:
+        if model == "seed-icl-2.0":
+            # ICL 2.0 requires the expressive inference variant for context
+            # instructions; the provider adapter selects it when needed.
+            result["instruction"] = "free"
+        elif model == "seed-tts-2.0" and voice.get("voice_id") in VOLC_INSTRUCTION_VOICES:
             result["instruction"] = "free"
         elif model == "seed-tts-2.0":
             result["instruction_unknown"] = True
@@ -121,13 +125,13 @@ def expression_features(voice):
             result.update(emotion_mode="parameter", emotions=native, emotion_scale=True)
         elif result["instruction"] == "free":
             result["emotion_mode"] = "instruction"
-    elif provider == "xiaomi" and model == "mimo-v2.5-tts":
+    elif provider == "xiaomi" and model in {"mimo-v2.5-tts", "mimo-v2.5-tts-voiceclone"}:
         result.update(instruction="free", emotion_mode="instruction")
     elif provider == "aliyun":
         if (model, voice.get("voice_id")) in ALI_FIXED_VOICES:
             result.update(instruction="fixed", emotion_mode="fixed",
                           emotions=[{"value": value, "label": EMOTION_LABELS[value]} for value in ALI_EMOTIONS])
-        elif voice.get("source") == "account_custom" and model in {"cosyvoice-v3.5-flash", "cosyvoice-v3.5-plus", "cosyvoice-v3-flash"}:
+        elif voice.get("source") in {"account_custom", "managed_custom"} and model in {"cosyvoice-v3.5-flash", "cosyvoice-v3.5-plus", "cosyvoice-v3-flash"}:
             result.update(instruction="free", emotion_mode="instruction")
     elif provider == "mock":
         result.update(instruction="free", emotion_mode="instruction")

@@ -800,7 +800,7 @@ def test_volc_account_voice_mapping_only_enables_compatible_ready_voice(
     assert by_id["S_ready"].name == "我的复刻音色"
     assert by_id["S_ready"].enabled is True
     assert by_id["S_training"].enabled is False
-    assert by_id["S_v2"].enabled is False
+    assert by_id["S_v2"].enabled is True
     assert all(item.source == "account_clone" for item in voices)
 
     captured: dict = {}

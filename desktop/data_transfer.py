@@ -8,7 +8,7 @@ import tempfile
 from contextlib import closing
 from pathlib import Path, PurePosixPath
 
-DIRECTORIES = ("samples", "noises", "exports", "trash")
+DIRECTORIES = ("samples", "noises", "exports", "trash", "custom_voices")
 SETTINGS = ("provider_settings.json", "project_settings.json")
 
 

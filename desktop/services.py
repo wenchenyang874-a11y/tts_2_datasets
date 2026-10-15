@@ -16,6 +16,6 @@ def audio_provider(service):
 
 def service_for_voice(voice):
     if voice.get("provider") == "volcengine":
-        return "volcengine_v2" if voice.get("model") == "seed-tts-2.0" else "volcengine_v1"
+        return "volcengine_v2" if voice.get("model") in {"seed-tts-2.0", "seed-icl-2.0"} else "volcengine_v1"
     return voice.get("provider", "mock")
 

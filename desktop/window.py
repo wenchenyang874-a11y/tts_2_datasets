@@ -18,6 +18,7 @@ from .noises import NoisesPage
 from .tasks import TasksPage
 from .exports import ExportsPage
 from .settings import SettingsPage
+from .custom_voices import CustomVoicesPage
 
 
 class MainWindow(QMainWindow):
@@ -66,7 +67,7 @@ class MainWindow(QMainWindow):
         navigation.addWidget(caption)
         navigation.addSpacing(24)
         self.nav_buttons = []
-        labels = ["合成创作", "样本库", "真人录音", "噪声增强", "任务中心", "训练集导出", "设置"]
+        labels = ["合成创作", "样本库", "真人录音", "噪声增强", "任务中心", "训练集导出", "设置", "我的音色"]
         for index, label in enumerate(labels):
             item = QPushButton(label)
             item.setCheckable(True)
@@ -127,9 +128,9 @@ class MainWindow(QMainWindow):
             self.stack.removeWidget(old)
             old.deleteLater()
         self.pages = [cls(self) for cls in [GeneratePage, SamplesPage, RecordingPage, NoisesPage,
-                                           TasksPage, ExportsPage, SettingsPage]]
+                                           TasksPage, ExportsPage, SettingsPage, CustomVoicesPage]]
         for page in self.pages:
-            if isinstance(page, GeneratePage):
+            if isinstance(page, (GeneratePage, CustomVoicesPage)):
                 # The composer is a bounded workspace with tabs and independent
                 # lists; wrapping it in a page scroll area hides its submit action
                 # and shrinks the catalog behind unrelated parameter forms.

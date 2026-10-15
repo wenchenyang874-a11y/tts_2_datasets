@@ -83,7 +83,7 @@ def dispatch(client, application, message: dict[str, Any]) -> Any:
     if message.get("op") == "copy":
         kind, identifier = message["kind"], message["id"]
         readers = {"samples": application.sample_audio, "noises": application.noise_audio,
-                   "exports": application.download_export}
+                   "exports": application.download_export, "custom_voices": application.custom_voice_audio}
         if kind not in readers:
             raise RuntimeErrorDetail("不支持的文件类型")
         response = readers[kind](identifier)

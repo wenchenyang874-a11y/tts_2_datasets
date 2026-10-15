@@ -71,6 +71,47 @@ def _first_mock_voice(client: TestClient) -> dict:
     return voices[0]
 
 
+def test_custom_voice_creation_generation_speaker_group_and_history(client):
+    request_id = __import__("uuid").uuid4().hex
+    group = "owned-custom-speaker-"+request_id
+    options = {"request_id": request_id, "name": "自定义离线端到端", "service": "mock", "mode": "design", "prompt": "温暖的声音", "speaker_group": group}
+    created = client.post("/api/custom-voices", data={"options": json.dumps(options)}).json()
+    assert _wait_for_task(client, created["task_id"])["status"] == "completed"
+    custom = next(row for row in client.get("/api/custom-voices").json() if row["id"] == request_id)
+    assert custom["status"] == "ready" and custom["has_preview"]
+    voice = next(row for row in client.get("/api/voices").json() if row["id"] == custom["voice_db_id"])
+    assert voice["metadata"]["speaker_id"] == group
+    response = client.post("/api/tasks/generate", json={"voice_ids": [voice["id"]], "text": "自定义声音验收", "keyword_id": request_id})
+    generated = _wait_for_task(client, response.json()["task_id"])
+    assert generated["status"] == "completed" and generated["completed"] == 1
+    samples = client.get("/api/samples", params={"keyword_id": request_id}).json()["items"]
+    assert len(samples) == 1 and samples[0]["metadata"]["speaker_id"] == group
+    assert app_module._speaker_for(samples[0]) == app_module._speaker_for({"provider": "real", "metadata": {"speaker_id": group}})
+    assert client.delete("/api/custom-voices/"+request_id).status_code == 200
+    assert client.get("/api/samples", params={"keyword_id": request_id}).json()["total"] == 1
+    assert voice["id"] not in {row["id"] for row in client.get("/api/voices").json()}
+    # Other integration cases intentionally assert whole-library totals. Remove
+    # only this case's stable-ID rows after proving archive preserves history.
+    for sample in samples:
+        app_module.db.execute("DELETE FROM samples WHERE id=?", (sample["id"],))
+
+
+def test_icl2_catalog_and_sample_filters_respect_v2_boundary(client, tmp_path):
+    ids = []
+    assert app_module._speaker_for({"provider": "volcengine", "voice_id": "S_group", "model": "seed-icl-1.0"}) == app_module._speaker_for({"provider": "volcengine", "voice_id": "S_group", "model": "seed-icl-2.0"})
+    try:
+        for model in ("seed-icl-1.0", "seed-icl-2.0"):
+            voice_id = app_module.db.upsert_voice({"provider": "volcengine", "voice_id": "S_custom_filter", "model": model, "name": model, "source": "managed_custom"})
+            ids.append(voice_id)
+        for service, expected in zip(("volcengine_v1", "volcengine_v2"), ids):
+            voices = client.get("/api/voices", params={"provider": service}).json()
+            selected = [row["id"] for row in voices if row["voice_id"] == "S_custom_filter"]
+            assert selected == [expected]
+    finally:
+        for identifier in ids:
+            app_module.db.execute("DELETE FROM voices WHERE id=?", (identifier,))
+
+
 def test_voice_language_filters_handle_bilingual_foreign_and_unknown(client):
     chinese = client.get("/api/voices", params={"provider": "xiaomi", "language_group": "chinese"}).json()
     foreign = client.get("/api/voices", params={"provider": "xiaomi", "language_group": "foreign"}).json()

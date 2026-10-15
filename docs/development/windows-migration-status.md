@@ -1,5 +1,9 @@
 # Windows 迁移状态
 
+## 2026-10-15 / beta.8 自定义音色
+
+新增“我的音色”、三家创建协议、后台状态与参考音频持久化，详见[架构](../architecture/custom-voices.md)及[验证边界](../testing/custom-voices-beta8.md)。254 项离线测试与原生界面验收完成，用户仅授权的小米设计和复刻两次真实请求均成功；豆包/阿里云未真实调用。继续本地构建、验证，等待用户验收和发布通知，不自动发布。
+
 ## beta.7 本轮接手状态
 
 用户于 2026-10-14 验收后明确通知发布；[beta.7 Release](https://github.com/wenchenyang874-a11y/tts_2_datasets/releases/tag/v2.0.0-beta.7)（ID 412542371）已公开并设为 Latest，draft=false／prerelease=false。Tag 固定在已验收构建源 7911785，三项 GitHub 资产完整回读字节数和 SHA-256 一致，安装器 PE 为 2.0.0.7；没有重建包。证据为 `artifacts/release-beta7-published-20261014/verification.json`。取消平台预发布标记不改变 beta 版本号，Windows 10、麦克风与真实云验收边界保持不变。

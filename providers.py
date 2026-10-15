@@ -814,9 +814,13 @@ class XiaomiTTSProvider(BaseTTSProvider):
 
     def synthesize(self, *, text, voice, model="mimo-v2.5-tts", audio_format="wav",
                    sample_rate=24_000, speed=1.0, pitch=1.0, volume=50, seed=0, instruction=""):
-        self._validate_input(text, voice, audio_format, sample_rate, speed, pitch, volume)
-        if model != "mimo-v2.5-tts":
-            raise ProviderRequestError("当前小米适配器仅支持预置音色模型 mimo-v2.5-tts")
+        self._validate_input(text, "voice-design" if model == "mimo-v2.5-tts-voicedesign" else voice, audio_format, sample_rate, speed, pitch, volume)
+        if model not in {"mimo-v2.5-tts", "mimo-v2.5-tts-voiceclone", "mimo-v2.5-tts-voicedesign"}:
+            raise ProviderRequestError("小米 MiMo 模型无效")
+        if model.endswith("-voiceclone") and (not voice.startswith("data:audio/wav;base64,") or len(voice.split(",", 1)[1]) > 10*1024*1024):
+            raise ProviderRequestError("小米复刻需要不超过 10 MB Base64 的参考 WAV")
+        if model.endswith("-voicedesign") and not instruction.strip():
+            raise ProviderRequestError("小米音色设计需要声音描述")
         # The target text MUST be assistant content. User content is optional
         # style guidance, not text to speak. MiMo has no numeric rate/volume,
         # pitch or sample_rate request fields; reject unsupported numeric
@@ -826,8 +830,8 @@ class XiaomiTTSProvider(BaseTTSProvider):
         messages.append({"role": "assistant", "content": text})
         response = _request("POST", self.endpoint, provider="小米 MiMo",
                             headers={"api-key": self.api_key, "Content-Type": "application/json"},
-                            json_body={"model": model, "messages": messages, "audio": {"voice": voice, "format": audio_format}, "stream": False},
-                            secrets=(self.api_key,), max_response_bytes=_max_audio_wire_bytes(), retry_transient=False)
+                            json_body={"model": model, "messages": messages, "audio": ({"format": audio_format} if model.endswith("-voicedesign") else {"voice": voice, "format": audio_format}), "stream": False},
+                            secrets=(self.api_key, voice) if model.endswith("-voiceclone") else (self.api_key,), max_response_bytes=_max_audio_wire_bytes(), retry_transient=False)
         payload = _extract_json(response, "小米 MiMo", (self.api_key,))
         choices = payload.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -883,16 +887,16 @@ class VolcTTSProvider(BaseTTSProvider):
             text, voice, audio_format, sample_rate, speed, pitch, volume
         )
         resource = {"": "seed-tts-1.0", "volcano_tts": "seed-tts-1.0", "voice-clone-v1": "seed-icl-1.0"}.get(model, model)
-        if resource not in {"seed-tts-1.0", "seed-tts-2.0", "seed-icl-1.0"}:
+        if resource not in {"seed-tts-1.0", "seed-tts-2.0", "seed-icl-1.0", "seed-icl-2.0"}:
             raise ProviderRequestError(f"豆包不支持模型 {model}")
-        service = "volcengine_v2" if resource == "seed-tts-2.0" else "volcengine"
+        service = "volcengine_v2" if resource in {"seed-tts-2.0", "seed-icl-2.0"} else "volcengine"
         label = "豆包 2.0" if service == "volcengine_v2" else "豆包 1.0"
         api_key = str(self.configs[service].get("api_key") or "").strip()
         if not api_key:
             raise ProviderConfigurationError(f"{label} 未配置 API Key，请打开设置 → {label}")
         if any(ord(char) < 33 or ord(char) > 126 for char in api_key):
             raise ProviderConfigurationError(f"{label} API Key 不应包含空白或非 ASCII 字符")
-        if instruction.strip() and resource != "seed-tts-2.0":
+        if instruction.strip() and resource not in {"seed-tts-2.0", "seed-icl-2.0"}:
             raise ProviderRequestError("豆包 1.0 不支持风格指令，请留空或选择豆包 2.0")
         # V3 can repeat WAV headers in audio chunks. Request raw PCM for WAV,
         # assemble all segments, then write one container header locally. Blind
@@ -905,6 +909,8 @@ class VolcTTSProvider(BaseTTSProvider):
             params["audio_params"].update(emotion=emotion, emotion_scale=emotion_scale)
         if instruction.strip():
             params["additions"] = json.dumps({"context_texts": [instruction.strip()]}, ensure_ascii=False)
+            if resource == "seed-icl-2.0":
+                params["model"] = "seed-tts-2.0-expressive"
         response = _request("POST", self.endpoint, provider=label,
                             headers={"X-Api-Key": api_key, "X-Api-Resource-Id": resource, "X-Api-Request-Id": str(uuid.uuid4()), "X-Control-Require-Usage-Tokens-Return": "*", "Content-Type": "application/json"},
                             json_body={"req_params": params}, secrets=(api_key,),
