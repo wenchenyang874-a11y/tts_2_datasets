@@ -9,6 +9,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import publish_release
 
 
+def test_stable_requires_actual_win10_evidence_or_explicit_waiver():
+    manifest = {"source_commit": "owned-build", "prerelease": False}
+    with pytest.raises(RuntimeError, match="Windows 10"):
+        publish_release.validate_windows_evidence(manifest, "owned-hash", {"windows11_verified":True}, {})
+    assert not publish_release.validate_windows_evidence(manifest, "owned-hash", {"windows11_verified":True}, {}, "Explicit test waiver")
+    win10 = {"ok":True,"windows10_verified":True,"source_commit":"owned-build","manifest_sha256":"owned-hash"}
+    assert publish_release.validate_windows_evidence(manifest, "owned-hash", {"windows11_verified":True}, win10)
+    with pytest.raises(RuntimeError, match="Windows 11"):
+        publish_release.validate_windows_evidence(manifest, "owned-hash", {}, win10, "Does not bypass Win11")
+
+
 def publication_stub(monkeypatch, published, latest_id=42):
     calls = []
     monkeypatch.setattr(publish_release, "execute", lambda *args: calls.append(args))

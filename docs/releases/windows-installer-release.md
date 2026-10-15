@@ -53,6 +53,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_release.ps1 -I
 
 稳定版额外传入 `--windows10-evidence <Win10 result.json>`；两套系统的证据都必须对应相同提交与产物清单，脚本从实际 Windows build 分类系统。
 
+只有用户在知悉 Win10 未实测后明确批准本次例外，才可传入 `--windows10-waiver <批准原因>`。普通“发布”或“正式版”请求本身不自动构成豁免。此路径仍须核对 Win11 证据、具体构建与资产，发布记录始终保留 `windows10_verified=false` 和豁免原因，说明中不得宣称双系统实测完成；默认门槛保持不变。
+
 新增版本必须同步 CHANGELOG、版本说明和验证记录。发布后记录实际链接/提交与校验结果；记录文档可后续提交，不改变已发布 Tag 指向的构建提交。维护脚本是当前的正式发布入口，不声称任意 push 都自动通过验收并发版。
 
 ## 版本结尾的交付回复

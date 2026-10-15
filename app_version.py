@@ -1,6 +1,6 @@
 """Single release version for the app, PE resources, installer and Git tag."""
 
-VERSION = "2.0.0-beta.8"
+VERSION = "2.0.0"
 
 
 def windows_version(version: str = VERSION) -> tuple[int, int, int, int]:

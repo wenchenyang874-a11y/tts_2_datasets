@@ -47,11 +47,25 @@ def publish_as_latest(tag, release_id):
     return published
 
 
+def validate_windows_evidence(manifest, manifest_hash, evidence, win10, waiver=""):
+    if not evidence.get("windows11_verified"):
+        raise RuntimeError("Windows 11 validation is required")
+    verified = bool(win10.get("ok") and win10.get("windows10_verified")
+                    and win10.get("manifest_sha256") == manifest_hash
+                    and win10.get("source_commit") == manifest["source_commit"])
+    if not manifest["prerelease"] and not verified and not waiver.strip():
+        raise RuntimeError("Stable releases require matching Windows 10 evidence or an explicit user-approved waiver")
+    # A waiver records a release decision, never a successful OS test. Do not
+    # synthesize a Win10 result from Win11 or suppress this boundary in notes.
+    return verified
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("release_dir", type=Path)
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--windows10-evidence", type=Path)
+    parser.add_argument("--windows10-waiver", default="", help="Reason explicitly approved by the user; never inferred from a publish request")
     parser.add_argument("--notes", type=Path, required=True)
     parser.add_argument("--download-dir", type=Path, required=True)
     args = parser.parse_args()
@@ -66,12 +80,8 @@ def main():
         raise RuntimeError("Build source/version differs from release commit")
     if not evidence["ok"] or evidence["manifest_sha256"] != digest(manifest_path) or evidence["source_commit"] != commit:
         raise RuntimeError("Installer evidence does not match these exact release assets")
-    if not evidence.get("windows11_verified"):
-        raise RuntimeError("Windows 11 installer acceptance is required")
-    if not manifest["prerelease"]:
-        win10 = json.loads(args.windows10_evidence.read_text(encoding="utf-8")) if args.windows10_evidence else {}
-        if not win10.get("ok") or not win10.get("windows10_verified") or win10.get("manifest_sha256") != digest(manifest_path) or win10.get("source_commit") != commit:
-            raise RuntimeError("Stable releases also require matching --windows10-evidence")
+    win10 = json.loads(args.windows10_evidence.read_text(encoding="utf-8")) if args.windows10_evidence else {}
+    windows10_verified = validate_windows_evidence(manifest, digest(manifest_path), evidence, win10, args.windows10_waiver)
     if not args.notes.is_file() or not args.notes.read_text(encoding="utf-8").strip():
         raise RuntimeError("Release notes are required")
     if args.download_dir.exists():
@@ -116,7 +126,9 @@ def main():
     published = publish_as_latest(tag, release_id)
     result = {"ok": not published["draft"], "url": published["html_url"], "tag": tag, "source_commit": commit,
               "assets": manifest["assets"], "remote_bytes_and_sha256_verified": True,
-              "latest_verified": True, "github_prerelease": published["prerelease"]}
+              "latest_verified": True, "github_prerelease": published["prerelease"],
+              "windows10_verified": windows10_verified, "windows10_waiver": args.windows10_waiver,
+              "validation_evidence": str(args.evidence)}
     (args.download_dir / "verification.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(result["url"])
 
