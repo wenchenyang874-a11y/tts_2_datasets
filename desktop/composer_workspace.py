@@ -233,9 +233,10 @@ def build_workspace(page, title, targets, ages):
     page.age = combo([('全部年龄', '')]+ages)
     page.language = combo([('全部语言', ''), ('中文', 'chinese'), ('外语', 'foreign'), ('语言未知', 'unknown')])
     page.capability_filter = combo([('全部能力', ''), ('支持指令', 'instruction'), ('支持情感', 'emotion'), ('无指令控制', 'no_instruction')])
+    page.voice_kind = combo([('全部类型', ''), ('预置音色', 'preset'), ('复刻音色', 'clone'), ('设计音色', 'design'), ('其他自定义', 'custom')])
     page.filter_grid = QGridLayout()
     page.filter_grid.setSpacing(6)
-    page.filter_controls = (page.language, page.gender, page.age, page.capability_filter)
+    page.filter_controls = (page.voice_kind, page.language, page.gender, page.age, page.capability_filter)
     for index, control in enumerate(page.filter_controls):
         control.setMinimumContentsLength(4)
         page.filter_grid.addWidget(control, index//2, index%2)

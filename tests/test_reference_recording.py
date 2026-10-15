@@ -153,7 +153,10 @@ def test_reference_selection_preserved_on_cancel_and_form_owns_recording(fake_ca
     original.write_bytes(b"external audio must not be deleted")
     form.path = original
     def cancel(dialog):
+        assert "阳光" in dialog.reading_text.toPlainText()
+        dialog.reading_text.setPlainText("我的自定义朗读文稿")
         dialog.start()
+        assert dialog.reading_text.isReadOnly()
         feed(dialog.capture, 4)
         dialog.reject()
         return QDialog.DialogCode.Rejected
@@ -161,6 +164,7 @@ def test_reference_selection_preserved_on_cancel_and_form_owns_recording(fake_ca
     form.record_reference()
     assert form.path == original and original.is_file()
     def accept(dialog):
+        assert dialog.reading_text.toPlainText() == "我的自定义朗读文稿"
         dialog.start()
         feed(dialog.capture, 4)
         dialog.stop()
@@ -172,6 +176,19 @@ def test_reference_selection_preserved_on_cancel_and_form_owns_recording(fake_ca
     assert accepted != original and accepted.is_file() and "现场录音" in form.file_label.text()
     form.reject()
     assert not accepted.exists() and original.is_file()
+
+
+def test_reading_script_language_and_recording_state(fake_capture, application, tmp_path):
+    dialog = ReferenceRecordingDialog(None, tmp_path, language="en")
+    assert "sunlight" in dialog.reading_text.toPlainText()
+    assert not dialog.reading_text.isReadOnly()
+    dialog.start()
+    assert dialog.reading_text.isReadOnly()
+    feed(dialog.capture, 4)
+    dialog.stop()
+    assert not dialog.reading_text.isReadOnly()
+    assert "sunlight" in dialog.reading_text.toPlainText()
+    dialog.reject()
 
 
 def test_aliyun_recording_save_cancel_and_explicit_local_export(fake_capture, monkeypatch, application, tmp_path):

@@ -1,6 +1,6 @@
 # 项目文档
 
-当前本地验收版：[2.0.0-beta.8](releases/v2.0.0-beta.8.md)，新增[声音复刻、音色设计和自定义音色管理](product/custom-voices.md)。254 项离线测试、Windows 11 安装后 38 项原生流程及 9 项安装检查通过，小米仅授权的两次真实调用成功；豆包/阿里云为文档与 Mock 验证。未发布，产物与边界见[测试说明](testing/custom-voices-beta8.md)。
+当前本地验收版：[2.0.0-beta.8](releases/v2.0.0-beta.8.md)，新增[声音复刻、音色设计和自定义音色管理](product/custom-voices.md)，包含现场参考录音、朗读文稿和独立类型交叉筛选。本次按影响范围验证，前份构建的完整回归与安装结果分别保留。小米 332 秒单次延迟的现场证据与两次另行获准诊断见[测试说明](testing/custom-voices-beta8.md)，具体慢因仍未查明。未发布，产物与实际验证边界见版本清单。
 
 当前 Latest：[2.0.0-beta.7](https://github.com/wenchenyang874-a11y/tts_2_datasets/releases/tag/v2.0.0-beta.7)，构建源 7911785，用户验收后已发布。真实正负波形、跨供应商工作区与自动图表更新已完成；三项资产完整回读核验通过，本地安装包与哈希见版本文档。
 

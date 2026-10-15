@@ -28,6 +28,7 @@ class CreationDialog(QDialog):
         self.request_id = uuid.uuid4().hex
         self.submitting = False
         self.reference_cache = tempfile.TemporaryDirectory(prefix="tts-clone-reference-")
+        self.reference_scripts = {}
         self.finished.connect(self.release_reference)
         self.setWindowTitle("新建"+MODES[mode])
         self.resize(640, 700)
@@ -136,8 +137,14 @@ class CreationDialog(QDialog):
             self.problem.setText("真人录音正在录制，请先停止后再录制参考音频")
             return
         self.page.shell.stop_playback()
-        dialog = ReferenceRecordingDialog(self, self.reference_cache.name, export_required=self.service.currentData() == "aliyun")
-        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.accepted_path:
+        language = self.language.currentData()
+        dialog = ReferenceRecordingDialog(self, self.reference_cache.name, export_required=self.service.currentData() == "aliyun",
+                                          language=language, reading_text=self.reference_scripts.get(language))
+        result = dialog.exec()
+        # Preserve reading edits even after Cancel, but never replace the
+        # accepted reference file unless the recorder explicitly accepts it.
+        self.reference_scripts[language] = dialog.reading_text.toPlainText()
+        if result == QDialog.DialogCode.Accepted and dialog.accepted_path:
             if self.service.currentData() == "aliyun":
                 self.url.clear()
                 self.problem.setText("参考录音已保存；请上传后填写可公网访问的 HTTPS 音频链接")

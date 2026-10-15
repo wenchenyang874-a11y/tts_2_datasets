@@ -50,7 +50,7 @@ try:
     from .project_settings import ProjectSettingsStore, normalize_display_text
     from .settings_store import PROVIDER_FIELDS, ProviderSettingsStore, set_default_settings_store
     from .voice_catalog import builtin_voices, refresh_voice_catalog
-    from .voice_features import expression_features, language_groups, resolve_expression
+    from .voice_features import expression_features, language_groups, resolve_expression, voice_kind
 except ImportError:  # Support direct `uvicorn app:app` execution.
     from app_version import VERSION
     from audio_utils import (  # type: ignore
@@ -65,7 +65,7 @@ except ImportError:  # Support direct `uvicorn app:app` execution.
     from project_settings import ProjectSettingsStore, normalize_display_text  # type: ignore
     from settings_store import PROVIDER_FIELDS, ProviderSettingsStore, set_default_settings_store  # type: ignore
     from voice_catalog import builtin_voices, refresh_voice_catalog  # type: ignore
-    from voice_features import expression_features, language_groups, resolve_expression  # type: ignore
+    from voice_features import expression_features, language_groups, resolve_expression, voice_kind  # type: ignore
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -1377,7 +1377,7 @@ def test_provider_settings(provider: str, payload: dict[str, Any] = Body(default
 
 @app.get("/api/voices")
 def voices(
-    provider: str = "", gender: str = "", age_group: str = "", enabled: bool = True, language_group: str = "", capability: str = "",
+    provider: str = "", gender: str = "", age_group: str = "", enabled: bool = True, language_group: str = "", capability: str = "", kind: str = "",
 ) -> list[dict[str, Any]]:
     clauses, params = [], []
     if enabled:
@@ -1396,9 +1396,15 @@ def voices(
         raise HTTPException(400, "音色语言分类无效")
     if capability not in {"", "instruction", "emotion", "no_instruction"}:
         raise HTTPException(400, "音色能力分类无效")
+    if kind not in {"", "preset", "clone", "design", "custom"}:
+        raise HTTPException(400, "音色类型分类无效")
+    modes = {row["voice_db_id"]: row["mode"] for row in db.all("SELECT voice_db_id,mode FROM custom_voices WHERE voice_db_id IS NOT NULL")}
     result = []
     for row in db.all(f"SELECT * FROM voices{where} ORDER BY provider,name", tuple(params)):
         value = _json_row(row)
+        value["voice_kind"] = voice_kind(value, modes.get(value["id"], ""))
+        if kind and value["voice_kind"] != kind:
+            continue
         groups = language_groups(value)
         matches = not groups if language_group == "unknown" else language_group in groups
         if language_group and not matches:

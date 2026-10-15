@@ -8,6 +8,23 @@ EMOTION_LABELS = {
     "gentle": "温柔", "calm": "平静", "excited": "兴奋",
 }
 ALI_EMOTIONS = ("neutral", "fearful", "angry", "sad", "surprised", "happy", "disgusted")
+
+
+def voice_kind(voice, creation_mode=""):
+    # MiMo designs are reused through the clone model. Their stored creation
+    # mode must take precedence over the synthesis model or they get mislabeled.
+    # Account-imported CosyVoice does not disclose clone versus design: keep it
+    # explicitly custom instead of guessing its provenance from the voice ID.
+    if creation_mode in {"clone", "design"}:
+        return creation_mode
+    model = voice.get("model", "")
+    if voice.get("source") == "account_clone" or model in {"seed-icl-1.0", "seed-icl-2.0", "voice-clone-v1", "mimo-v2.5-tts-voiceclone"}:
+        return "clone"
+    if model == "mimo-v2.5-tts-voicedesign":
+        return "design"
+    if voice.get("source") in {"account_custom", "managed_custom"}:
+        return "custom"
+    return "preset"
 ALI_FIXED_VOICES = {
     ("cosyvoice-v3-flash", "longanyang"), ("cosyvoice-v3-plus", "longanyang"),
     ("cosyvoice-v3-flash", "longanhuan"), ("cosyvoice-v3-plus", "longanhuan"),

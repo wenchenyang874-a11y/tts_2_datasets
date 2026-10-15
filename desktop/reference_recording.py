@@ -8,14 +8,19 @@ import uuid
 from pathlib import Path
 from PySide6.QtCore import QTimer, QUrl, Qt
 from PySide6.QtMultimedia import QMediaDevices, QMediaPlayer, QAudioOutput
-from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPlainTextEdit,
                                QProgressBar, QFileDialog, QWidget)
 from .audio_capture import ReferenceCapture
 from .widgets import button, combo, field, HelpButton
 
+READING_SCRIPTS = {
+    "zh": "你好，很高兴认识你。今天的天气很好，阳光透过窗户照进房间。我准备出门走走，看看街边的花，听听周围的声音。你平时喜欢做些什么？不着急，我们可以慢慢聊。希望接下来的每一天，都能遇见一些让人开心的小事。",
+    "en": "Hello, it is nice to meet you. The sunlight is coming through the window, and it looks like a lovely day for a walk. I might stop by a small cafe, look at the flowers, and enjoy the sounds of the city. What do you like to do in your free time? There is no need to hurry. We can take our time and have a relaxed conversation.",
+}
+
 
 class ReferenceRecordingDialog(QDialog):
-    def __init__(self, parent, destination, *, export_required=False):
+    def __init__(self, parent, destination, *, export_required=False, language="zh", reading_text=None):
         super().__init__(parent)
         self.destination = Path(destination)
         self.export_required = export_required
@@ -37,8 +42,8 @@ class ReferenceRecordingDialog(QDialog):
         self.player.errorOccurred.connect(lambda *_: self.problem.setText("无法播放这段录音，请检查输出设备后重试"))
         self.setWindowTitle("录制参考音频")
         self.setStyleSheet("QDialog { background: #f4f6fb; }")
-        self.resize(540, 410)
-        self.setMinimumWidth(480)
+        self.resize(600, 580)
+        self.setMinimumWidth(520)
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 20, 20, 18)
         root.setSpacing(16)
@@ -48,6 +53,13 @@ class ReferenceRecordingDialog(QDialog):
         self.refresh_button = button("刷新设备", self.reload_devices)
         device_row.addWidget(self.refresh_button, alignment=Qt.AlignmentFlag.AlignBottom)
         root.addLayout(device_row)
+        # This is a reading aid, not an automatically verified transcript.
+        # Keep it separate from preview/synthesis text and do not claim that
+        # editing it transcribes the recording or changes a provider payload.
+        self.reading_text = QPlainTextEdit(READING_SCRIPTS.get(language, READING_SCRIPTS["zh"]) if reading_text is None else reading_text)
+        self.reading_text.setMinimumHeight(120)
+        root.addWidget(field("朗读文稿", self.reading_text,
+                             "录音前可以修改文稿；录音时用自然、清晰的声音照着读，避免背景音乐与多人说话。此文稿用于辅助朗读，不是待合成的预览文本。"), 1)
         meter = QWidget()
         meter.setObjectName("composerPane")
         meter_layout = QVBoxLayout(meter)
@@ -123,6 +135,7 @@ class ReferenceRecordingDialog(QDialog):
 
     def update_controls(self):
         active = self.capture.source is not None
+        self.reading_text.setReadOnly(active)
         self.device.setEnabled(not active)
         self.refresh_button.setEnabled(not active)
         self.record_button.setEnabled(not active and bool(self.devices))

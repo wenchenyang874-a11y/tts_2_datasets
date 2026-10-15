@@ -28,15 +28,25 @@ class GeneratePage(Page):
             for control in self.filter_controls:
                 control.setMinimumWidth(control.required_text_width())
             margins = self.voice_pane.layout().contentsMargins()
-            required = sum(control.minimumWidth() for control in self.filter_controls)
-            required += margins.left()+margins.right()+self.filter_grid.horizontalSpacing()*3
-            columns = 4 if event.size().width() >= required else 2
+            available = event.size().width()-margins.left()-margins.right()
+            count = len(self.filter_controls)
+            columns = 2
+            # Fit each actual column, including longer provenance choices. An
+            # extra independent filter must wrap rather than clip its text.
+            for candidate in range(count, 1, -1):
+                if candidate > 2 and count > candidate and count % candidate == 1:
+                    continue  # Avoid a single orphan filter on its own row.
+                widths = [max(control.minimumWidth() for index, control in enumerate(self.filter_controls) if index % candidate == column)
+                          for column in range(candidate)]
+                if sum(widths)+self.filter_grid.horizontalSpacing()*(candidate-1) <= available:
+                    columns = candidate
+                    break
             if columns != getattr(self, "filter_columns", None):
                 self.filter_columns = columns
                 for index, control in enumerate(self.filter_controls):
                     self.filter_grid.removeWidget(control)
                     self.filter_grid.addWidget(control, index//columns, index%columns)
-                for index in range(4):
+                for index in range(count):
                     self.filter_grid.setColumnStretch(index, int(index < columns))
         return super().eventFilter(watched, event)
 
@@ -273,9 +283,12 @@ class GeneratePage(Page):
                      callback=lambda result: (self.set_project(result), self.notify("唤醒词已保存")))
 
     def refresh_voices(self):
-        snapshot = (self.provider.currentData(), self.gender.currentData(), self.age.currentData(), self.search.text(), self.language.currentData(), self.capability_filter.currentData())
-        self.request("/api/voices", params={"provider": self.provider.currentData(), "gender": self.gender.currentData(), "age_group": self.age.currentData(), "language_group": self.language.currentData(), "capability": self.capability_filter.currentData()},
-                     callback=lambda rows: self.show_voices(rows) if snapshot == (self.provider.currentData(), self.gender.currentData(), self.age.currentData(), self.search.text(), self.language.currentData(), self.capability_filter.currentData()) else None)
+        snapshot = self.voice_filter_snapshot()
+        self.request("/api/voices", params={"provider": self.provider.currentData(), "gender": self.gender.currentData(), "age_group": self.age.currentData(), "language_group": self.language.currentData(), "capability": self.capability_filter.currentData(), "kind": self.voice_kind.currentData()},
+                     callback=lambda rows: self.show_voices(rows) if snapshot == self.voice_filter_snapshot() else None)
+
+    def voice_filter_snapshot(self):
+        return (self.provider.currentData(), self.search.text(), *(control.currentData() for control in self.filter_controls))
 
     def show_voices(self, rows):
         self.voices.blockSignals(True)
@@ -297,7 +310,8 @@ class GeneratePage(Page):
             age = dict((value, label) for label, value in AGES).get(row.get("age_group"), "")
             from .services import service_for_voice
             supplier = dict((value, label) for label, value in SERVICES).get(service_for_voice(row), row['provider'])
-            item.setData(Qt.ItemDataRole.UserRole + 1, {"demographics": " · ".join(value for value in (supplier, gender, age) if value), "language": language,
+            kind = {"preset": "预置", "clone": "复刻", "design": "设计", "custom": "自定义"}.get(row.get("voice_kind"), "")
+            item.setData(Qt.ItemDataRole.UserRole + 1, {"demographics": " · ".join(value for value in (supplier, kind, gender, age) if value), "language": language,
                          "capability": traits, "supported": features["instruction"] != "none" or bool(features["emotions"])})
             item.setData(Qt.ItemDataRole.UserRole, row["id"])
             item.setToolTip(f"{row['voice_id']}\n{row.get('model', '')}\n语言：{', '.join(row.get('languages', [])) or '未知'}\n表达能力：{traits}")

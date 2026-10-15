@@ -6,7 +6,19 @@ import httpx
 import pytest
 
 import providers
-from voice_features import expression_features, language_groups, resolve_expression
+from voice_features import expression_features, language_groups, resolve_expression, voice_kind
+
+
+@pytest.mark.parametrize("voice,mode,expected", [
+    ({"model":"mimo-v2.5-tts"}, "", "preset"),
+    ({"model":"mimo-v2.5-tts-voiceclone"}, "clone", "clone"),
+    ({"model":"mimo-v2.5-tts-voiceclone"}, "design", "design"),
+    ({"model":"seed-icl-2.0"}, "", "clone"),
+    ({"source":"account_clone"}, "", "clone"),
+    ({"source":"account_custom","model":"cosyvoice-v3-flash"}, "", "custom"),
+])
+def test_voice_kind_uses_creation_mode_before_synthesis_model(voice, mode, expected):
+    assert voice_kind(voice, mode) == expected
 
 
 @pytest.mark.parametrize("languages,expected", [

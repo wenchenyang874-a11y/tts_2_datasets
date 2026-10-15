@@ -81,6 +81,10 @@ def test_custom_voice_creation_generation_speaker_group_and_history(client):
     assert custom["status"] == "ready" and custom["has_preview"]
     voice = next(row for row in client.get("/api/voices").json() if row["id"] == custom["voice_db_id"])
     assert voice["metadata"]["speaker_id"] == group
+    assert voice["voice_kind"] == "design"
+    filtered = client.get("/api/voices", params={"provider": "mock", "kind": "design", "language_group": "chinese"}).json()
+    assert voice["id"] in {row["id"] for row in filtered}
+    assert voice["id"] not in {row["id"] for row in client.get("/api/voices", params={"kind": "clone"}).json()}
     response = client.post("/api/tasks/generate", json={"voice_ids": [voice["id"]], "text": "自定义声音验收", "keyword_id": request_id})
     generated = _wait_for_task(client, response.json()["task_id"])
     assert generated["status"] == "completed" and generated["completed"] == 1
@@ -107,6 +111,10 @@ def test_icl2_catalog_and_sample_filters_respect_v2_boundary(client, tmp_path):
             voices = client.get("/api/voices", params={"provider": service}).json()
             selected = [row["id"] for row in voices if row["voice_id"] == "S_custom_filter"]
             assert selected == [expected]
+            cloned = client.get("/api/voices", params={"provider": service, "kind": "clone"}).json()
+            assert expected in {row["id"] for row in cloned}
+            assert all(row["voice_kind"] == "clone" for row in cloned)
+        assert client.get("/api/voices", params={"kind": "invalid"}).status_code == 400
     finally:
         for identifier in ids:
             app_module.db.execute("DELETE FROM voices WHERE id=?", (identifier,))
